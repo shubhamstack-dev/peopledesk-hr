@@ -1,0 +1,13 @@
+# Server only. pd-app joins the ProjectSystem network so its Caddy (ps-web)
+# can forward peopledeskhr.nexdaequmsupport.com -> pd-app:8000.
+# MySQL stays on the private project network.
+services:
+  pd-app:
+    networks:
+      - default
+      - caddy
+
+networks:
+  caddy:
+    name: projectsystem_default
+    external: true

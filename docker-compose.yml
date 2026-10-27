@@ -1,0 +1,51 @@
+# PeopleDesk HR: MySQL + one app container (FastAPI serving the React build).
+# Container and service names start with pd- so they never clash with the
+# other projects on the same server.
+name: peopledesk
+
+services:
+  pd-mysql:
+    image: mysql:8.0
+    container_name: pd-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: peopledesk
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      TZ: ${APP_TZ:-Asia/Kolkata}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-buffer-pool-size=256M
+    volumes:
+      - pd_mysql:/var/lib/mysql
+      # Runs only the first time, when the database volume is empty
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      # TCP ping, so it is not "healthy" while the first-time init is still running
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  pd-app:
+    build: .
+    container_name: pd-app
+    restart: unless-stopped
+    depends_on:
+      pd-mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@pd-mysql:3306/peopledesk?charset=utf8mb4
+      JWT_SECRET: ${JWT_SECRET}
+      SESSION_HOURS: ${SESSION_HOURS:-12}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      TZ: ${APP_TZ:-Asia/Kolkata}
+    ports:
+      - "${APP_PORT:-8080}:8000"
+
+volumes:
+  pd_mysql:
