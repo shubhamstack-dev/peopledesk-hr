@@ -2,21 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
 
-const ROLE = { super: 'Group administrator', hr: 'HR administrator', employee: 'Employee' };
-
 export default function Login({ boot, message, onSignedIn }) {
   const s = (boot && boot.settings) || {};
   const googleOK = !!s.googleClientId && /^https?:/.test(window.location.protocol);
-  const demo = (boot && boot.demo) || [];
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
-  const [demoId, setDemoId] = useState(demo[0] ? demo[0].id : '');
   const [err, setErr] = useState(message || '');
   const [busy, setBusy] = useState(false);
   const gRef = useRef(null);
 
   useEffect(() => { setErr(message || ''); }, [message]);
-  useEffect(() => { if (demo[0] && !demo.some((d) => d.id === demoId)) setDemoId(demo[0].id); }, [demo, demoId]);
 
   // Google Identity Services: the browser gets an ID token, the server verifies it
   useEffect(() => {
@@ -43,14 +38,14 @@ export default function Login({ boot, message, onSignedIn }) {
     run(() => api.post('/api/auth/login', { email: email.trim(), password: pw }));
   };
 
-  const group = (boot && boot.group) || 'PeopleDesk HR';
+  const group = (boot && boot.group) || 'Ankit Group';
   const n = (boot && boot.companies) || 0;
   return (
     <div className="login">
       <div className="art">
-        <div className="brand" style={{ padding: 0 }}>
-          <div className="mark">{E.initials(group)}</div>
-          <div><b>{group}</b><small>{n} {n === 1 ? 'company' : 'companies'}</small></div>
+        <div className="brand stack" style={{ padding: 0 }}>
+          <span className="logo"><img src="/ankit-logo.png" alt="Ankit Group" /></span>
+          <div><b>{group} HR</b><small>{n} {n === 1 ? 'company' : 'companies'}</small></div>
         </div>
         <div>
           <h1>Your work, leave and pay in one place.</h1>
@@ -68,18 +63,6 @@ export default function Login({ boot, message, onSignedIn }) {
             <label className="field">Work e-mail<input className="inp" type="email" autoComplete="username" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /></label>
             <label className="field">Password<input className="inp" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} /></label>
             <button className="btn pri lg" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
-          </>
-        )}
-        {demo.length > 0 && (
-          <>
-            <div className="or">demo only</div>
-            <label className="field">Try the app as
-              <select className="inp" value={demoId} onChange={(e) => setDemoId(e.target.value)}>
-                {demo.map((d) => <option key={d.id} value={d.id}>{d.name}, {ROLE[d.role] || d.role}{d.manager ? ' and manager' : ''}</option>)}
-              </select>
-            </label>
-            <button type="button" className="btn" disabled={busy || !demoId} onClick={() => run(() => api.post('/api/auth/demo', { empId: demoId }))}>Open as this person</button>
-            <p className="fine" style={{ margin: 0 }}>Turn this off in Settings before real use.</p>
           </>
         )}
         <p className="err" role="alert">{err}</p>

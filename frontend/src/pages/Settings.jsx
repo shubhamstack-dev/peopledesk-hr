@@ -5,7 +5,7 @@ import * as E from '../engine/engine.js';
 export default function Settings({ onSignedOut, onWiped }) {
   const S = E.getS();
   const s = S.settings;
-  const [f, setF] = useState({ group: S.group.name || '', idleMin: s.idleMin || 30, allowDemo: !!s.allowDemo });
+  const [f, setF] = useState({ group: S.group.name || '', idleMin: s.idleMin || 30 });
   const [pw, setPw] = useState({ current: '', next: '', again: '' });
   const [pwErr, setPwErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -16,7 +16,7 @@ export default function Settings({ onSignedOut, onWiped }) {
     e.preventDefault();
     S.group.name = f.group.trim() || S.group.name;
     s.idleMin = Math.max(5, parseInt(f.idleMin, 10) || 30);
-    s.allowDemo = f.allowDemo;
+    s.allowDemo = false;
     E.audit('Settings changed', '');
     E.saveNow(); E.toast('Saved'); E.hooks.refresh();
   };
@@ -31,7 +31,7 @@ export default function Settings({ onSignedOut, onWiped }) {
 
   const backup = async () => {
     setBusy(true);
-    try { await E.sync.flush(); const data = await api.get('/api/admin/backup'); E.downloadText(`peopledesk-backup-${E.todayISO()}.json`, JSON.stringify(data), 'application/json'); }
+    try { await E.sync.flush(); const data = await api.get('/api/admin/backup'); E.downloadText(`ankit-hr-backup-${E.todayISO()}.json`, JSON.stringify(data), 'application/json'); }
     catch (x) { E.toast(x.message); } finally { setBusy(false); }
   };
 
@@ -63,10 +63,6 @@ export default function Settings({ onSignedOut, onWiped }) {
         <div className="form">
           <label className="field">Group name<input className="inp" value={f.group} onChange={(e) => setF({ ...f, group: e.target.value })} /></label>
           <label className="field">Sign out after minutes without activity<input className="inp" type="number" min={5} value={f.idleMin} onChange={(e) => setF({ ...f, idleMin: e.target.value })} /></label>
-          <label className="chk" style={{ gridColumn: '1/-1' }}>
-            <input type="checkbox" checked={f.allowDemo} onChange={(e) => setF({ ...f, allowDemo: e.target.checked })} />
-            Show &ldquo;try the app as&rdquo; on the sign-in page (demo only: anyone could sign in as anyone; turn off for real use)
-          </label>
         </div>
         <div className="btns" style={{ justifyContent: 'flex-start' }}><button className="btn pri">Save</button></div>
       </form>

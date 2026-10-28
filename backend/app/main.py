@@ -3,10 +3,10 @@ PeopleDesk HR API (the middle tier between the React app and MySQL).
 
   GET  /api/bootstrap        what the sign-in page needs (no session)
   POST /api/setup            first-time setup: group, first company, group administrator
-  POST /api/setup/demo       first-time setup with demo data
+  POST /api/setup/demo       disabled (no demo data in this build)
   POST /api/auth/login       e-mail and back-up password
   POST /api/auth/google      Google Identity Services ID token (verified here)
-  POST /api/auth/demo        "try the app as" (only while demo sign-in is switched on)
+  POST /api/auth/demo        disabled
   POST /api/auth/logout
   POST /api/auth/password    change your own back-up password
   GET  /api/state            everything the signed-in person may see
@@ -97,7 +97,7 @@ def _ctx(conn, me) -> policy.Ctx:
 def _public_settings(conn) -> dict:
     s = repo.get_singleton(conn, "settings") or {}
     return {"googleClientId": s.get("googleClientId", ""), "allowPassword": s.get("allowPassword", True),
-            "allowDemo": bool(s.get("allowDemo")), "idleMin": s.get("idleMin", 30)}
+            "allowDemo": False, "idleMin": s.get("idleMin", 30)}
 
 
 def _find_by_email(conn, email: str):
@@ -155,6 +155,7 @@ def setup(body: SetupBody, resp: Response):
 
 @app.post("/api/setup/demo", dependencies=[Depends(require_csrf)])
 def setup_demo(body: StateBody):
+    raise HTTPException(404, "Demo data is not available.")
     _validate_state(body.state)
     with repo.engine.begin() as conn:
         if not repo.is_empty(conn):
@@ -213,6 +214,7 @@ def login_google(body: GoogleBody, resp: Response):
 
 @app.post("/api/auth/demo", dependencies=[Depends(require_csrf)])
 def login_demo(body: DemoBody, resp: Response):
+    raise HTTPException(403, "Demo sign-in is not available.")
     with repo.engine.begin() as conn:
         if not _public_settings(conn)["allowDemo"]:
             raise HTTPException(403, "Demo sign-in is switched off.")
