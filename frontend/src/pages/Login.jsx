@@ -70,8 +70,8 @@ export default function Login({ boot, message, onSignedIn }) {
         {googleOK ? <div ref={gRef} /> : s.googleClientId ? <p className="note warn">Google sign-in works when this page is opened from a web address (https).</p> : null}
         {msOK && (
           <button type="button" className="msbtn" disabled={busy} onClick={microsoft}>
-            {/* Microsoft's official logo file, if placed in frontend/public/ms-logo.svg */}
-            <img src="/ms-logo.svg" alt="" width="20" height="20" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+            {/* Microsoft's official logo file, if placed in frontend/public/ms-logo.png */}
+            <img src="/ms-logo.png" alt="" width="20" height="20" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
             <span>{msBusy ? 'Opening Microsoft…' : 'Sign in with Microsoft'}</span>
           </button>
         )}

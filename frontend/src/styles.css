@@ -205,7 +205,7 @@ dialog::backdrop{background:rgba(10,20,17,.45)}
 .login .art h1{font-size:40px;line-height:1.1;font-weight:700;margin:0;max-width:14ch}
 .login .art p{color:#A6BCB4;max-width:44ch}
 .login form{align-self:center;justify-self:center;width:min(400px,92vw);display:flex;flex-direction:column;gap:12px;padding:30px 0}
-.login form h2{margin:0;font-size:22px}
+.login form h2{margin:0 0 4px;font-size:24px;text-align:center}
 .gbtn{display:flex;align-items:center;justify-content:center;gap:10px;border:1px solid var(--rule2);background:var(--surface);border-radius:8px;padding:10px;font-weight:600;cursor:pointer}
 .or{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12.5px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--rule)}
 @media (max-width:880px){.login{grid-template-columns:1fr}.login .art{padding:28px;gap:24px}.login .art h1{font-size:28px}}
