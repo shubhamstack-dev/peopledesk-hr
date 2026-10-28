@@ -10,6 +10,7 @@ export default function Login({ boot, message, onSignedIn }) {
   const [pw, setPw] = useState('');
   const [err, setErr] = useState(message || '');
   const [busy, setBusy] = useState(false);
+  const [msBusy, setMsBusy] = useState(false);
   const gRef = useRef(null);
 
   useEffect(() => { setErr(message || ''); }, [message]);
@@ -25,7 +26,7 @@ export default function Login({ boot, message, onSignedIn }) {
           catch (e) { setErr(e.message); }
         },
       });
-      if (gRef.current) window.google.accounts.id.renderButton(gRef.current, { theme: 'outline', size: 'large', width: 360, text: 'signin_with' });
+      if (gRef.current) window.google.accounts.id.renderButton(gRef.current, { theme: 'outline', size: 'large', width: 400, text: 'signin_with' });
     }).catch((e) => setErr(e.message));
   }, [googleOK, s.googleClientId, onSignedIn]);
 
@@ -33,10 +34,15 @@ export default function Login({ boot, message, onSignedIn }) {
     setBusy(true); setErr('');
     try { await fn(); await onSignedIn(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
-  const microsoft = () => run(async () => {
-    const credential = await E.msLogin(s.msClientId, s.msTenantId);
-    await api.post('/api/auth/microsoft', { credential });
-  });
+  const microsoft = async () => {
+    setMsBusy(true);
+    try {
+      await run(async () => {
+        const credential = await E.msLogin(s.msClientId, s.msTenantId);
+        await api.post('/api/auth/microsoft', { credential });
+      });
+    } finally { setMsBusy(false); }
+  };
   const submit = (e) => {
     e.preventDefault();
     if (!email.trim() || !pw) { setErr('Enter your work e-mail and password.'); return; }
@@ -62,7 +68,13 @@ export default function Login({ boot, message, onSignedIn }) {
       <form onSubmit={submit} noValidate>
         <h2>Sign in</h2>
         {googleOK ? <div ref={gRef} /> : s.googleClientId ? <p className="note warn">Google sign-in works when this page is opened from a web address (https).</p> : null}
-        {msOK && <button type="button" className="btn lg msbtn" disabled={busy} onClick={microsoft}>Sign in with Microsoft</button>}
+        {msOK && (
+          <button type="button" className="msbtn" disabled={busy} onClick={microsoft}>
+            {/* Microsoft's official logo file, if placed in frontend/public/ms-logo.svg */}
+            <img src="/ms-logo.svg" alt="" width="20" height="20" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+            <span>{msBusy ? 'Opening Microsoft…' : 'Sign in with Microsoft'}</span>
+          </button>
+        )}
         {s.allowPassword !== false && (
           <>
             {(googleOK || msOK) && <div className="or">or with a password</div>}

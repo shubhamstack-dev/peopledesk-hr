@@ -30,8 +30,11 @@ h1,h2,h3{letter-spacing:-.012em}
 .side{background:var(--side);color:var(--side-ink);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow:auto}
 .brand{display:flex;align-items:center;gap:11px;padding:18px 18px 12px;color:var(--side-hi)}
 .mark{width:34px;height:34px;border-radius:10px 10px 10px 3px;background:var(--mari-strong);color:#2B1D00;display:grid;place-items:center;font-weight:800;font-size:15px}
-.msbtn{width:100%;background:#fff;border:1px solid #8C8C8C;color:#1F1F1F;font-weight:600}
-.msbtn:hover{background:#F3F3F3}
+.msbtn{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;height:46px;padding:0 16px;background:#fff;border:1px solid #D0D5DD;border-radius:8px;color:#1F2937;font:inherit;font-size:15px;font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(16,24,40,.05);transition:background .12s,border-color .12s}
+.msbtn:hover{background:#F9FAFB;border-color:#B9C0CC}
+.msbtn:focus-visible{outline:2px solid var(--pri);outline-offset:2px}
+.msbtn:disabled{opacity:.6;cursor:default}
+.msbtn img{display:block;width:20px;height:20px;flex:none}
 .logo{display:inline-flex;align-items:center;background:#fff;border-radius:10px;padding:7px 12px;box-shadow:0 1px 2px rgba(0,0,0,.15)}
 .logo img{display:block;height:38px;width:auto}
 .brand.stack{flex-direction:column;align-items:flex-start;gap:8px}
@@ -205,7 +208,7 @@ dialog::backdrop{background:rgba(10,20,17,.45)}
 .login form h2{margin:0;font-size:22px}
 .gbtn{display:flex;align-items:center;justify-content:center;gap:10px;border:1px solid var(--rule2);background:var(--surface);border-radius:8px;padding:10px;font-weight:600;cursor:pointer}
 .or{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12.5px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--rule)}
-@media (max-width:880px){.login{grid-template-columns:1fr}.login .art{padding:28px}.login .art h1{font-size:28px}}
+@media (max-width:880px){.login{grid-template-columns:1fr}.login .art{padding:28px;gap:24px}.login .art h1{font-size:28px}}
 /* process steps, pipeline board, interviews */
 .steps{display:flex;gap:4px;margin-top:16px;flex-wrap:wrap}
 .step{flex:1;min-width:110px;display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:9px;background:var(--sunk);color:var(--muted);font-weight:600;font-size:13px}
