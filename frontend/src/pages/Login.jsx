@@ -5,6 +5,7 @@ import * as E from '../engine/engine.js';
 export default function Login({ boot, message, onSignedIn }) {
   const s = (boot && boot.settings) || {};
   const googleOK = !!s.googleClientId && /^https?:/.test(window.location.protocol);
+  const msOK = !!(s.msClientId && s.msTenantId) && /^https?:/.test(window.location.protocol);
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [err, setErr] = useState(message || '');
@@ -32,6 +33,10 @@ export default function Login({ boot, message, onSignedIn }) {
     setBusy(true); setErr('');
     try { await fn(); await onSignedIn(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
+  const microsoft = () => run(async () => {
+    const credential = await E.msLogin(s.msClientId, s.msTenantId);
+    await api.post('/api/auth/microsoft', { credential });
+  });
   const submit = (e) => {
     e.preventDefault();
     if (!email.trim() || !pw) { setErr('Enter your work e-mail and password.'); return; }
@@ -49,7 +54,7 @@ export default function Login({ boot, message, onSignedIn }) {
         </div>
         <div>
           <h1>Your work, leave and pay in one place.</h1>
-          <p>Sign in with your company Google account. Your administrator adds you from Google Workspace; you do not need a separate password.</p>
+          <p>Sign in with your company Google or Microsoft account. Your administrator adds you from Google Workspace or Microsoft Entra ID; you do not need a separate password.</p>
         </div>
         <p className="fine" style={{ color: '#6F8C83' }}>Personnel, leave, time and shifts, performance and payroll</p>
       </div>
@@ -57,9 +62,10 @@ export default function Login({ boot, message, onSignedIn }) {
       <form onSubmit={submit} noValidate>
         <h2>Sign in</h2>
         {googleOK ? <div ref={gRef} /> : s.googleClientId ? <p className="note warn">Google sign-in works when this page is opened from a web address (https).</p> : null}
+        {msOK && <button type="button" className="btn lg msbtn" disabled={busy} onClick={microsoft}>Sign in with Microsoft</button>}
         {s.allowPassword !== false && (
           <>
-            {googleOK && <div className="or">or with a password</div>}
+            {(googleOK || msOK) && <div className="or">or with a password</div>}
             <label className="field">Work e-mail<input className="inp" type="email" autoComplete="username" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /></label>
             <label className="field">Password<input className="inp" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} /></label>
             <button className="btn pri lg" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>

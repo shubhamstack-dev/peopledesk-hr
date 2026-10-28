@@ -6,6 +6,7 @@ PeopleDesk HR API (the middle tier between the React app and MySQL).
   POST /api/setup/demo       disabled (no demo data in this build)
   POST /api/auth/login       e-mail and back-up password
   POST /api/auth/google      Google Identity Services ID token (verified here)
+  POST /api/auth/microsoft   Microsoft Entra ID token from MSAL (verified here)
   POST /api/auth/demo        disabled
   POST /api/auth/logout
   POST /api/auth/password    change your own back-up password
@@ -61,6 +62,10 @@ class GoogleBody(BaseModel):
     credential: str
 
 
+class MicrosoftBody(BaseModel):
+    credential: str
+
+
 class DemoBody(BaseModel):
     empId: str
 
@@ -96,7 +101,8 @@ def _ctx(conn, me) -> policy.Ctx:
 
 def _public_settings(conn) -> dict:
     s = repo.get_singleton(conn, "settings") or {}
-    return {"googleClientId": s.get("googleClientId", ""), "allowPassword": s.get("allowPassword", True),
+    return {"googleClientId": s.get("googleClientId", ""), "msClientId": s.get("msClientId", ""), "msTenantId": s.get("msTenantId", ""),
+            "allowPassword": s.get("allowPassword", True),
             "allowDemo": False, "idleMin": s.get("idleMin", 30)}
 
 
@@ -210,6 +216,37 @@ def login_google(body: GoogleBody, resp: Response):
             raise HTTPException(403, "This account is not active.")
         set_google_sub(conn, emp["id"], p["sub"])
         return _signed_in(resp, conn, emp, "Google")
+
+
+GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_MS_KEYS: dict = {}
+
+
+@app.post("/api/auth/microsoft", dependencies=[Depends(require_csrf)])
+def login_microsoft(body: MicrosoftBody, resp: Response):
+    """Microsoft Entra ID (Azure AD): the browser gets an ID token with MSAL, it is verified here."""
+    import jwt
+    with repo.engine.begin() as conn:
+        s = _public_settings(conn)
+        cid, tid = s["msClientId"].strip(), s["msTenantId"].strip().lower()
+        if not cid or not GUID.match(tid):
+            raise HTTPException(400, "Microsoft sign-in is not set up.")
+        try:
+            if tid not in _MS_KEYS:
+                _MS_KEYS[tid] = jwt.PyJWKClient(f"https://login.microsoftonline.com/{tid}/discovery/v2.0/keys", cache_keys=True)
+            key = _MS_KEYS[tid].get_signing_key_from_jwt(body.credential).key
+            p = jwt.decode(body.credential, key, algorithms=["RS256"], audience=cid,
+                           issuer=f"https://login.microsoftonline.com/{tid}/v2.0", leeway=120)
+        except Exception as x:  # bad signature, wrong app or tenant, expired
+            log.warning("Microsoft sign-in rejected: %s", x)
+            raise HTTPException(401, "The Microsoft sign-in was not for this application. Try again.")
+        emails = [v.strip().lower() for v in (p.get("email"), p.get("preferred_username"), p.get("upn")) if v and "@" in v]
+        emp = next((e for e in (_find_by_email(conn, m) for m in dict.fromkeys(emails)) if e), None)
+        if not emp:
+            raise HTTPException(403, f"{emails[0] if emails else 'This account'} is not set up as an employee. Ask HR to sync users from Microsoft.")
+        if not active_employee(emp):
+            raise HTTPException(403, "This account is not active.")
+        return _signed_in(resp, conn, emp, "Microsoft")
 
 
 @app.post("/api/auth/demo", dependencies=[Depends(require_csrf)])

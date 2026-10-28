@@ -5,6 +5,7 @@
    server. Edit here, or re-run the script if the original changes.
    ===================================================================== */
 import * as XLSX from 'xlsx';
+import { PublicClientApplication } from '@azure/msal-browser';
 import { createSync } from './sync.js';
 
 /* What the React app plugs in */
@@ -794,7 +795,7 @@ const MENU = [
     { page: 'org', label: 'Organisation chart' },
     { page: 'masters', label: 'Departments, designations and grades', show: HR },
     { page: 'companies', label: 'Companies', show: HR },
-    { page: 'google', label: 'Users from Google Workspace', show: HR },
+    { page: 'google', label: 'Users from Google and Microsoft', show: HR },
     { page: 'exits', label: 'Exit management', show: MGR },
     { page: 'rehire', label: 'Rehire', show: HR },
   ] },
@@ -896,6 +897,26 @@ setInterval(() => { if (me && Date.now() - lastActive > (S.settings.idleMin || 3
 
 /* ---------------------------------------------------------------- Google (sign-in itself is in React and verified by the server) */
 let gsiLoading = null;
+/* Microsoft Entra ID through MSAL (popup). The popup returns to a blank page. */
+let msalApp = null, msalKey = '';
+async function msal(clientId, tenantId) {
+  const key = clientId + '|' + tenantId;
+  if (!msalApp || msalKey !== key) {
+    msalApp = new PublicClientApplication({ auth: { clientId, authority: `https://login.microsoftonline.com/${tenantId}`, redirectUri: `${location.origin}/msal-redirect.html` }, cache: { cacheLocation: 'sessionStorage' } });
+    await msalApp.initialize(); msalKey = key;
+  }
+  return msalApp;
+}
+function msError(e) {
+  const c = (e && (e.errorCode || e.message)) || '';
+  if (/user_cancelled|popup_window_error|cancel/i.test(c)) return new Error('Microsoft sign-in was closed.');
+  if (/interaction_in_progress/i.test(c)) return new Error('A Microsoft sign-in window is already open.');
+  return new Error((e && e.errorMessage) || (e && e.message) || 'Microsoft sign-in failed.');
+}
+async function msLogin(clientId, tenantId) {
+  try { const r = await (await msal(clientId, tenantId)).loginPopup({ scopes: ['openid', 'profile', 'email'], prompt: 'select_account' }); return r.idToken; }
+  catch (e) { throw msError(e); }
+}
 function loadGsi() {
   if (window.google && window.google.accounts) return Promise.resolve();
   if (!gsiLoading) gsiLoading = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.onload = res; s.onerror = () => { gsiLoading = null; rej(new Error('Google sign-in could not load. Check the internet connection.')); }; document.head.appendChild(s); });
@@ -1217,7 +1238,7 @@ VIEWS.masters = () => {
 const CO_FIELDS = [
   { k: 'name', label: 'Company name', req: true }, { k: 'code', label: 'Company code', req: true, help: 'Used in employee numbers and as the SAP company code' }, { k: 'legalName', label: 'Legal name' },
   { k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES) }, { k: 'address', label: 'Registered address', wide: true },
-  { k: 'domain', label: 'Google Workspace domain', help: 'e.g. nilgiri.in. Users from this domain join this company' },
+  { k: 'domain', label: 'E-mail domain (Google / Microsoft)', help: 'e.g. ankitgroup.com. Users from this domain join this company' },
   { k: 'pan', label: 'PAN' }, { k: 'tan', label: 'TAN (for TDS)' }, { k: 'pfCode', label: 'PF establishment code' }, { k: 'esiCode', label: 'ESI employer code' }, { k: 'ptRegNo', label: 'PT registration' },
   { k: 'leaveYearStart', label: 'Leave year starts in', type: 'select', opts: [[1, 'January'], [4, 'April']] },
   { k: 'attendanceSource', label: 'Attendance for payroll', type: 'select', opts: [['punch', 'From punches: no punch on a working day is absent'], ['leave', 'Leave only: present unless on leave']] },
@@ -3020,22 +3041,43 @@ VIEWS.recruitsetup = () => {
 VIEWS.google = () => {
   const s = S.settings; const origin = location.origin && location.origin !== 'null' ? location.origin : '(open this page from its web address to see it)';
   const fromG = S.employees.filter((e) => e.source === 'google').length;
-  return { title: 'Google Workspace users', html: `
-    <div class="card"><h2>How employees become users</h2><p class="sub">Employees are the users of this app. They are read from your Google Workspace directory, matched to a company by their e-mail domain (set on each company), and sign in with Google. Suspended Google users are marked inactive here. Nobody gets a separate password.</p>
-      <div class="grid g3"><div class="kpi"><span>Employees from Google</span><b>${fromG}</b><small>of ${S.employees.length} in all companies</small></div>
+  const fromM = S.employees.filter((e) => e.source === 'microsoft').length;
+  const msOK = !!(s.msClientId && s.msTenantId);
+  return { title: 'Users from Google and Microsoft', html: `
+    <div class="card"><h2>How employees become users</h2><p class="sub">Employees are the users of this app. They are read from Google Workspace or Microsoft Entra ID (Azure AD), matched to a company by their e-mail domain (set on each company), and sign in with Google or Microsoft. Users suspended or disabled there are marked inactive here. Run a sync again at any time to bring in new people and update the rest.</p>
+      <div class="grid g4"><div class="kpi"><span>From Google</span><b>${fromG}</b><small>of ${S.employees.length} employees</small></div>
+        <div class="kpi"><span>From Microsoft</span><b>${fromM}</b><small>of ${S.employees.length} employees</small></div>
         <div class="kpi"><span>Companies with a domain</span><b>${S.companies.filter((c) => c.domain).length} of ${S.companies.length}</b><small>${S.companies.map((c) => esc(c.domain || '—')).join(', ')}</small></div>
-        <div class="kpi"><span>Google sign-in</span><b>${s.googleClientId ? 'Set up' : 'Not set up'}</b><small>${s.allowPassword ? 'back-up passwords allowed' : 'Google only'}</small></div></div></div>
-    <form class="card" id="gcf"><h2>Google sign-in and directory access</h2>
+        <div class="kpi"><span>Sign-in</span><b>${[s.googleClientId ? 'Google' : '', msOK ? 'Microsoft' : ''].filter(Boolean).join(' + ') || 'Password only'}</b><small>${s.allowPassword ? 'back-up passwords allowed' : 'no passwords'}</small></div></div></div>
+
+    <form class="card" id="gcf"><h2>Google Workspace</h2>
       <p class="sub">In Google Cloud Console, create an OAuth client ID of type "Web application" and add this page's address as an authorised JavaScript origin: <span class="mono">${esc(origin)}</span>. Enable the Admin SDK API on the same project. The directory is read with the signed-in administrator's own Google permission (scope admin.directory.user.readonly), so only a Workspace admin can sync.</p>
-      <div class="form">${fieldHtml({ k: 'googleClientId', label: 'OAuth client ID', wide: true, help: 'Looks like 1234-abc.apps.googleusercontent.com' }, s.googleClientId)}
-        ${fieldHtml({ k: 'allowPassword', label: 'Allow back-up passwords (for the administrator before Google is set up)', type: 'check', wide: true }, s.allowPassword)}</div>
+      <div class="form">${fieldHtml({ k: 'googleClientId', label: 'Google OAuth client ID', wide: true, help: 'Looks like 1234-abc.apps.googleusercontent.com' }, s.googleClientId)}</div>
+      <div class="tools"><button class="btn">Save</button><button type="button" class="btn pri" data-act="gSync" ${s.googleClientId ? '' : 'disabled title="Save the OAuth client ID first"'}>Sync from Google Workspace</button>
+        <label class="btn">Import Google Admin export (CSV)<input type="file" accept=".csv,.xlsx" hidden data-ch="gCsv"></label></div>
+      <p class="fine" style="margin-top:10px">CSV: Google Admin console, Directory, Users, Download users.</p></form>
+
+    <form class="card" id="mcf"><h2>Microsoft Entra ID (Azure AD, Microsoft 365)</h2>
+      <p class="sub">In the Microsoft Entra admin center, App registrations, New registration (single tenant). Under Authentication add the platform "Single-page application" with the redirect URI <span class="mono">${esc(origin)}/msal-redirect.html</span>. Under API permissions add Microsoft Graph, Delegated, User.Read.All and grant admin consent. Copy the Application (client) ID and the Directory (tenant) ID here. Only an administrator who can read all users can sync.</p>
+      <div class="form">${fieldHtml({ k: 'msClientId', label: 'Application (client) ID' }, s.msClientId)}${fieldHtml({ k: 'msTenantId', label: 'Directory (tenant) ID' }, s.msTenantId)}</div>
+      <div class="tools"><button class="btn">Save</button><button type="button" class="btn pri" data-act="mSync" ${msOK ? '' : 'disabled title="Save both IDs first"'}>Sync from Microsoft</button>
+        <label class="btn">Import Microsoft users export (CSV)<input type="file" accept=".csv,.xlsx" hidden data-ch="mCsv"></label></div>
+      <p class="fine" style="margin-top:10px">CSV: Entra admin center, Users, All users, Download users.</p></form>
+
+    <form class="card" id="pwf"><h2>Passwords</h2>
+      <div class="form">${fieldHtml({ k: 'allowPassword', label: 'Allow back-up passwords (keep on until Google or Microsoft sign-in works)', type: 'check', wide: true }, s.allowPassword)}</div>
       <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save</button></div></form>
-    <div class="card"><h2>Bring in users</h2><p class="sub">Both ways show what will change before anything is saved. Existing employees are matched by e-mail and updated; others are added.</p>
-      <div class="tools"><button class="btn pri" data-act="gSync" ${s.googleClientId ? '' : 'disabled title="Save the OAuth client ID first"'}>Sync from Google Workspace</button>
-        <label class="btn">Import Google Admin user export (CSV)<input type="file" accept=".csv,.xlsx" hidden data-ch="gCsv"></label></div>
-      <p class="fine" style="margin-top:10px">The CSV is the file from Google Admin console, Directory, Users, Download users. Columns used: First Name, Last Name, Email Address, Employee ID, Employee Title, Department, Manager Email, Mobile Phone, Org Unit Path, Status.</p></div>` ,
-    after: () => { $('#gcf').onsubmit = (e) => { e.preventDefault(); s.googleClientId = e.target.elements.googleClientId.value.trim(); s.allowPassword = e.target.elements.allowPassword.checked;
-      if (!s.allowPassword && !s.googleClientId) { s.allowPassword = true; toast('Keep back-up passwords until Google sign-in is set up'); } saveNow(); toast('Saved'); route(); }; } };
+    <p class="fine">Every sync shows what will change before anything is saved. Existing employees are matched by e-mail and updated; others are added.</p>` ,
+    after: () => {
+      const done = () => { if (!s.allowPassword && !s.googleClientId && !(s.msClientId && s.msTenantId)) { s.allowPassword = true; toast('Keep back-up passwords until Google or Microsoft sign-in is set up'); } saveNow(); toast('Saved'); route(); };
+      $('#gcf').onsubmit = (e) => { e.preventDefault(); s.googleClientId = e.target.elements.googleClientId.value.trim(); done(); };
+      $('#mcf').onsubmit = (e) => { e.preventDefault();
+        const cid = e.target.elements.msClientId.value.trim(), tid = e.target.elements.msTenantId.value.trim().toLowerCase();
+        const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if ((cid || tid) && (!guid.test(cid) || !guid.test(tid))) { toast('Both IDs look like 1a2b3c4d-1234-5678-9abc-1234567890ab. Copy them from the app registration Overview.'); return; }
+        s.msClientId = cid; s.msTenantId = tid; done(); };
+      $('#pwf').onsubmit = (e) => { e.preventDefault(); s.allowPassword = e.target.elements.allowPassword.checked; done(); };
+    } };
 };
 /* Normalised user records, from the Directory API or the CSV */
 function fromDirectory(u) {
@@ -3044,6 +3086,19 @@ function fromDirectory(u) {
   const ext = (u.externalIds || []).find((x) => x.type === 'organization') || (u.externalIds || [])[0];
   const ph = (u.phones || []).find((p) => p.type === 'mobile') || (u.phones || [])[0];
   return { email: u.primaryEmail, firstName: (u.name || {}).givenName || '', lastName: (u.name || {}).familyName || '', empNo: ext ? ext.value : '', title: org.title || '', department: org.department || '', manager: mgr ? mgr.value : '', phone: ph ? ph.value : '', orgUnit: u.orgUnitPath || '', suspended: !!u.suspended, googleId: u.id };
+}
+function fromGraph(u) {
+  const m = u.manager || {};
+  return { email: u.mail || u.userPrincipalName || '', firstName: u.givenName || (u.displayName || '').split(' ')[0] || '', lastName: u.surname || (u.displayName || '').split(' ').slice(1).join(' '),
+    empNo: u.employeeId || '', title: u.jobTitle || '', department: u.department || '', manager: m.mail || m.userPrincipalName || '', phone: u.mobilePhone || (u.businessPhones || [])[0] || '',
+    orgUnit: u.officeLocation || '', suspended: u.accountEnabled === false, guest: u.userType === 'Guest', msId: u.id };
+}
+function fromMsCsv(r) {
+  const k = (...names) => { const key = Object.keys(r).find((x) => names.some((n) => x.toLowerCase().replace(/[^a-z]/g, '') === n)); return key ? String(r[key]).trim() : ''; };
+  const name = k('displayname');
+  return { email: k('mail', 'email', 'userprincipalname'), firstName: k('givenname', 'firstname') || name.split(' ')[0], lastName: k('surname', 'lastname') || name.split(' ').slice(1).join(' '),
+    empNo: k('employeeid'), title: k('jobtitle', 'title'), department: k('department'), manager: k('manageremail', 'manager'), phone: k('mobilephone', 'telephonenumber'), orgUnit: k('officelocation', 'office'),
+    suspended: /^(false|no)$/i.test(k('accountenabled')) || /^(true|yes)$/i.test(k('blocksignin')), guest: /guest/i.test(k('usertype')) };
 }
 function fromCsv(r) {
   const k = (...names) => { const key = Object.keys(r).find((x) => names.some((n) => x.toLowerCase().replace(/\[.*?\]/g, '').replace(/[^a-z]/g, '') === n)); return key ? String(r[key]).trim() : ''; };
@@ -3054,45 +3109,46 @@ function planUsers(list) {
   const plan = { add: [], update: [], suspend: [], skip: [] };
   list.forEach((u) => {
     if (!u.email || !/@/.test(u.email)) { plan.skip.push({ u, why: 'no e-mail' }); return; }
+    if (u.guest) { plan.skip.push({ u, why: 'guest account' }); return; }
     const domain = u.email.split('@')[1].toLowerCase();
     const co = S.companies.find((c) => (c.domain || '').toLowerCase() === domain);
     const ex = S.employees.find((e) => (e.email || '').toLowerCase() === u.email.toLowerCase());
     if (!co && !ex) { plan.skip.push({ u, why: `no company has the domain ${domain}` }); return; }
-    if (u.suspended) { if (ex && active(ex) && !ex.blocked) plan.suspend.push({ u, ex }); else plan.skip.push({ u, why: 'suspended in Google' }); return; }
+    if (u.suspended) { if (ex && active(ex) && !ex.blocked) plan.suspend.push({ u, ex }); else plan.skip.push({ u, why: 'suspended or disabled' }); return; }
     (ex ? plan.update : plan.add).push({ u, ex, co: ex ? coById(ex.companyId) : co });
   });
   return plan;
 }
-function previewUsers(list, source) {
-  const plan = planUsers(list); PLAN = { plan, source };
+function previewUsers(list, source, tag = 'google') {
+  const plan = planUsers(list); PLAN = { plan, source, tag };
   openDlg(`<div class="dlg"><h2>Users from ${esc(source)}</h2><p class="mut" style="margin:0">${list.length} users read. Nothing is saved until you apply.</p>
-    <div class="grid g4"><div class="kpi"><span>New employees</span><b>${plan.add.length}</b></div><div class="kpi"><span>Updated</span><b>${plan.update.length}</b></div><div class="kpi"><span>Made inactive</span><b>${plan.suspend.length}</b><small>suspended in Google</small></div><div class="kpi"><span>Skipped</span><b>${plan.skip.length}</b></div></div>
+    <div class="grid g4"><div class="kpi"><span>New employees</span><b>${plan.add.length}</b></div><div class="kpi"><span>Updated</span><b>${plan.update.length}</b></div><div class="kpi"><span>Made inactive</span><b>${plan.suspend.length}</b><small>suspended or disabled</small></div><div class="kpi"><span>Skipped</span><b>${plan.skip.length}</b></div></div>
     ${plan.add.length ? `<h3>New</h3><div class="scroll" style="max-height:200px"><table class="t"><tbody>${plan.add.map(({ u, co }) => `<tr><td>${esc(u.firstName)} ${esc(u.lastName)}</td><td>${esc(u.email)}</td><td>${esc(co.code)}</td><td>${esc(u.title)}</td><td>${esc(u.department)}</td></tr>`).join('')}</tbody></table></div>` : ''}
     ${plan.skip.length ? `<p class="fine">Skipped: ${plan.skip.slice(0, 8).map(({ u, why }) => `${esc(u.email || '(blank)')} (${esc(why)})`).join(', ')}${plan.skip.length > 8 ? '…' : ''}</p>` : ''}
     <div class="btns"><button class="btn ghost" data-act="close">Cancel</button><button class="btn pri" data-act="applyUsers" ${plan.add.length + plan.update.length + plan.suspend.length ? '' : 'disabled'}>Apply</button></div></div>`, true);
 }
 let PLAN = null;
 ACT.applyUsers = () => {
-  const { plan, source } = PLAN; const t = todayISO();
+  const { plan, source, tag } = PLAN; const t = todayISO();
   const findOrMake = (coll, coId, name) => { if (!name) return ''; let x = S[coll].find((d) => d.companyId === coId && d.name.toLowerCase() === name.toLowerCase()); if (!x) { x = { id: uid(), companyId: coId, name, code: '' }; S[coll].push(x); } return x.id; };
   const touched = [];
   plan.add.forEach(({ u, co }) => {
     const e = { id: uid(), companyId: co.id, empNo: u.empNo || nextNo('emp-' + co.id, co.code + '-'), firstName: u.firstName, lastName: u.lastName, email: u.email.toLowerCase(), role: 'employee', status: 'active', doj: t, empType: 'permanent',
-      shiftId: (S.shifts.find((s) => s.companyId === co.id) || {}).id, pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', phone: u.phone, googleId: u.googleId, orgUnit: u.orgUnit,
-      deptId: findOrMake('depts', co.id, u.department), desigId: findOrMake('desigs', co.id, u.title), salaryHist: [], history: [{ date: t, type: 'Hire', note: `Added from ${source}` }], source: 'google', _mgr: u.manager };
+      shiftId: (S.shifts.find((s) => s.companyId === co.id) || {}).id, pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', phone: u.phone, googleId: u.googleId, msId: u.msId, orgUnit: u.orgUnit,
+      deptId: findOrMake('depts', co.id, u.department), desigId: findOrMake('desigs', co.id, u.title), salaryHist: [], history: [{ date: t, type: 'Hire', note: `Added from ${source}` }], source: tag, _mgr: u.manager };
     S.employees.push(e); touched.push(e);
   });
   plan.update.forEach(({ u, ex }) => {
-    Object.assign(ex, { firstName: u.firstName || ex.firstName, lastName: u.lastName || ex.lastName, phone: u.phone || ex.phone, googleId: u.googleId || ex.googleId, orgUnit: u.orgUnit || ex.orgUnit, blocked: false, source: ex.source === 'setup' ? 'setup' : 'google', _mgr: u.manager });
+    Object.assign(ex, { firstName: u.firstName || ex.firstName, lastName: u.lastName || ex.lastName, phone: u.phone || ex.phone, googleId: u.googleId || ex.googleId, msId: u.msId || ex.msId, orgUnit: u.orgUnit || ex.orgUnit, blocked: false, source: ex.source === 'setup' ? 'setup' : tag, _mgr: u.manager });
     if (u.department) ex.deptId = findOrMake('depts', ex.companyId, u.department); if (u.title) ex.desigId = findOrMake('desigs', ex.companyId, u.title); if (u.empNo && !ex.empNo) ex.empNo = u.empNo;
     touched.push(ex);
   });
   touched.forEach((e) => { if (e._mgr) { const m = S.employees.find((x) => (x.email || '').toLowerCase() === e._mgr.toLowerCase()); if (m && m.id !== e.id) e.managerId = m.id; } delete e._mgr; });
-  plan.suspend.forEach(({ ex }) => { ex.blocked = true; ex.history.push({ date: t, type: 'Access removed', note: `Suspended in Google Workspace` }); });
+  plan.suspend.forEach(({ ex }) => { ex.blocked = true; ex.history.push({ date: t, type: 'Access removed', note: `Suspended or disabled in ${source}` }); });
   audit('Users synced', `${source}: ${plan.add.length} new, ${plan.update.length} updated, ${plan.suspend.length} inactive`);
   saveNow(); closeDlg(); toast(`${plan.add.length} added, ${plan.update.length} updated, ${plan.suspend.length} made inactive. Set salaries and joining dates for new employees.`); route();
 };
-ACT.gCsv = async (el) => { const f = el.files[0]; el.value = ''; if (!f) return; try { const rows = await readSheet(f); previewUsers(rows.map(fromCsv), 'Google Admin export'); } catch (e) { toast(e.message); } };
+ACT.gCsv = async (el) => { const f = el.files[0]; el.value = ''; if (!f) return; try { const rows = await readSheet(f); previewUsers(rows.map(fromCsv), 'Google Admin export', 'google'); } catch (e) { toast(e.message); } };
 ACT.gSync = async () => {
   try {
     await loadGsi();
@@ -3107,7 +3163,29 @@ ACT.gSync = async () => {
       if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(r.status === 403 ? 'Google refused: sign in as a Workspace administrator and enable the Admin SDK API.' : (j.error && j.error.message) || `Google returned ${r.status}`); }
       const j = await r.json(); users = users.concat(j.users || []); page = j.nextPageToken || '';
     } while (page && users.length < 20000);
-    previewUsers(users.map(fromDirectory), 'Google Workspace');
+    previewUsers(users.map(fromDirectory), 'Google Workspace', 'google');
+  } catch (e) { toast(e.message); }
+};
+
+ACT.mCsv = async (el) => { const f = el.files[0]; el.value = ''; if (!f) return; try { const rows = await readSheet(f); previewUsers(rows.map(fromMsCsv), 'Microsoft users export', 'microsoft'); } catch (e) { toast(e.message); } };
+ACT.mSync = async () => {
+  try {
+    const app = await msal(S.settings.msClientId, S.settings.msTenantId);
+    let tok;
+    try { tok = await app.acquireTokenPopup({ scopes: ['User.Read.All'], prompt: 'select_account' }); } catch (e) { throw msError(e); }
+    toast('Reading Microsoft users…');
+    const sel = 'id,mail,userPrincipalName,displayName,givenName,surname,jobTitle,department,employeeId,mobilePhone,businessPhones,officeLocation,accountEnabled,userType';
+    const get = async (url) => {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${tok.accessToken}` } });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { const err = new Error(r.status === 403 ? 'Microsoft refused: add the User.Read.All permission and grant admin consent, then sign in as an administrator.' : (j.error && j.error.message) || `Microsoft returned ${r.status}`); err.status = r.status; throw err; }
+      return j;
+    };
+    const read = async (first) => { let users = [], url = first; while (url && users.length < 20000) { const j = await get(url); users = users.concat(j.value || []); url = j['@odata.nextLink'] || ''; } return users; };
+    let users;
+    try { users = await read(`https://graph.microsoft.com/v1.0/users?$select=${sel}&$expand=manager($select=mail,userPrincipalName)&$top=100`); }
+    catch (e) { if (e.status !== 400) throw e; users = await read(`https://graph.microsoft.com/v1.0/users?$select=${sel}&$top=999`); }
+    previewUsers(users.map(fromGraph), 'Microsoft Entra ID', 'microsoft');
   } catch (e) { toast(e.message); }
 };
 
@@ -3344,5 +3422,5 @@ export {
   itemShown, itemOn, itemHref, companiesForMe, company, isHR, isSuper, isManager, pendingForMe,
   empById, nameOf, fullName, initials, coEmployees, leaveTypesFor, leaveBalance, ltById,
   shiftFor, punchOf, leaveOn, holidayOn, todayISO, addDays, D, ymAdd, monthName, yearsBetween,
-  num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi,
+  num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin,
 };
