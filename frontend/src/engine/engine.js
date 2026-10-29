@@ -4464,14 +4464,16 @@ function checkPersonal(d) {
   return '';
 }
 function personalRo(e) {
-  const val = (k, v) => `<div class="field">${esc(k)}<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(v || '—')}</span></div>`;
+  // Shown the same way as the edit form: one value per field
+  const val = (k, v, wide) => `<div class="field${wide ? ' wide' : ''}">${esc(k)}<span style="color:var(--ink);font-weight:400;font-size:14px;white-space:pre-line">${esc(v || '—')}</span></div>`;
   const marital = { single: 'Single', married: 'Married', divorcee: 'Divorcee', widowed: 'Widowed', other: 'Other' }[e.marital];
-  const addr = [e.address, e.addrCity, e.addrState && e.addrState !== 'Outside India' ? e.addrState : '', e.addrPin, e.addrCountry].filter(Boolean).join(', ');
-  const emerg = e.emergencyName ? `${e.emergencyName} (${e.emergencyRelation}), ${e.emergencyPhone}` : e.emergency;
+  const oldEmergency = !e.emergencyName && e.emergency;
   return `<div class="form">${val('First name', e.firstName)}${val('Last name', e.lastName)}${val('Gender', { M: 'Male', F: 'Female', O: 'Other' }[e.gender])}${val('Date of birth', dmy(e.dob))}
     ${val('Marital status', marital)}${val('Mobile', e.phone)}${val('Personal e-mail', e.personalEmail)}${val('Blood group', e.blood)}
-    <div class="field wide">Address<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(addr || '—')}</span></div>
-    <div class="field wide">Emergency contact<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(emerg || '—')}</span></div></div>`;
+    ${val('Address: house, street and area', e.address, true)}
+    ${val('Country', e.addrCountry)}${val('State or union territory', e.addrState)}${val('City', e.addrCity)}${val('PIN code', e.addrPin)}
+    ${oldEmergency ? val('Emergency contact', e.emergency, true)
+      : `${val('Emergency contact: name', e.emergencyName)}${val('Relationship', e.emergencyRelation)}${val('Emergency contact: phone', e.emergencyPhone)}`}</div>`;
 }
 function wireBank(form, e) {
   const el = (k) => form.elements[k];
