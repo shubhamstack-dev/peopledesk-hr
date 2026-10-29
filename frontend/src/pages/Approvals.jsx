@@ -18,10 +18,12 @@ function Row({ it }) {
     return (
       <tr>
         <td><b>{E.fullName(e)}</b><div className="fine">{e.empNo}</div></td>
-        <td>{lt.name}{it.r.status === 'pending-hr' && <> <span className="badge info">HR approval</span></>}</td>
+        <td>{lt.name}{it.r.status === 'pending-hr' && <> <span className="badge info">HR approval</span></>}
+          {it.r.steps && <div className="fine">Step: {(it.r.steps.find((x) => !x.decision) || {}).label}</div>}</td>
         <td>{E.dShort(it.r.from)}{it.r.to !== it.r.from ? ` to ${E.dShort(it.r.to)}` : ''}
           <div className="fine">{E.num(it.r.days)} day{it.r.days === 1 ? '' : 's'}{it.r.half ? ', half day' : ''}</div></td>
-        <td>{it.r.reason}<div className="fine">Balance left after this: {E.num(b.available)}</div></td>
+        <td>{it.r.reason}<div className="fine">Balance left after this: {E.num(b.available)}</div>
+          {(it.r.attachments || []).map((a) => <div key={a.fileId}><a href={`/api/files/${a.fileId}`} target="_blank" rel="noopener noreferrer">📎 {a.name}</a></div>)}</td>
         <Decide act="leaveDecide" id={it.r.id} />
       </tr>
     );
@@ -29,8 +31,9 @@ function Row({ it }) {
   if (it.kind === 'reg') {
     return (
       <tr>
-        <td><b>{E.fullName(e)}</b></td><td>Attendance regularisation</td>
-        <td>{E.dShort(it.r.date)}<div className="fine">In {it.r.in}{it.r.out ? `, out ${it.r.out}` : ''}</div></td>
+        <td><b>{E.fullName(e)}</b></td><td>{it.r.type === 'shift' ? 'Shift change' : 'Punch time correction'}
+          {it.r.steps && <div className="fine">Step: {(it.r.steps.find((x) => !x.decision) || {}).label}</div>}</td>
+        <td>{E.dShort(it.r.date)}<div className="fine" dangerouslySetInnerHTML={{ __html: E.regAsked(it.r) }} /></td>
         <td>{it.r.reason}</td>
         <Decide act="regDecide" id={it.r.id} />
       </tr>
@@ -57,7 +60,7 @@ export default function Approvals() {
   return (
     <div className="card">
       <h2>Waiting for you</h2>
-      <p className="sub">Leave, attendance corrections, goal sheets, resignations and clearances, job requisitions, offers and interview feedback, expense claims, leave encashment, promotion proposals, and enrolment tasks for new joiners.</p>
+      <p className="sub">Leave, attendance corrections, goal sheets, resignations and clearances, job requisitions, offers and interview feedback, expense claims, leave encashment, promotion proposals, statutory detail changes, and enrolment tasks for new joiners.</p>
       {items.length ? (
         <div className="scroll"><table className="t">
           <thead><tr><th>Employee</th><th>Request</th><th>When</th><th>Details</th><th /></tr></thead>
