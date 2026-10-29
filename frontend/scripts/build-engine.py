@@ -8,11 +8,19 @@ recruitment) and the feature screens are taken over unchanged. What changes:
   - the module exports what the React components use
 
 Run:  npm run engine   (reads ../original/PeopleDesk_HR.html)
-Only needed again if the original HTML changes.
+
+WARNING: since version 2, src/engine/engine.js is edited directly and holds features
+that are not in the original HTML. Re-running this script would remove them, so it
+refuses unless you pass --force.
 """
 import pathlib
 import re
 import sys
+
+_target = pathlib.Path(__file__).resolve().parents[1] / "src" / "engine" / "engine.js"
+if _target.exists() and "PeopleDesk v2" in _target.read_text(encoding="utf-8") and "--force" not in sys.argv:
+    raise SystemExit("engine.js contains the version 2 features; regenerating it would remove them. Use --force only if you mean to.")
+sys.argv = [a for a in sys.argv if a != "--force"]
 
 src = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "PeopleDesk_HR.html").read_text(encoding="utf-8")
 scripts = list(re.finditer(r"<script[^>]*>(.*?)</script>", src, re.S))

@@ -37,3 +37,13 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"   # true b
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 FRONTEND_DIST = os.getenv("FRONTEND_DIST", str(Path(__file__).resolve().parents[2] / "frontend" / "dist"))
 MAX_BODY_MB = int(os.getenv("MAX_BODY_MB", "64"))
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", str(Path(__file__).resolve().parents[1] / "uploads"))
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
+# E-mail for approvals (optional). Without SMTP_HOST, requests still appear in Approvals; no e-mail is sent.
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "") or SMTP_USER
+SMTP_TLS = os.getenv("SMTP_TLS", "starttls").lower()          # starttls | ssl | none
+APP_URL = os.getenv("APP_URL", "").rstrip("/")                 # e.g. https://peopledeskhr.example.com, for links in e-mails

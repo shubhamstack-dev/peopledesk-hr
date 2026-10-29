@@ -7,7 +7,8 @@ import { api, ApiError } from '../api.js';
 
 export const COLLECTIONS = ['companies', 'employees', 'depts', 'desigs', 'grades', 'locations', 'holidays',
   'leaveTypes', 'leaveReqs', 'leaveAdj', 'shifts', 'punches', 'regs', 'cycles', 'goals', 'reviews', 'feedback', 'posts',
-  'payComps', 'payInputs', 'payRuns', 'declarations', 'exits', 'reqs', 'cands', 'apps', 'interviews', 'otRecs', 'shiftPatterns'];
+  'payComps', 'payInputs', 'payRuns', 'declarations', 'exits', 'reqs', 'cands', 'apps', 'interviews', 'otRecs', 'shiftPatterns',
+  'requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets'];
 const SINGLETONS = ['group', 'settings', 'stat', 'seq'];
 const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 

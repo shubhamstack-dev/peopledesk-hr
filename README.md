@@ -10,6 +10,10 @@ PeopleDesk HR, rebuilt from the single-file browser app as three tiers:
 
 All features of the original are kept: personnel, recruitment, leave, time and shifts, overtime, performance, exits and rehire, Indian statutory payroll (PF, ESI, PT, LWF, TDS, Labour Code wages) and the SAP HR export.
 
+## Version 2
+
+Reporting structure with dotted lines, moving people on the organisation chart, approval workflows, shifts or time management per company, goal templates, fixed and variable pay, leave carry forward and encashment, expense claims, employee enrolment with department checklists and assets, promotions and progression, and activity logs. **Upgrade steps and how to use each feature: [docs/VERSION-2.md](docs/VERSION-2.md).** Version 2.1 adds employee self-service: see [docs/VERSION-2-1.md](docs/VERSION-2-1.md). Version 2.2 adds punch-time edits and shift changes through the workflow engine, and medical insurance: see [docs/VERSION-2-2.md](docs/VERSION-2-2.md). The database upgrades itself when the API starts.
+
 ## 1. Database
 
 ```sql

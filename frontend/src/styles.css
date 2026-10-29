@@ -257,3 +257,24 @@ ul.otree{display:flex;justify-content:center;margin:0;padding:0;transform-origin
 /* React app additions */
 .boot{min-height:100vh;display:grid;place-items:center;color:var(--muted)}
 .side .foot .sync{display:block;margin-top:2px}
+
+/* v2: organisation moves, dotted lines, workflows, checklists */
+.onode[draggable="true"] .obody{cursor:grab}
+.onode.dragging{opacity:.45}
+.onode.dropok .obody{outline:3px dashed var(--pri);outline-offset:3px}
+.omove{position:absolute;top:-8px;right:-8px;width:24px;height:24px;border-radius:50%;border:1px solid var(--rule);background:var(--surface);color:var(--muted);cursor:pointer;font-size:12px;line-height:1;opacity:0;transition:opacity .15s}
+.onode:hover .omove,.omove:focus-visible{opacity:1}
+@media (hover:none){.omove{opacity:1}}
+.odot{font-size:11px;color:var(--muted);border:1px dashed var(--rule);border-radius:10px;padding:1px 8px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.steps{list-style:none;margin:0;padding:0 0 0 4px}
+.steps li{position:relative;padding:6px 0 10px 22px;border-left:2px solid var(--rule)}
+.steps li:last-child{border-color:transparent}
+.steps li::before{content:"";position:absolute;left:-7px;top:9px;width:12px;height:12px;border-radius:50%;background:var(--surface);border:2px solid var(--rule)}
+.steps li.approved::before{background:var(--ok);border-color:var(--ok)}
+.steps li.rejected::before{background:var(--bad);border-color:var(--bad)}
+.steps li.now::before{border-color:var(--pri);background:var(--pri-soft,var(--surface))}
+.choice{display:block;border:1px solid var(--rule);border-radius:10px;padding:12px 14px;cursor:pointer}
+.choice.on{border-color:var(--pri);box-shadow:0 0 0 2px color-mix(in srgb,var(--pri) 20%,transparent)}
+.choice span{display:block;color:var(--muted);font-size:13px;margin-top:4px;font-weight:400}
+.picklist{max-height:170px;overflow:auto;border:1px solid var(--rule);border-radius:8px;padding:4px 10px;margin-top:4px}
+.picklist label{display:flex;gap:8px;align-items:center;padding:3px 0;font-size:13px;color:var(--ink);font-weight:400;cursor:pointer}

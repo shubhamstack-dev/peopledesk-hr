@@ -58,6 +58,14 @@ COLLS = [
     Coll("interviews", "interviews", {"app_id": ("appId", "str"), "day": ("date", "date"), "status": ("status", "str")}),
     Coll("otRecs", "overtime_records", {"day": ("date", "date"), "status": ("status", "str")}),
     Coll("shiftPatterns", "shift_patterns"),
+    # v2: approvals, expenses, performance templates, onboarding and assets
+    Coll("requests", "approval_requests", {"kind": ("kind", "str"), "status": ("status", "str")}),
+    Coll("expenseCats", "expense_categories", {"name": ("name", "str")}),
+    Coll("expenseClaims", "expense_claims", {"claim_no": ("no", "str"), "status": ("status", "str")}),
+    Coll("perfTemplates", "performance_templates", {"name": ("name", "str")}),
+    Coll("onboardings", "onboardings", {"status": ("status", "str"), "doj": ("doj", "date")}),
+    Coll("onboardTemplates", "onboarding_templates", {"dept": ("dept", "str")}),
+    Coll("assets", "assets", {"asset_type": ("type", "str"), "tag": ("tag", "str"), "status": ("status", "str")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 

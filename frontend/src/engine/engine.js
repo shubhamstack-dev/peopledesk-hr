@@ -97,6 +97,7 @@ function blank() {
     cycles: [], goals: [], reviews: [], feedback: [], posts: [],
     payComps: [], payInputs: [], payRuns: [], declarations: [], audit: [], seq: {},
     exits: [], reqs: [], cands: [], apps: [], interviews: [], otRecs: [], shiftPatterns: [],
+    requests: [], expenseCats: [], expenseClaims: [], perfTemplates: [], onboardings: [], onboardTemplates: [], assets: [],
   };
 }
 /* Storage: the MySQL database behind the Python API. Changes are sent as they happen (see sync.js). */
@@ -117,7 +118,7 @@ const sync = createSync(() => S, {
 });
 function save() { sync.schedule(); }
 function saveNow() { sync.flush(); }
-function audit(what, detail) { S.audit.unshift({ at: Date.now(), by: me ? me.id : '', what, detail }); if (S.audit.length > 1000) S.audit.length = 1000; }
+function audit(what, detail, module = '', refType = '', refId = '') { S.audit.unshift({ at: Date.now(), by: me ? me.id : '', what, detail, module, refType, refId }); if (S.audit.length > 1000) S.audit.length = 1000; }
 function nextNo(kind, prefix) { S.seq[kind] = (S.seq[kind] || 0) + 1; return `${prefix}${String(S.seq[kind]).padStart(5, '0')}`; }
 
 /* ---------------------------------------------------------------- people, roles and scope */
@@ -132,7 +133,9 @@ const nameOf = (id) => fullName(empById(id)) || '—';
 const isSuper = () => me && me.role === 'super';
 const isHR = (coId = CO) => me && (me.role === 'super' || (me.role === 'hr' && (me.companyId === coId || (me.hrCompanies || []).includes(coId))));
 const reportees = (id) => S.employees.filter((e) => e.managerId === id && e.status !== 'exited');
-const isManager = () => me && reportees(me.id).length > 0;
+/* Dotted-line (matrix) reporting: someone may also report to other managers besides their line manager */
+const matrixReportees = (id) => S.employees.filter((e) => (e.matrixManagerIds || []).includes(id) && e.status !== 'exited');
+const isManager = () => me && (reportees(me.id).length > 0 || matrixReportees(me.id).length > 0);
 const companiesForMe = () => (isSuper() ? S.companies : S.companies.filter((c) => c.id === me.companyId || (me.hrCompanies || []).includes(c.id)));
 const active = (e) => e.status !== 'exited';
 const coEmployees = (coId = CO, all = false) => S.employees.filter((e) => e.companyId === coId && (all || active(e)));
@@ -140,7 +143,7 @@ function allReportees(id, seen = new Set()) { reportees(id).forEach((e) => { if 
 /* Whom the signed-in person may see in team views: HR sees the company, managers their reporting line, others themselves */
 function visibleEmps() {
   if (isHR()) return coEmployees();
-  const ids = new Set([me.id, ...allReportees(me.id)]);
+  const ids = new Set([me.id, ...allReportees(me.id), ...matrixReportees(me.id).map((e) => e.id)]);
   return S.employees.filter((e) => ids.has(e.id) && active(e));
 }
 const dept = (id) => S.depts.find((x) => x.id === id);
@@ -383,6 +386,15 @@ function leaveBalance(emp, lt, asOf = todayISO(), depth = 0) {
     const prev = leaveBalance(emp, lt, addDays(yr.start, -1), depth + 1);
     opening = Math.max(0, Math.min(+lt.carryMax, prev.available + prev.pending));
   }
+  // carried-forward days not used within the lapse period are lost
+  let lapsed = 0;
+  if (opening > 0 && +lt.carryExpiryMonths > 0) {
+    const expiry = addDays(`${ymAdd(yr.start.slice(0, 7), +lt.carryExpiryMonths)}-01`, -1);
+    if (asOf > expiry) {
+      const usedBefore = S.leaveReqs.filter((r) => r.empId === emp.id && r.typeId === lt.id && r.status === 'approved' && r.from >= yr.start && r.from <= expiry).reduce((s, r) => s + r.days, 0);
+      lapsed = r2(Math.max(0, opening - usedBefore));
+    }
+  }
   let accrued = 0;
   if (lt.credit === 'monthly') accrued = r2(monthsAccrued(emp, lt, yr, asOf) * (+lt.perYear || 0) / 12);
   else if (lt.credit === 'yearly') {
@@ -394,7 +406,7 @@ function leaveBalance(emp, lt, asOf = todayISO(), depth = 0) {
   const reqs = S.leaveReqs.filter((r) => r.empId === emp.id && r.typeId === lt.id && inYear(r.from));
   const used = r2(reqs.filter((r) => r.status === 'approved').reduce((s, r) => s + r.days, 0));
   const pending = r2(reqs.filter((r) => r.status === 'pending' || r.status === 'pending-hr').reduce((s, r) => s + r.days, 0));
-  return { opening, accrued, adj, used, pending, available: r2(opening + accrued + adj - used - pending), year: yr };
+  return { opening, lapsed, accrued, adj, used, pending, available: r2(opening - lapsed + accrued + adj - used - pending), year: yr };
 }
 function leaveTypesFor(emp) {
   return S.leaveTypes.filter((t) => t.companyId === emp.companyId && t.active !== false && (!t.gender || t.gender === emp.gender));
@@ -405,6 +417,7 @@ function leaveOn(emp, iso) {
 /* Who approves a request now: manager first, then HR when the policy asks for it */
 function leaveApproverOK(r) {
   const emp = empById(r.empId); if (!emp || !me) return false;
+  if (r.steps) return canDecide({ ...r, companyId: emp.companyId });
   if (r.status === 'pending') return (emp.managerId === me.id) || (!emp.managerId && isHR(emp.companyId)) || (isHR(emp.companyId) && emp.managerId && !empById(emp.managerId));
   if (r.status === 'pending-hr') return isHR(emp.companyId) && emp.id !== me.id;
   return false;
@@ -484,9 +497,11 @@ function monthAttendance(emp, ym, upTo) {
 const OT_DEFAULT = { mode: 'approved', minMinutes: 30, roundTo: 30, dailyMax: 4, quarterMax: 144, consent: true, allowCompOff: true,
   basis: 'wages', divisor: 26, hoursPerDay: 8, rateWorking: 2, rateWeeklyOff: 2, rateHoliday: 2, sapWorking: '1600', sapWeeklyOff: '1610', sapHoliday: '1620', sapShift: '1650' };
 const otPolicy = (coId) => { const co = coById(coId) || {}; return Object.assign({}, OT_DEFAULT, co.otAfterMin && !co.ot ? { minMinutes: +co.otAfterMin } : {}, co.ot || {}); };
-const attGroup = (e) => (e && e.attGroup === 'shift' ? 'shift' : 'regular');
+const attGroup = (e) => (e && e.attGroup === 'shift' && ((coById(e.companyId) || {}).timeMode || 'shift') === 'shift' ? 'shift' : 'regular');
 const GROUPS = { regular: 'Regular', shift: 'Shift' };
-const otEligibleOf = (e) => (attGroup(e) === 'shift' ? e.otEligible !== false : e.otEligible === true);
+/* Companies choose shift-based working or time management only. Without shifts there is no rostering and no overtime. */
+const shiftBased = (coId = CO) => ((coById(coId) || {}).timeMode || 'shift') === 'shift';
+const otEligibleOf = (e) => !!e && shiftBased(e.companyId) && attGroup(e) === 'shift' && e.otEligible !== false;
 const OT_TYPES = { working: 'Working day', weeklyoff: 'Weekly off', holiday: 'Holiday' };
 const otRecOf = (empId, iso) => S.otRecs.find((x) => x.empId === empId && x.date === iso && x.status !== 'cancelled');
 function quarterOf(iso) { const m = +iso.slice(5, 7); const s = `${iso.slice(0, 4)}-${pad(Math.floor((m - 1) / 3) * 3 + 1)}-01`; return { start: s, end: addDays(`${ymAdd(s.slice(0, 7), 3)}-01`, -1), label: `Q${Math.floor((m - 1) / 3) + 1} ${iso.slice(0, 4)}` }; }
@@ -794,6 +809,12 @@ const MENU = [
     { page: 'people', label: 'Employee directory', show: HR },
     { page: 'org', label: 'Organisation chart' },
     { page: 'masters', label: 'Departments, designations and grades', show: HR },
+    { page: 'reporting', label: 'Reporting structure', show: MGR },
+    { page: 'onboarding', label: 'Employee enrolment', show: () => isHR() || onboardTasksFor(me.id).length > 0 || S.onboardings.some((o) => o.empId === me.id) },
+    { page: 'onbsetup', label: 'Enrolment checklists', show: HR },
+    { page: 'insurance', label: 'Medical insurance policies', show: HR },
+    { page: 'assets', label: 'Assets: ID cards, laptops and more', show: () => isHR() || isCustodian() || S.assets.some((a) => a.empId === me.id) },
+    { page: 'promotions', label: 'Promotions and progression', show: MGR },
     { page: 'companies', label: 'Companies', show: HR },
     { page: 'google', label: 'Users from Google and Microsoft', show: HR },
     { page: 'exits', label: 'Exit management', show: MGR },
@@ -813,21 +834,25 @@ const MENU = [
     { page: 'leaveadmin', tab: 'types', label: 'Leave policies', show: HR },
     { page: 'leaveadmin', tab: 'holidays', label: 'Holiday calendar', show: HR },
     { page: 'leaveadmin', tab: 'balances', label: 'Balances and adjustments', show: HR },
+    { page: 'encash', label: 'Leave encashment', show: () => isHR() || leaveTypesFor(me).some((t) => t.encashAnytime) },
+    { page: 'yearend', label: 'Year-end carry forward', show: HR },
   ] },
   { grp: 'time', label: 'Time Management', items: [
     { page: 'attendance', label: 'My attendance' },
     { page: 'team', label: 'Team today', show: MGR },
-    { page: 'roster', tab: 'roster', label: 'Shift roster', show: MGR },
-    { page: 'roster', tab: 'patterns', label: 'Rotation patterns', show: MGR },
-    { page: 'roster', tab: 'shifts', label: 'Shift definitions', show: HR },
-    { page: 'overtime', label: 'Overtime', show: MGR },
-    { page: 'otpolicy', tab: 'rules', label: 'Overtime and shift policy', show: HR },
+    { page: 'roster', tab: 'roster', label: 'Shift roster', show: () => MGR() && shiftBased() },
+    { page: 'roster', tab: 'patterns', label: 'Rotation patterns', show: () => MGR() && shiftBased() },
+    { page: 'roster', tab: 'shifts', label: 'Shift definitions', show: () => HR() && shiftBased() },
+    { page: 'overtime', label: 'Overtime', show: () => MGR() && shiftBased() },
+    { page: 'otpolicy', tab: 'rules', label: 'Overtime and shift policy', show: () => HR() && shiftBased() },
+    { page: 'timemode', label: 'Shifts or time management', show: HR },
     { page: 'register', label: 'Attendance register', show: MGR },
   ] },
   { grp: 'perf', label: 'Performance Management', items: [
     { page: 'performance', label: 'My goals and reviews' },
     { page: 'feedback', label: 'Feedback and kudos' },
     { page: 'cycles', label: 'Review cycles', show: HR },
+    { page: 'perftemplates', label: 'Goal templates by designation', show: HR },
     { page: 'calibration', label: 'Calibration', show: HR },
   ] },
   { grp: 'pay', label: 'Payroll', items: [
@@ -840,11 +865,17 @@ const MENU = [
     { page: 'paysetup', tab: 'pt', label: 'Professional tax', show: HR },
     { page: 'paysetup', tab: 'lwf', label: 'Labour welfare fund', show: HR },
     { page: 'paysetup', tab: 'tax', label: 'Income tax', show: HR },
+    { page: 'varpay', label: 'Variable pay', show: HR },
     { page: 'sap', label: 'SAP HR export', show: HR },
   ] },
-  { grp: 'admin', label: 'Administration', items: [{ page: 'settings', label: 'Settings and data', show: HR }] },
+  { grp: 'exp', label: 'Expenses', items: [
+    { page: 'expenses', label: 'My expense claims' },
+    { page: 'expenses', tab: 'team', label: 'Claims to approve and pay', show: () => isHR() || isManager() || S.expenseClaims.some((c) => (c.participants || []).includes(me.id) && c.empId !== me.id) },
+    { page: 'expcats', label: 'Expense categories and limits', show: HR },
+  ] },
+  { grp: 'admin', label: 'Administration', items: [{ page: 'flows', label: 'Approval workflows', show: HR }, { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
-const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules' };
+const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine' };
 const itemShown = (it) => !it.show || it.show();
 const itemOn = (it) => (R.page === it.page && (!it.tab || (R.q.get('tab') || DEFAULT_TAB[it.page]) === it.tab)) || ({ exit: 'exits', req: 'reqs', app: 'reqs' }[R.page] === it.page);
 const itemHref = (it) => `#/${it.page}${it.tab ? '?tab=' + it.tab : ''}`;
@@ -954,6 +985,7 @@ function ensureSchema() {
     if (!co.ot) co.ot = { minMinutes: +co.otAfterMin || 30, rateWorking: +co.otRate || 2, rateWeeklyOff: +co.otRate || 2, rateHoliday: +co.otRate || 2 };
   });
   S.employees.forEach((e) => { if (!e.attGroup) e.attGroup = 'regular'; });
+  extEnsureSchema();
 }
 /* Defaults for a company: a general shift, the usual Indian leave types and pay components with SAP-style wage types */
 function seedCompany(co) {
@@ -991,10 +1023,11 @@ function pendingForMe() {
     Object.entries(by).forEach(([id, v]) => out.push({ kind: 'ot', r: { empId: id }, what: `Overtime to approve: ${v.days} day${v.days > 1 ? 's' : ''}, ${num(v.hrs, 1)} h`, link: `#/overtime?emp=${id}&m=${t.slice(0, 7)}` })); }
   S.reqs.filter((q) => q.status === 'pending' && isHR(q.companyId) && q.createdBy !== me.id).forEach((q) => out.push({ kind: 'req', r: { ...q, empId: q.createdBy }, what: `Job requisition ${q.no}: ${q.title}`, link: '#/req/' + q.id }));
   S.apps.filter(offerApproverOK).forEach((a) => out.push({ kind: 'offer', r: { empId: null, cand: candById(a.candId).name, ctc: a.offer.ctc }, what: `Offer approval, ${a.offer.approvals.find((x) => !x.decision).label}`, link: '#/app/' + a.id }));
+  extPending().forEach((x) => out.push(x));
   S.interviews.filter((i) => (i.panel || []).includes(me.id) && !(i.feedback || {})[me.id] && i.status !== 'cancelled' && i.status !== 'noshow' && i.date <= todayISO()).forEach((i) => out.push({ kind: 'fb', r: { cand: candById(appById(i.appId).candId).name }, what: `Interview feedback, ${i.round}`, link: '#/app/' + i.appId }));
   return out;
 }
-function regApproverOK(r) { const e = empById(r.empId); return e && ((e.managerId === me.id) || (isHR(e.companyId) && (!e.managerId || !empById(e.managerId))) ) && e.id !== me.id; }
+function regApproverOK(r) { const e = empById(r.empId); if (r.steps) return !!e && canDecide({ ...r, companyId: e.companyId }); return e && ((e.managerId === me.id) || (isHR(e.companyId) && (!e.managerId || !empById(e.managerId))) ) && e.id !== me.id; }
 
 ACT.postNew = async () => {
   openDlg(`<form class="dlg" id="pf"><h2>Post an announcement</h2><label class="field">Title<input class="inp" name="title" autofocus></label><label class="field">Message<textarea class="inp" name="text"></textarea></label>
@@ -1048,9 +1081,14 @@ const EMP_FIELDS = {
   ],
   personal: [
     { k: 'firstName', label: 'First name', req: true }, { k: 'lastName', label: 'Last name' }, { k: 'gender', label: 'Gender', type: 'select', opts: [['M', 'Male'], ['F', 'Female'], ['O', 'Other']], blank: 'Not stated' },
-    { k: 'dob', label: 'Date of birth', type: 'date' }, { k: 'marital', label: 'Marital status', type: 'select', opts: [['single', 'Single'], ['married', 'Married'], ['other', 'Other']], blank: '—' },
-    { k: 'phone', label: 'Mobile' }, { k: 'personalEmail', label: 'Personal e-mail', type: 'email' }, { k: 'blood', label: 'Blood group' },
-    { k: 'address', label: 'Address', type: 'textarea', wide: true }, { k: 'emergency', label: 'Emergency contact (name and phone)', wide: true },
+    { k: 'dob', label: 'Date of birth', type: 'date' }, { k: 'marital', label: 'Marital status', type: 'select', opts: [['single', 'Single'], ['married', 'Married'], ['divorcee', 'Divorcee'], ['widowed', 'Widowed'], ['other', 'Other']], blank: '—' },
+    { k: 'phone', label: 'Mobile' }, { k: 'personalEmail', label: 'Personal e-mail', type: 'email' }, { k: 'blood', label: 'Blood group', type: 'select', opts: () => BLOOD_GROUPS.map((b) => [b, b]), blank: 'Not known' },
+    { k: 'address', label: 'Address: house, street and area', type: 'textarea', wide: true },
+    { k: 'addrCountry', label: 'Country', type: 'select', opts: () => COUNTRIES.map((c) => [c, c]) }, { k: 'addrState', label: 'State or union territory', type: 'select', opts: () => [...IN_STATES.map((x) => [x, x]), ['Outside India', 'Outside India']], blank: 'Choose' },
+    { k: 'addrCity', label: 'City', type: 'select', opts: () => cityOpts(), blank: 'Choose' }, { k: 'addrPin', label: 'PIN code', help: '6 digits in India; postal or ZIP code elsewhere' },
+    { k: 'addrCityOther', label: 'City (if not in the list)' },
+    { k: 'emergencyName', label: 'Emergency contact: name' }, { k: 'emergencyRelation', label: 'Relationship', type: 'select', opts: () => EMERGENCY_RELATIONS.map((x) => [x, x]), blank: 'Choose' },
+    { k: 'emergencyPhone', label: 'Emergency contact: phone' },
   ],
   statutory: [
     { k: 'pan', label: 'PAN' }, { k: 'aadhaar', label: 'Aadhaar' }, { k: 'uan', label: 'UAN (PF)' }, { k: 'pfNo', label: 'PF member ID' }, { k: 'esiNo', label: 'ESI IP number', help: '10 digits, from the ESIC portal' }, { k: 'esiRegDate', label: 'ESI registration date', type: 'date' }, { k: 'esiDispensary', label: 'ESI dispensary', help: 'Chosen at registration' },
@@ -1058,15 +1096,17 @@ const EMP_FIELDS = {
     { k: 'esiOn', label: 'ESI applies when eligible', type: 'check' }, { k: 'ptOn', label: 'Professional tax applies', type: 'check' }, { k: 'lwfOn', label: 'Labour welfare fund applies', type: 'check' },
     { k: 'taxRegime', label: 'Income tax regime', type: 'select', opts: [['new', 'New regime (default)'], ['old', 'Old regime']] },
   ],
-  bank: [{ k: 'bankName', label: 'Bank' }, { k: 'bankAcc', label: 'Account number' }, { k: 'ifsc', label: 'IFSC' }, { k: 'payMode', label: 'Payment mode', type: 'select', opts: [['bank', 'Bank transfer'], ['cheque', 'Cheque'], ['cash', 'Cash']] }],
+  bank: [{ k: 'bankName', label: 'Bank', type: 'select', opts: () => bankOpts(), blank: 'Choose your bank' }, { k: 'bankAcc', label: 'Account number' }, { k: 'ifsc', label: 'IFSC' }, { k: 'payMode', label: 'Payment mode', type: 'select', opts: [['bank', 'Bank transfer'], ['cheque', 'Cheque'], ['cash', 'Cash']] }],
 };
 VIEWS.profile = () => {
   const e = R.arg ? empById(R.arg) : me;
   if (!e) return { title: 'Profile', html: '<div class="empty">That employee does not exist.</div>' };
-  const mine = e.id === me.id, hr = isHR(e.companyId), mgr = allReportees(me.id).includes(e.id);
+  const mine = e.id === me.id, hr = isHR(e.companyId), mgr = allReportees(me.id).includes(e.id) || (e.matrixManagerIds || []).includes(me.id);
   if (!mine && !hr && !mgr) return { title: 'Profile', html: '<div class="empty">You cannot see this profile.</div>' };
   const tab = R.q.get('tab') || 'job';
-  const tabs = [['job', 'Job'], ['personal', 'Personal'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'], ['history', 'History']].filter(([k]) => hr || mine || ['job', 'history'].includes(k));
+  const tabs = [['job', 'Job'], ['reporting', 'Reporting'], ['career', 'Career'], ['personal', 'Personal'], ['family', 'Family'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'],
+    ['documents', 'Documents'], ['performance', 'Performance'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['history', 'History'], ['activity', 'Activity log']]
+    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance'].includes(k)) && (k !== 'activity' || hr));
   const base = `#/profile/${e.id}?tab=`;
   const ro = (fields) => `<div class="form">${fields.map((f) => { let v = e[f.k];
       if (f.type === 'select') { const o = (typeof f.opts === 'function' ? f.opts() : f.opts).find(([x]) => String(x) === String(v ?? '')); v = o ? o[1] : (f.k === 'managerId' ? nameOf(v) : ''); }
@@ -1076,13 +1116,17 @@ VIEWS.profile = () => {
   let body = '';
   if (EMP_FIELDS[tab]) {
     const editable = hr || (mine && ['personal', 'bank'].includes(tab));
-    body = `<div class="card"><div class="hd"><h2>${tabs.find(([k]) => k === tab)[1]} details</h2>${editable ? `<button class="btn" data-act="empEdit" data-id="${e.id}" data-tab="${tab}">Edit</button>` : ''}</div>${ro(EMP_FIELDS[tab])}
-      ${mine && !hr && tab === 'bank' ? '<p class="fine">Changes to bank details are recorded in your history.</p>' : ''}</div>`;
+    const statReq = tab === 'statutory' && mine && !hr;
+    const pendingStat = tab === 'statutory' ? S.requests.find((r) => r.kind === 'statutory' && r.empId === e.id && ['pending', 'approved'].includes(r.status)) : null;
+    body = `<div class="card"><div class="hd"><h2>${tabs.find(([k]) => k === tab)[1]} details</h2>${editable ? `<button class="btn" data-act="empEdit" data-id="${e.id}" data-tab="${tab}">Edit</button>` : ''}${statReq && !pendingStat ? `<button class="btn pri" data-act="statReq">Request a change</button>` : ''}</div>
+      ${pendingStat ? `<div class="note warn">A change is waiting for HR approval (${esc(pendingStat.no)}). <a href="#/request/${pendingStat.id}">See it</a>.</div>` : ''}${statReq && !pendingStat ? '<p class="fine">Changes to statutory details are checked by HR before they apply. Attach a copy of the document for each change.</p>' : ''}
+      ${tab === 'personal' ? personalRo(e) : ro(EMP_FIELDS[tab])}
+      ${mine && !hr && tab === 'bank' ? '<p class="fine">Changes to bank details are recorded in your history.</p>' : ''}</div>${tab === 'personal' ? mediclaimCard(e, { hr, mine }) : ''}`;
   } else if (tab === 'salary') {
     const sal = salaryAt(e, todayISO());
     const st = sal ? structure(e, sal.ctc, todayISO().slice(0, 7)) : null;
     const comps = compsFor(e.companyId).filter((c) => c.kind === 'earning' && c.calc !== 'input');
-    body = `<div class="card"><div class="hd"><div><h2>Salary structure</h2><p class="sub">${sal ? `Annual CTC ${inr0(sal.ctc)} from ${dmy(sal.effective)}.` : 'No salary set yet.'} Monthly amounts are shown. Statutory deductions are worked out in each payroll run.</p></div>
+    body = `<div class="card"><div class="hd"><div><h2>Salary structure</h2><p class="sub">${sal ? `Annual fixed CTC ${inr0(sal.ctc)}${sal.variable ? ` plus variable pay target ${inr0(sal.variable)} (total ${inr0(+sal.ctc + +sal.variable)})` : ''} from ${dmy(sal.effective)}.${gradeBandNote(e, sal.ctc)}` : 'No salary set yet.'} Monthly amounts are shown. Statutory deductions are worked out in each payroll run.</p></div>
       ${hr ? `<button class="btn pri" data-act="actRevise" data-id="${e.id}">Revise salary</button>` : ''}</div>
       ${st ? `<div class="grid g2"><table class="t"><thead><tr><th>Earning</th><th class="r">Monthly</th><th class="r">Annual</th></tr></thead><tbody>
         ${comps.map((c) => `<tr><td>${esc(c.name)} <span class="fine mono">${esc(c.code)}</span></td><td class="r">${inr(st.amounts[c.code] || 0)}</td><td class="r">${inr0((st.amounts[c.code] || 0) * 12)}</td></tr>`).join('')}
@@ -1096,6 +1140,8 @@ VIEWS.profile = () => {
           <tr><td>Share of wages</td><td class="r">${st.wages.total ? num(st.wages.wages / st.wages.total * 100, 1) : 0}%</td></tr><tr><td><b>Wages used for PF, ESI and gratuity</b></td><td class="r"><b>${inr(st.wages.deemed)}</b></td></tr></tbody></table>
           ${st.wages.topUp > 0.5 ? `<div class="note warn">Wages are below 50% of pay, so ${inr(st.wages.topUp)} a month is added to wages. Consider raising basic pay to at least 50%.</div>` : '<div class="note ok">Wages are at least 50% of pay.</div>'}</div></div>` : ''}
       ${(e.salaryHist || []).length ? `<h3>Salary history</h3><table class="t"><thead><tr><th>Effective</th><th class="r">Annual CTC</th><th>Reason</th></tr></thead><tbody>${e.salaryHist.slice().sort((a, b) => (a.effective < b.effective ? 1 : -1)).map((s) => `<tr><td>${dmy(s.effective)}</td><td class="r">${inr0(s.ctc)}</td><td>${esc(s.reason || '')}</td></tr>`).join('')}</tbody></table>` : ''}</div>`;
+  } else if (PROFILE_TABS[tab]) {
+    body = PROFILE_TABS[tab](e, { hr, mine });
   } else if (tab === 'history') {
     body = `<div class="card"><h2>History</h2><p class="sub">Every personnel action with its effective date, like SAP's action log (infotype 0000).</p>
       ${(e.history || []).length ? `<table class="t"><thead><tr><th>Effective</th><th>Action</th><th>Details</th><th>By</th></tr></thead><tbody>${e.history.slice().reverse().map((h) => `<tr><td>${dmy(h.date)}</td><td><b>${esc(h.type)}</b></td><td>${esc(h.note || '')}</td><td>${esc(h.by ? nameOf(h.by) : '')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No actions yet.</div>'}</div>`;
@@ -1103,7 +1149,7 @@ VIEWS.profile = () => {
   const co = coById(e.companyId);
   return { title: mine ? 'My profile' : fullName(e), html: `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><div class="av lg">${esc(initials(fullName(e)))}</div>
       <div style="flex:1;min-width:220px"><h2 style="font-size:22px">${esc(fullName(e))}</h2><div class="mut">${esc((desig(e.desigId) || {}).name || 'No designation')}, ${esc((dept(e.deptId) || {}).name || 'no department')}</div>
-        <div class="fine">${esc(e.empNo)}, ${esc(co ? co.name : '')}, ${esc((loc(e.locationId) || {}).name || '')}. Joined ${dmy(e.doj)}. Reports to ${esc(nameOf(e.managerId))}.</div></div>
+        <div class="fine">${esc(e.empNo)}, ${esc(co ? co.name : '')}, ${esc((loc(e.locationId) || {}).name || '')}. Joined ${dmy(e.doj)}. Reports to ${esc(nameOf(e.managerId))}${(e.matrixManagerIds || []).length ? `; dotted line to ${esc(e.matrixManagerIds.map(nameOf).join(', '))}` : ''}.</div></div>
       <div class="tools">${statusBadge(e)}${hr && e.status === 'active' ? `<button class="btn" data-act="empActions" data-id="${e.id}">Personnel action</button>` : ''}
         ${exitOf(e.id) && !mine && (hr || e.managerId === me.id) && e.status !== 'active' ? `<a class="btn" href="#/exit/${exitOf(e.id).id}">Exit process</a>` : ''}${mine && e.status === 'active' && !openExitOf(e.id) ? '<button class="btn" data-act="resign">Resign</button>' : ''}
         ${mine && openExitOf(e.id) ? `<a class="btn" href="#/exit/${openExitOf(e.id).id}">My resignation</a>` : ''}${hr && e.status === 'exited' ? `<button class="btn pri" data-act="rehireStart" data-id="${e.id}">Rehire</button>` : ''}</div></div></div>
@@ -1115,12 +1161,18 @@ ACT.empEdit = (b) => {
   const prev = CO; CO = e.companyId;
   const v = { pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', payMode: 'bank', empType: 'permanent', attGroup: 'regular', ...e };
   if (tab === 'job' && e.otEligible === undefined) v.otEligible = otEligibleOf(e);
+  if (tab === 'personal') { v.addrCountry = v.addrCountry || 'India'; if (!v.emergencyName && v.emergency) v.emergencyName = v.emergency; if (v.addrCity && !cityState(v.addrCity)) { v.addrCityOther = v.addrCity; v.addrCity = '__other'; } }
+  if (tab === 'bank' && v.bankName && !BANKS.some((x) => x[0] === v.bankName)) v.bankName = '__other';
   openDlg(`<form class="dlg" id="ef" novalidate><h2>Edit ${esc(tab)} details</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="ee"></p>
     <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
   CO = prev;
+  if (tab === 'personal') wireAddress($('#ef'));
+  if (tab === 'bank') wireBank($('#ef'), e);
   $('#ef').onsubmit = (ev) => {
     ev.preventDefault();
     const d = readForm(ev.target, fields);
+    const extra = tab === 'personal' ? checkPersonal(d) : tab === 'bank' ? checkBank(d, ev.target) : '';
+    if (extra) { $('#ee').textContent = extra; return; }
     const miss = fields.find((f) => f.req && !d[f.k]); if (miss) { $('#ee').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
     if (d.email && S.employees.some((x) => x.id !== e.id && (x.email || '').toLowerCase() === d.email.toLowerCase())) { $('#ee').textContent = 'Another employee has this e-mail.'; return; }
     if (d.empNo && S.employees.some((x) => x.id !== e.id && x.companyId === e.companyId && x.empNo === d.empNo)) { $('#ee').textContent = 'That employee number is in use.'; return; }
@@ -1154,7 +1206,7 @@ ACT.empNew = () => {
     if (d.empNo === nextNoPreview()) nextNo('emp-' + CO, company().code + '-');
     const e = { id: uid(), companyId: CO, status: 'active', pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', ...d, email: d.email.toLowerCase(),
       probationEnd: d.empType === 'probation' ? addDays(d.doj, 180) : '', salaryHist: ctc ? [{ effective: d.doj, ctc, reason: 'On joining' }] : [], history: [{ date: d.doj, type: 'Hire', note: `Joined as ${(desig(d.desigId) || {}).name || 'employee'}`, by: me.id }], source: 'manual' };
-    S.employees.push(e); audit('Employee hired', fullName(e)); saveNow(); closeDlg(); toast(`${fullName(e)} added`); go('#/profile/' + e.id);
+    S.employees.push(e); recordReporting(e, e.doj || todayISO(), e.managerId || '', [], 'Joined'); recordGrade(e, e.doj || todayISO(), 'Joined'); audit('Employee hired', fullName(e), 'org', 'employee', e.id); saveNow(); closeDlg(); toast(`${fullName(e)} added`); offerEnrolment(e);
   };
 };
 function nextNoPreview() { const n = (S.seq['emp-' + CO] || 0) + 1; return `${company().code}-${String(n).padStart(5, '0')}`; }
@@ -1165,6 +1217,8 @@ ACT.empActions = (b) => {
   openDlg(`<div class="dlg"><h2>Personnel action for ${esc(fullName(e))}</h2><p class="fine" style="margin:0">Each action is recorded in the employee's history with its effective date and flows to payroll and the SAP export.</p>
     <div class="grid g2">${[['actTransfer', 'Transfer', 'Change department, location, manager or company'], ['actPromote', 'Promotion', 'New designation and grade, with an optional salary revision'],
       ['actRevise', 'Salary revision', 'New annual CTC from an effective date; arrears are worked out'], ['actConfirm', 'Confirmation', 'End probation and confirm employment'],
+      ['reportEdit', 'Reporting lines', 'Line manager and dotted-line managers, with an effective date'],
+      ['onbStart', 'Start enrolment', 'Tell IT, Administration, Finance and others what to set up: ID card, laptop, accounts'],
       ['exitStart', 'Start exit', 'Termination, retirement or end of contract; opens the exit process with clearances and settlement']].map(([a, t, d]) => `<button class="btn" style="justify-content:flex-start;text-align:left;white-space:normal;padding:12px" data-act="${a}" data-id="${e.id}"><span><b>${t}</b><br><span class="fine">${d}</span></span></button>`).join('')}</div>
     <div class="btns"><button class="btn ghost" data-act="close">Close</button></div></div>`, true);
 };
@@ -1185,7 +1239,7 @@ ACT.actTransfer = (b) => {
     if (d.companyId && d.companyId !== e.companyId) { parts.push(`company ${coById(e.companyId).code} to ${coById(d.companyId).code}`); e.companyId = d.companyId; e.shiftId = (S.shifts.find((s) => s.companyId === d.companyId) || {}).id; d.deptId = ''; d.locationId = ''; d.managerId = ''; }
     if (d.deptId !== (e.deptId || '')) parts.push(`department to ${(dept(d.deptId) || {}).name || 'none'}`);
     if (d.locationId !== (e.locationId || '')) parts.push(`location to ${(loc(d.locationId) || {}).name || 'none'}`);
-    if (d.managerId !== (e.managerId || '')) parts.push(`manager to ${nameOf(d.managerId)}`);
+    if (d.managerId !== (e.managerId || '')) { parts.push(`manager to ${nameOf(d.managerId)}`); if (d.managerId && allReportees(e.id).includes(d.managerId)) return 'That manager reports to this person. Choose someone outside their team.'; recordReporting(e, d.date, d.managerId, e.matrixManagerIds || [], 'Transfer'); }
     if (!parts.length) return 'Nothing changes. Choose a new department, location, manager or company.';
     Object.assign(e, { deptId: d.deptId, locationId: d.locationId, managerId: d.managerId });
     e.history.push({ date: d.date, type: 'Transfer', note: parts.join('; ') + (d.note ? `. ${d.note}` : ''), by: me.id }); toast('Transfer recorded');
@@ -1197,22 +1251,26 @@ ACT.actPromote = (b) => {
     { k: 'ctc', label: 'New annual CTC (leave empty to keep)', type: 'number' }, { k: 'note', label: 'Note', wide: true }], { ...e, date: todayISO(), ctc: '' }, (d) => {
     if (d.desigId === e.desigId && d.gradeId === e.gradeId) return 'Choose the new designation or grade.';
     e.history.push({ date: d.date, type: 'Promotion', note: `${(desig(e.desigId) || {}).name || '—'} to ${(desig(d.desigId) || {}).name || '—'}, grade ${(grade(d.gradeId) || {}).name || '—'}${d.note ? `. ${d.note}` : ''}`, by: me.id });
-    e.desigId = d.desigId; e.gradeId = d.gradeId;
+    e.desigId = d.desigId; e.gradeId = d.gradeId; recordGrade(e, d.date, 'Promotion');
     if (d.ctc) reviseSalary(e, d.date, d.ctc, 'Promotion');
+    audit('Promotion', `${fullName(e)}: ${(grade(d.gradeId) || {}).name || ''}`, 'promotion', 'employee', e.id);
     toast('Promotion recorded');
   });
 };
 ACT.actRevise = (b) => {
   const e = empById(b.dataset.id); const cur = salaryAt(e, todayISO());
-  actionDialog(e, 'Salary revision', [{ k: 'date', label: 'Effective date', type: 'date', req: true }, { k: 'ctc', label: 'New annual CTC (₹)', type: 'number', req: true, min: 0 },
+  actionDialog(e, 'Salary revision', [{ k: 'date', label: 'Effective date', type: 'date', req: true }, { k: 'ctc', label: 'New annual fixed CTC (₹)', type: 'number', req: true, min: 0 },
+    { k: 'variable', label: 'Annual variable pay target (₹)', type: 'number', min: 0, help: 'Paid separately through Variable pay, against performance' },
     { k: 'reason', label: 'Reason', type: 'select', opts: [['Annual increment', 'Annual increment'], ['Correction', 'Correction'], ['Market adjustment', 'Market adjustment'], ['On joining', 'On joining']] }],
-    { date: todayISO(), ctc: cur ? cur.ctc : '', reason: 'Annual increment' }, (d) => { if (!(d.ctc > 0)) return 'Enter the new CTC.'; reviseSalary(e, d.date, d.ctc, d.reason); toast('Salary revised'); });
+    { date: todayISO(), ctc: cur ? cur.ctc : '', variable: cur ? cur.variable || '' : '', reason: 'Annual increment' }, (d) => { if (!(d.ctc > 0)) return 'Enter the new CTC.'; reviseSalary(e, d.date, d.ctc, d.reason, d.variable); toast('Salary revised'); });
 };
 /* Revision with a past effective date: the difference for months already paid becomes arrears in the next open month */
-function reviseSalary(e, date, ctc, reason) {
+function reviseSalary(e, date, ctc, reason, variable) {
   const old = salaryAt(e, date);
-  e.salaryHist = (e.salaryHist || []).filter((s) => s.effective !== date); e.salaryHist.push({ effective: date, ctc: +ctc, reason });
-  e.history.push({ date, type: 'Salary revision', note: `CTC ${old ? inr0(old.ctc) : '—'} to ${inr0(ctc)} (${reason})`, by: me.id });
+  const vt = variable === undefined || variable === '' ? (old ? +old.variable || 0 : 0) : +variable;
+  e.salaryHist = (e.salaryHist || []).filter((s) => s.effective !== date); e.salaryHist.push({ effective: date, ctc: +ctc, variable: vt, reason });
+  e.history.push({ date, type: 'Salary revision', note: `Fixed CTC ${old ? inr0(old.ctc) : '—'} to ${inr0(ctc)}${vt ? `, variable target ${inr0(vt)}` : ''} (${reason})`, by: me.id });
+  audit('Salary revision', `${fullName(e)} from ${dmy(date)}`, 'payroll', 'employee', e.id);
   const paid = S.payRuns.filter((r) => r.companyId === e.companyId && r.status === 'locked' && r.month >= date.slice(0, 7) && r.results[e.id]);
   if (old && paid.length) {
     let arrears = 0;
@@ -1232,14 +1290,15 @@ VIEWS.masters = () => {
   const used = (k) => (r) => (S.employees.some((e) => e[k] === r.id) ? 'Employees use this. Move them first.' : '');
   const simple = (coll, title, one, k, extra = []) => crudCard(coll, { coll, title, one, filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }), inUse: used(k), sort: (a, b) => a.name.localeCompare(b.name),
     fields: [{ k: 'name', label: 'Name', req: true }, { k: 'code', label: 'Code' }, ...extra], cols: [{ k: 'name', label: 'Name' }, { k: 'code', label: 'Code' }, ...extra.map((f) => ({ k: f.k, label: f.label, fmt: f.fmt })), { label: 'Employees', cls: 'r', fmt: (r) => S.employees.filter((e) => e[k] === r.id && active(e)).length }] });
-  return { title: 'Departments and grades', html: `<div class="grid g2">${simple('depts', 'Departments', 'department', 'deptId', [{ k: 'costCenter', label: 'Cost centre' }])}${simple('desigs', 'Designations', 'designation', 'desigId')}
-    ${simple('grades', 'Grades', 'grade', 'gradeId')}${simple('locations', 'Locations', 'location', 'locationId', [{ k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES), fmt: (r) => STATES[r.state] || '' }, { k: 'metro', label: 'Metro city (50% HRA exemption)', type: 'check', fmt: (r) => (r.metro ? 'Metro' : '') }])}</div>` };
+  return { title: 'Departments and grades', html: `<div class="grid g2">${simple('depts', 'Departments', 'department', 'deptId', [{ k: 'costCenter', label: 'Cost centre' }, { k: 'headId', label: 'Head of department', type: 'select', opts: () => empOpts(CO)(), blank: 'None', fmt: (r) => (r.headId ? nameOf(r.headId) : '') }])}${simple('desigs', 'Designations', 'designation', 'desigId', [{ k: 'gradeId', label: 'Usual grade', type: 'select', opts: coOpts('grades'), blank: 'Any', fmt: (r) => (grade(r.gradeId) || {}).name || '' }])}
+    ${simple('grades', 'Grades', 'grade', 'gradeId', [{ k: 'level', label: 'Level (1 = entry)', type: 'number', min: 1, fmt: (r) => r.level || '' }, { k: 'minCTC', label: 'Pay band from (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.minCTC ? inr0(r.minCTC) : '') }, { k: 'maxCTC', label: 'Pay band to (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.maxCTC ? inr0(r.maxCTC) : '') }, { k: 'minMonths', label: 'Months in grade before promotion', type: 'number', min: 0, fmt: (r) => r.minMonths || '' }])}${simple('locations', 'Locations', 'location', 'locationId', [{ k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES), fmt: (r) => STATES[r.state] || '' }, { k: 'metro', label: 'Metro city (50% HRA exemption)', type: 'check', fmt: (r) => (r.metro ? 'Metro' : '') }])}</div>` };
 };
 const CO_FIELDS = [
   { k: 'name', label: 'Company name', req: true }, { k: 'code', label: 'Company code', req: true, help: 'Used in employee numbers and as the SAP company code' }, { k: 'legalName', label: 'Legal name' },
   { k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES) }, { k: 'address', label: 'Registered address', wide: true },
   { k: 'domain', label: 'E-mail domain (Google / Microsoft)', help: 'e.g. ankitgroup.com. Users from this domain join this company' },
   { k: 'pan', label: 'PAN' }, { k: 'tan', label: 'TAN (for TDS)' }, { k: 'pfCode', label: 'PF establishment code' }, { k: 'esiCode', label: 'ESI employer code' }, { k: 'ptRegNo', label: 'PT registration' },
+  { k: 'timeMode', label: 'Working pattern', type: 'select', opts: [['shift', 'Shift-based: shifts, rosters and overtime'], ['time', 'Time management only: no shifts, no overtime']] },
   { k: 'leaveYearStart', label: 'Leave year starts in', type: 'select', opts: [[1, 'January'], [4, 'April']] },
   { k: 'attendanceSource', label: 'Attendance for payroll', type: 'select', opts: [['punch', 'From punches: no punch on a working day is absent'], ['leave', 'Leave only: present unless on leave']] },
   { k: 'latePenaltyCount', label: 'Late marks before a deduction', type: 'number', min: 0, help: '0 turns late penalties off' }, { k: 'latePenaltyDays', label: 'Days deducted each time', type: 'number', step: 0.5, min: 0 },
@@ -1281,9 +1340,13 @@ VIEWS.org = () => {
   const hit = (e) => q && `${fullName(e)} ${(desig(e.desigId) || {}).name || ''} ${e.empNo}`.toLowerCase().includes(q);
   const card = (e) => {
     const n = total(e), kids = (byMgr[e.id] || []).filter(visible), col = deptColor(e.deptId), c = ORG.collapsed.has(e.id);
-    return `<div class="onode ${hit(e) ? 'hit' : ''}" style="--dc:${col}">
+    const canMove = isHR(e.companyId);
+    const dl = (e.matrixManagerIds || []).filter((id) => empById(id)), dr = matrixReportees(e.id);
+    return `<div class="onode ${hit(e) ? 'hit' : ''}" style="--dc:${col}" data-org="${e.id}" ${canMove ? 'draggable="true"' : ''}>
       <button class="obody" data-act="orgOpen" data-id="${e.id}" title="Open profile"><span class="av" style="background:${col}1F;color:${col}">${esc(initials(fullName(e)))}</span>
         <span class="otext"><b>${esc(fullName(e))}</b><span>${esc((desig(e.desigId) || {}).name || '')}</span><small>${esc((dept(e.deptId) || {}).name || '')}${all ? ' · ' + esc((coById(e.companyId) || {}).code || '') : ''}</small></span></button>
+      ${dl.length || dr.length ? `<div class="odot" title="Dotted-line reporting">${dl.length ? `⋯ also to ${esc(dl.map((id) => fullName(empById(id)).split(' ')[0]).join(', '))}` : ''}${dl.length && dr.length ? ' · ' : ''}${dr.length ? `⋯ ${dr.length} dotted report${dr.length > 1 ? 's' : ''}` : ''}</div>` : ''}
+      ${canMove ? `<button class="omove" data-act="orgMove" data-id="${e.id}" title="Move or change reporting" aria-label="Move ${esc(fullName(e))}">⇄</button>` : ''}
       ${kids.length ? `<button class="otog" data-act="orgToggle" data-id="${e.id}" aria-expanded="${!c}" title="${c ? 'Show' : 'Hide'} reports">${c ? '+' : '−'} ${kids.length}${n > kids.length ? ` <span class="fine">(${n})</span>` : ''}</button>` : ''}</div>`;
   };
   const vacancy = (r) => `<div class="onode vac"><div class="obody" data-act="orgReq" data-id="${r.id}"><span class="av">+</span><span class="otext"><b>Open position</b><span>${esc(r.title)}</span><small>${r.positions - r.filled} to hire, ${esc(r.no)}</small></span></div></div>`;
@@ -1308,11 +1371,12 @@ VIEWS.org = () => {
         <input class="inp" placeholder="Find a person" value="${esc(R.q.get('q') || '')}" ${setQ('q')} style="width:160px">
         <label class="chk"><input type="checkbox" ${showOpen ? 'checked' : ''} ${setQ('open')}> Open positions</label></div></div>
       <div class="tools"><button class="btn sm" data-act="orgZoom" data-z="-0.1" aria-label="Zoom out">−</button><span class="fine" id="orgZ">${Math.round(ORG.zoom * 100)}%</span><button class="btn sm" data-act="orgZoom" data-z="0.1" aria-label="Zoom in">+</button>
-        <button class="btn sm" data-act="orgFit">Fit to screen</button><button class="btn sm" data-act="orgAll" data-v="1">Expand all</button><button class="btn sm" data-act="orgAll" data-v="0">Collapse to managers</button><button class="btn sm" data-act="orgPrint">Print</button>
+        ${isHR(coSel) ? '<span class="fine">Drag a person onto their new manager, or use ⇄, to move them. </span>' : ''}<button class="btn sm" data-act="orgFit">Fit to screen</button><button class="btn sm" data-act="orgAll" data-v="1">Expand all</button><button class="btn sm" data-act="orgAll" data-v="0">Collapse to managers</button><button class="btn sm" data-act="orgPrint">Print</button>
         <span class="fine">${[...new Set(emps.map((e) => e.deptId))].filter(Boolean).map((d) => `<span class="chip"><span class="dot" style="background:${deptColor(d)}"></span>${esc((dept(d) || {}).name || '')}</span>`).join('')}</span></div></div>
     <div class="orgwrap" id="orgWrap">${roots.length || all ? `<ul class="otree" id="orgTree" style="transform:scale(${ORG.zoom})">${groupRoot}</ul>` : '<div class="empty">Nobody to show.</div>'}</div>`,
     after: () => {
       const w = $('#orgWrap'), t = $('#orgTree'); if (!w || !t) return;
+      wireOrgDrag(t);
       if (!ORG.userZoom) { const natural = t.scrollWidth / ORG.zoom; ORG.zoom = Math.max(0.55, Math.min(1, Math.floor((w.clientWidth - 24) / natural * 100) / 100)); t.style.transform = `scale(${ORG.zoom})`; $('#orgZ').textContent = Math.round(ORG.zoom * 100) + '%'; }
       const h = $('.onode.hit'); if (h) h.scrollIntoView({ block: 'center', inline: 'center' }); else if (t.getBoundingClientRect().width > w.clientWidth) w.scrollLeft = (t.getBoundingClientRect().width - w.clientWidth) / 2;
     } };
@@ -1330,7 +1394,7 @@ ACT.orgPrint = () => { const prev = ORG.zoom; ACT.orgFit(); setTimeout(() => { w
    Leave: balances, applying, approvals, team calendar, policies, holidays, adjustments
    ===================================================================== */
 const LSTAT = { pending: ['With manager', 'warn'], 'pending-hr': ['With HR', 'info'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'bad'], cancelled: ['Cancelled', ''] };
-const lstat = (s) => `<span class="badge ${LSTAT[s][1]}">${LSTAT[s][0]}</span>`;
+const lstat = (s, r) => (r && r.steps && s === 'pending' && stepNow(r) ? `<span class="badge warn">With ${esc(stepNow(r).label.toLowerCase())}</span>` : `<span class="badge ${LSTAT[s][1]}">${LSTAT[s][0]}</span>`);
 VIEWS.leave = () => {
   const types = leaveTypesFor(me);
   const mine = S.leaveReqs.filter((r) => r.empId === me.id).sort((a, b) => (a.from < b.from ? 1 : -1));
@@ -1341,7 +1405,7 @@ VIEWS.leave = () => {
       ${types.map((lt) => { const b = leaveBalance(me, lt); return `<tr><td><b>${esc(lt.name)}</b> <span class="fine">${esc(lt.code)}${lt.paid === false ? ', unpaid' : ''}</span></td><td class="r">${num(b.opening)}</td><td class="r">${num(b.accrued)}</td><td class="r">${num(b.adj)}</td><td class="r">${num(b.used)}</td><td class="r">${num(b.pending)}</td><td class="r"><b>${lt.credit === 'none' && !b.adj ? '—' : num(b.available)}</b></td></tr>`; }).join('')}</tbody></table></div></div>
     <div class="card"><h2>My requests</h2>${mine.length ? `<div class="scroll"><table class="t"><thead><tr><th>Type</th><th>Dates</th><th class="r">Days</th><th>Reason</th><th>Status</th><th></th></tr></thead><tbody>
       ${mine.map((r) => `<tr><td>${esc(ltById(r.typeId).name)}</td><td>${dmy(r.from)}${r.to !== r.from ? ' to ' + dmy(r.to) : ''}${r.half ? ` <span class="fine">${r.half === 'first' ? 'first' : 'second'} half</span>` : ''}</td><td class="r">${num(r.days)}</td>
-        <td>${esc(r.reason)}${r.note ? `<div class="fine">${esc(r.note)}</div>` : ''}</td><td>${lstat(r.status)}</td><td class="r">${['pending', 'pending-hr'].includes(r.status) || (r.status === 'approved' && r.from > todayISO()) ? `<button class="btn sm" data-act="leaveCancel" data-id="${r.id}">Cancel</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No leave requests yet.</div>'}</div>
+        <td>${esc(r.reason)}${r.note ? `<div class="fine">${esc(r.note)}</div>` : ''}${attachLinks(r.attachments)}</td><td>${lstat(r.status, r)}</td><td class="r">${['pending', 'pending-hr'].includes(r.status) || (r.status === 'approved' && r.from > todayISO()) ? `<button class="btn sm" data-act="leaveCancel" data-id="${r.id}">Cancel</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No leave requests yet.</div>'}</div>
 ` };
 };
 VIEWS.leavecal = () => {
@@ -1364,7 +1428,8 @@ ACT.leaveApply = (b) => {
     <div class="form"><label class="field">Leave type<select class="inp" name="typeId" data-ch="lvCalc">${types.map((lt) => `<option value="${lt.id}">${esc(lt.name)} (${lt.credit === 'none' ? 'no balance needed' : num(leaveBalance(emp, lt).available) + ' available'})</option>`).join('')}</select></label>
       <label class="field">From<input type="date" class="inp" name="from" value="${todayISO()}" data-ch="lvCalc"></label><label class="field">To<input type="date" class="inp" name="to" value="${todayISO()}" data-ch="lvCalc"></label>
       <label class="field">Half day<select class="inp" name="half" data-ch="lvCalc"><option value="">Full day(s)</option><option value="first">First half (one day only)</option><option value="second">Second half (one day only)</option></select></label>
-      <label class="field wide">Reason<textarea class="inp" name="reason" placeholder="A short reason for your manager"></textarea></label></div>
+      <label class="field wide">Reason<textarea class="inp" name="reason" placeholder="A short reason for your manager"></textarea></label>
+      <label class="field wide">Supporting documents<input type="file" class="inp" name="docs" multiple accept="image/*,application/pdf"><small id="lvDocHint">For example a medical certificate. Photos or PDF, up to 10 MB each.</small></label></div>
     <div class="note" id="lvInfo"></div><p class="err" id="lvErr"></p>
     <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send for approval</button></div></form>`);
   const calc = () => {
@@ -1372,13 +1437,14 @@ ACT.leaveApply = (b) => {
     if (f.to < f.from) $('#lf2').elements.to.value = f.to = f.from;
     const d = leaveDays(emp, lt, f.from, f.to, f.from === f.to ? f.half : '');
     const b = leaveBalance(emp, lt, f.from);
-    $('#lvInfo').textContent = `${num(d)} day${d === 1 ? '' : 's'} of leave${lt.sandwich ? ' (weekends and holidays in between count)' : ', not counting weekly offs and holidays'}. ${lt.credit === 'none' ? '' : `Available on ${dmy(f.from)}: ${num(b.available)}.`}`;
+    $('#lvInfo').textContent = `${num(d)} day${d === 1 ? '' : 's'} of leave${lt.sandwich ? ' (weekends and holidays in between count)' : ', not counting weekly offs and holidays'}. ${lt.credit === 'none' ? '' : `Available on ${dmy(f.from)}: ${num(b.available)}.`}${+lt.docAfterDays && d > +lt.docAfterDays ? ` A supporting document is needed for more than ${lt.docAfterDays} days.` : ''}`;
     return { f, lt, d, b };
   };
   ACT.lvCalc = calc; calc();
-  $('#lf2').onsubmit = (e) => {
+  $('#lf2').onsubmit = async (e) => {
     e.preventDefault();
     const { f, lt, d, b } = calc(); const err = (m) => { $('#lvErr').textContent = m; };
+    const files = [...($('#lf2').elements.docs.files || [])];
     const half = f.from === f.to ? f.half : '';
     if (f.half && f.from !== f.to) return err('A half day is for a single date.');
     if (half && !lt.halfDay) return err(`${lt.name} cannot be taken as a half day.`);
@@ -1389,11 +1455,17 @@ ACT.leaveApply = (b) => {
     if (lt.credit !== 'none' && !lt.allowNegative && d > b.available + 1e-9) return err(`Only ${num(b.available)} days of ${lt.name} are available.`);
     if (+lt.maxPerRequest && d > +lt.maxPerRequest) return err(`${lt.name} is limited to ${lt.maxPerRequest} days at a time.`);
     if (+lt.minNotice && f.from < addDays(todayISO(), +lt.minNotice) && emp.id === me.id) return err(`${lt.name} needs ${lt.minNotice} days' notice.`);
+    if (+lt.docAfterDays && d > +lt.docAfterDays && !files.length) return err(`Attach a supporting document: ${lt.name} for more than ${lt.docAfterDays} days needs one.`);
     const co = coById(emp.companyId);
     const r = { id: uid(), empId: emp.id, typeId: lt.id, from: f.from, to: f.to, half, days: d, reason: f.reason.trim(), status: 'pending', appliedAt: Date.now(), by: me.id,
-      needsHR: !!lt.needsHR || (+co.hrApprovalDays > 0 && d > +co.hrApprovalDays) };
-    if (!emp.managerId || !empById(emp.managerId)) r.status = r.needsHR ? 'pending-hr' : 'pending';
-    S.leaveReqs.push(r); saveNow(); closeDlg(); toast('Leave request sent'); route();
+      needsHR: !!lt.needsHR || (+co.hrApprovalDays > 0 && d > +co.hrApprovalDays), attachments: [], log: [] };
+    try { for (const file of files) { err(`Uploading ${file.name}…`); const up = await uploadFile(file); r.attachments.push({ fileId: up.id, name: file.name }); } }
+    catch (x) { return err(x.message); }
+    // approvers come from the leave workflow (Administration › Approval workflows)
+    r.steps = leaveSteps(emp, r, lt);
+    logEntry(r, 'Applied', `${num(d)} day${d === 1 ? '' : 's'} of ${lt.name}`);
+    if (!r.steps.length) { r.status = 'approved'; r.decidedBy = me.id; logEntry(r, 'No approval needed'); }
+    S.leaveReqs.push(r); saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Leave recorded' : `Leave request sent to ${r.steps[0].label.toLowerCase()}`); route();
   };
 };
 ACT.leaveDecide = async (b) => {
@@ -1401,6 +1473,13 @@ ACT.leaveDecide = async (b) => {
   const ok = b.dataset.ok === '1';
   const note = ok ? '' : await askText('Reject this leave?', 'Reason, shown to the employee', 'Reject');
   if (!ok && note === null) return;
+  if (r.steps) {
+    decide(r, ok, note || '');
+    if (!ok) r.note = note;
+    r.decidedBy = me.id; r.decidedAt = Date.now();
+    audit(`Leave ${ok ? 'approved' : 'rejected'}`, `${nameOf(r.empId)}: ${ltById(r.typeId).name} from ${dmy(r.from)}`, 'leave', 'employee', r.empId);
+    saveNow(); toast(!ok ? 'Leave rejected' : r.status === 'approved' ? 'Leave approved' : `Approved and passed to ${stepNow(r).label.toLowerCase()}`); route(); return;
+  }
   if (ok) { if (r.status === 'pending' && r.needsHR) { r.status = 'pending-hr'; r.mgrBy = me.id; } else { r.status = 'approved'; r.decidedBy = me.id; } }
   else { r.status = 'rejected'; r.note = note; r.decidedBy = me.id; }
   r.decidedAt = Date.now(); saveNow(); toast(ok ? (r.status === 'pending-hr' ? 'Approved and passed to HR' : 'Leave approved') : 'Leave rejected'); route();
@@ -1424,7 +1503,11 @@ VIEWS.leaveadmin = () => {
       { k: 'perYear', label: 'Days a year', type: 'number', min: 0 }, { k: 'carryMax', label: 'Carry forward up to (days)', type: 'number', min: 0 }, { k: 'maxPerRequest', label: 'Most days in one request (0 = no limit)', type: 'number', min: 0 },
       { k: 'minNotice', label: 'Days of notice needed', type: 'number', min: 0 }, { k: 'gender', label: 'For', type: 'select', opts: [['', 'Everyone'], ['F', 'Women'], ['M', 'Men']] },
       { k: 'sapCode', label: 'SAP absence type (AWART)' }, { k: 'paid', label: 'Paid leave', type: 'check' }, { k: 'halfDay', label: 'Half days allowed', type: 'check' }, { k: 'sandwich', label: 'Sandwich rule: count weekends and holidays in between', type: 'check' },
-      { k: 'encash', label: 'Encashed on exit', type: 'check' }, { k: 'allowNegative', label: 'Can go negative', type: 'check' }, { k: 'needsHR', label: 'HR approves after the manager', type: 'check' }, { k: 'probation', label: 'Available during probation', type: 'check' }, { k: 'active', label: 'Active', type: 'check' }],
+      { k: 'encash', label: 'Encashed on exit', type: 'check' }, { k: 'carryExpiryMonths', label: 'Carried-forward days lapse after (months, 0 = never)', type: 'number', min: 0 },
+      { k: 'yearEndEncashMax', label: 'Encash at year end, days above the carry limit (up to)', type: 'number', min: 0 },
+      { k: 'encashAnytime', label: 'Employees may request encashment during the year', type: 'check' }, { k: 'encashMin', label: 'Balance to keep after encashment (days)', type: 'number', min: 0 },
+      { k: 'encashMaxYear', label: 'Most days encashed in a leave year', type: 'number', min: 0 },
+      { k: 'docAfterDays', label: 'Supporting document needed for more than (days, 0 = never)', type: 'number', min: 0 }, { k: 'allowNegative', label: 'Can go negative', type: 'check' }, { k: 'needsHR', label: 'HR approves after the manager', type: 'check' }, { k: 'probation', label: 'Available during probation', type: 'check' }, { k: 'active', label: 'Active', type: 'check' }],
     cols: [{ k: 'code', label: 'Code' }, { k: 'name', label: 'Name' }, { label: 'Credit', fmt: (r) => (r.credit === 'none' ? 'None' : `${num(r.perYear)} a year, ${r.credit}`) }, { label: 'Carry forward', cls: 'r', fmt: (r) => num(r.carryMax) },
       { label: 'Rules', fmt: (r) => [r.paid === false && 'unpaid', r.sandwich && 'sandwich', r.encash && 'encashable', r.halfDay === false && 'no half days', r.needsHR && 'HR approval', r.gender && (r.gender === 'F' ? 'women' : 'men'), r.active === false && 'inactive'].filter(Boolean).map((x) => `<span class="chip">${x}</span>`).join('') }, { k: 'sapCode', label: 'SAP' }] });
   else if (tab === 'holidays') body = crudCard('holidays', { coll: 'holidays', title: 'Holiday calendar', one: 'holiday', filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }), sort: (a, b) => (a.date < b.date ? -1 : 1),
@@ -1510,8 +1593,9 @@ VIEWS.attendance = () => {
       <div class="tools"><input type="month" class="inp" value="${ym}" data-ch="attMonth">${emp.id === me.id ? '<button class="btn" data-act="regNew">Correct attendance</button>' : ''}</div></div>
       ${monthGrid(emp, ym, 'attDay')}
       <p class="fine" style="margin-top:10px">${Object.entries(ST_LABEL).map(([k, v]) => `<span class="st ${k}">${k}</span> ${v}`).join(' &nbsp; ')} &nbsp; <span class="st LT">Late</span> late mark</p></div>
+    ${punchesCard(emp, ym)}
     ${myOtCard(emp, ym)}
-    ${regs.length ? `<div class="card"><h2>Correction requests</h2><table class="t"><thead><tr><th>Date</th><th>Asked for</th><th>Reason</th><th>Status</th></tr></thead><tbody>${regs.map((r) => `<tr><td>${dmy(r.date)}</td><td>In ${esc(r.in)}${r.out ? `, out ${esc(r.out)}` : ''}</td><td>${esc(r.reason)}</td><td>${lstat(r.status === 'pending' ? 'pending' : r.status)}</td></tr>`).join('')}</tbody></table></div>` : ''}` };
+    ${regs.length ? `<div class="card"><h2>Attendance and shift change requests</h2><table class="t"><thead><tr><th>Date</th><th>Asked for</th><th>Reason</th><th>Status</th></tr></thead><tbody>${regs.map((r) => `<tr><td>${dmy(r.date)}</td><td>${regAsked(r)}</td><td>${esc(r.reason)}${r.note ? `<div class="fine">${esc(r.note)}</div>` : ''}</td><td>${lstat(r.status === 'pending' ? 'pending' : r.status, r)}${r.status === 'approved' && r.steps && !r.applied ? ' <span class="fine">to be applied</span>' : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}` };
 };
 ACT.attMonth = (el) => { const p = new URLSearchParams(R.q); p.set('m', el.value); go('#/attendance?' + p); };
 ACT.attDay = (b) => {
@@ -1527,16 +1611,17 @@ ACT.attDay = (b) => {
 };
 ACT.regNew = (b) => {
   const iso = (b && b.dataset.d) || addDays(todayISO(), -1); const sf = shiftFor(me, iso);
-  openDlg(`<form class="dlg" id="rgf" novalidate><h2>Correct attendance</h2><p class="fine" style="margin:0">For a missed or wrong punch. Your manager approves it.</p>
+  openDlg(`<form class="dlg" id="rgf" novalidate><h2>Correct attendance</h2><p class="fine" style="margin:0">For a missed or wrong punch. It goes for approval through the attendance workflow.</p>
     <div class="form"><label class="field">Date<input type="date" class="inp" name="date" value="${iso}" max="${todayISO()}"></label><label class="field">Time in<input type="time" class="inp" name="in" value="${sf.shift ? sf.shift.start : '09:30'}"></label>
     <label class="field">Time out<input type="time" class="inp" name="out" value="${sf.shift ? sf.shift.end : '18:30'}"></label><label class="field wide">Reason<input class="inp" name="reason" placeholder="e.g. forgot to punch out, on client visit"></label></div>
     <p class="err" id="rge"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send for approval</button></div></form>`);
-  $('#rgf').onsubmit = (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+  $('#rgf').onsubmit = (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const p0 = punchOf(me.id, f.date);
     if (!f.date || f.date > todayISO()) { $('#rge').textContent = 'Choose a date up to today.'; return; }
     if (f.out && toMin(f.out) <= toMin(f.in) && !(shiftFor(me, f.date).shift || {}).night) { $('#rge').textContent = 'Time out must be after time in.'; return; }
     if (f.reason.trim().length < 4) { $('#rge').textContent = 'Give a reason.'; return; }
     if (S.regs.some((r) => r.empId === me.id && r.date === f.date && r.status === 'pending')) { $('#rge').textContent = 'A correction for that day is already waiting.'; return; }
-    S.regs.push({ id: uid(), empId: me.id, date: f.date, in: f.in, out: f.out, reason: f.reason.trim(), status: 'pending', at: Date.now() }); saveNow(); closeDlg(); toast('Correction sent for approval'); route(); };
+    const r = newReg({ type: 'time', date: f.date, in: f.in, out: f.out, prevIn: p0 && p0.in ? hm(p0.in) : '', prevOut: p0 && p0.out ? hm(p0.out) : '', reason: f.reason.trim() });
+    saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Correction recorded' : `Correction sent to ${stepNow(r).label.toLowerCase()}`); route(); };
 };
 function setPunch(empId, iso, inT, outT, source) {
   let p = punchOf(empId, iso);
@@ -1547,6 +1632,12 @@ function setPunch(empId, iso, inT, outT, source) {
 ACT.regDecide = async (b) => {
   const r = S.regs.find((x) => x.id === b.dataset.id); if (!r) return; const ok = b.dataset.ok === '1';
   const note = ok ? '' : await askText('Reject this correction?', 'Reason, shown to the employee', 'Reject'); if (!ok && note === null) return;
+  if (r.steps) {
+    decide(r, ok, note || ''); if (!ok) r.note = note; r.decidedBy = me.id; r.decidedAt = Date.now();
+    if (r.status === 'approved') applyReg(r);
+    audit(`${r.type === 'shift' ? 'Shift change' : 'Attendance correction'} ${ok ? 'approved' : 'rejected'}`, `${nameOf(r.empId)}, ${dmy(r.date)}`, 'time', 'employee', r.empId);
+    saveNow(); toast(!ok ? 'Rejected' : r.status === 'approved' ? (r.applied ? 'Approved and applied' : 'Approved; the manager or HR applies it') : `Approved and passed to ${stepNow(r).label.toLowerCase()}`); route(); return;
+  }
   r.status = ok ? 'approved' : 'rejected'; r.note = note; r.decidedBy = me.id;
   if (ok) setPunch(r.empId, r.date, r.in, r.out, 'corrected');
   saveNow(); toast(ok ? 'Correction approved' : 'Correction rejected'); route();
@@ -1886,6 +1977,7 @@ VIEWS.performance = () => {
       <div class="tools" style="margin-bottom:10px"><span>Goal sheet: ${sheet === 'approved' ? '<span class="badge ok">Approved</span>' : sheet === 'submitted' ? '<span class="badge warn">Waiting for manager</span>' : sheet === 'returned' ? '<span class="badge bad">Returned for changes</span>' : '<span class="badge">Draft</span>'}</span>
         <span class="fine">Total weight ${wsum}%</span>${canEditGoals ? `<button class="btn sm" data-act="goalEdit" data-c="${cyc.id}">Add goal</button>${goals.length ? `<button class="btn sm pri" data-act="goalsSubmit" data-c="${cyc.id}" ${wsum !== 100 ? 'disabled title="Weights must total 100%"' : ''}>Send for approval</button>` : ''}` : ''}
         ${isMgrOf && sheet === 'submitted' ? `<button class="btn sm danger" data-act="goalsReturn" data-c="${cyc.id}" data-emp="${emp.id}">Return for changes</button><button class="btn sm ok" data-act="goalsApprove" data-c="${cyc.id}" data-emp="${emp.id}">Approve goals</button>` : ''}</div>
+      ${tplBanner(emp, cyc, goals, canEditGoals || (isMgrOf && cyc.stage === 'goals' && sheet !== 'approved'))}
       ${goals.length ? `<div class="scroll"><table class="t"><thead><tr><th>Goal</th><th>Area</th><th class="r">Weight</th><th>Target</th><th style="min-width:120px">Progress</th>${st >= 4 || canSelf || canMgr || selfScore ? '<th class="c">Self</th><th class="c">Manager</th>' : ''}<th></th></tr></thead><tbody>
         ${goals.map((g) => `<tr><td><b>${esc(g.title)}</b>${g.desc ? `<div class="fine">${esc(g.desc)}</div>` : ''}${(g.checkins || []).length ? `<div class="fine">Last check-in ${dmy(isoOf(new Date(g.checkins[g.checkins.length - 1].at)))}: ${esc(g.checkins[g.checkins.length - 1].note)}</div>` : ''}</td><td>${esc(g.kra)}</td><td class="r">${g.weight}%</td><td>${esc(g.target)}</td>
           <td><div class="bar"><i style="width:${Math.min(100, +g.progress || 0)}%"></i></div><span class="fine">${+g.progress || 0}%</span></td>
@@ -3189,6 +3281,1591 @@ ACT.mSync = async () => {
   } catch (e) { toast(e.message); }
 };
 
+
+/* =====================================================================
+   PeopleDesk v2
+   Reporting structure with dotted lines, moves on the organisation chart,
+   approval workflows, shift-based or time-only companies, goal templates,
+   fixed and variable pay, leave carry forward and encashment, expense claims,
+   employee enrolment with department checklists and assets, promotions and
+   progression, and activity logs.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------- common */
+const hrIdsOf = (coId) => S.employees.filter((e) => active(e) && (e.role === 'super' || (e.role === 'hr' && (e.companyId === coId || (e.hrCompanies || []).includes(coId))))).map((e) => e.id);
+const uniq = (arr) => [...new Set(arr.filter(Boolean))];
+/* the first payroll month that is not locked yet (amounts posted now are paid then) */
+function nextOpenMonth(coId) {
+  const locked = S.payRuns.filter((r) => r.companyId === coId && r.status === 'locked').map((r) => r.month).sort();
+  const cur = todayISO().slice(0, 7);
+  const nx = locked.length ? ymAdd(locked[locked.length - 1], 1) : cur;
+  return nx > cur ? nx : cur;
+}
+const monthOpts = (coId) => { const m0 = nextOpenMonth(coId); return [0, 1, 2, 3].map((i) => [ymAdd(m0, i), monthName(ymAdd(m0, i))]); };
+/* each workflow record keeps its own activity log, visible to everyone taking part */
+function logEntry(rec, what, note = '') { (rec.log = rec.log || []).push({ at: Date.now(), by: me.id, what, note: note || '' }); }
+const logTable = (log) => ((log || []).length ? `<table class="t"><thead><tr><th>When</th><th>Who</th><th>What</th><th>Note</th></tr></thead><tbody>${log.slice().reverse().map((l) => `<tr><td class="fine" style="white-space:nowrap">${dt(l.at)}</td><td>${esc(nameOf(l.by))}</td><td>${esc(l.what)}</td><td class="fine">${esc(l.note || '')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing recorded yet.</div>');
+function ensureComp(coId, code, name, extra) {
+  if (!S.payComps.some((c) => c.companyId === coId && c.code === code)) S.payComps.push({ id: uid(), companyId: coId, code, name, kind: 'earning', calc: 'input', value: 0, order: 7, taxable: true, prorate: false, esi: true, wages: false, sapWT: code, ...extra });
+}
+/* daily wages for encashment: Labour Code wages (basic, DA, retaining) ÷ the encashment divisor, as on exit */
+function wagesPerDay(e, ym) {
+  const sal = salaryAt(e, todayISO()); if (!sal) return 0;
+  return structure(e, sal.ctc, ym).wages.deemed / (S.stat.encashDivisor || 30);
+}
+const pill = (status) => {
+  const cls = { pending: 'warn', submitted: 'warn', approved: 'ok', applied: 'ok', paid: 'ok', done: 'ok', completed: 'ok', issued: 'mari', rejected: 'bad', withdrawn: '', draft: '', open: 'warn', returned: '', 'in stock': '', na: '' }[status] || '';
+  const label = { na: 'Not needed', 'in stock': 'In stock' }[status] || (status ? status[0].toUpperCase() + status.slice(1) : '');
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+};
+async function uploadFile(file) {
+  const fd = new FormData(); fd.append('file', file);
+  const r = await fetch('/api/files', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'x-peopledesk': '1' } });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'The file could not be uploaded.');
+  return d;
+}
+const checkList = (name, opts, selected) => `<div class="picklist">${opts.map(([v, l]) => `<label><input type="checkbox" name="${name}" value="${esc(v)}" ${(selected || []).includes(v) ? 'checked' : ''}> ${esc(l)}</label>`).join('') || '<span class="fine">Nothing to choose.</span>'}</div>`;
+const checked = (form, name) => [...form.querySelectorAll(`input[name="${name}"]:checked`)].map((i) => i.value);
+
+/* ---------------------------------------------------------------- reporting structure and dated records */
+/* Every change of line or dotted-line manager is kept with its effective date */
+function recordReporting(e, date, managerId, matrixIds, reason) {
+  const before = { managerId: e.managerId || '', matrix: (e.matrixManagerIds || []).slice().sort().join(',') };
+  const after = { managerId: managerId || '', matrix: (matrixIds || []).slice().sort().join(',') };
+  if (before.managerId === after.managerId && before.matrix === after.matrix && (e.reportingHist || []).length) return;
+  (e.reportingHist = e.reportingHist || []).push({ from: date, managerId: managerId || '', matrixManagerIds: matrixIds || [], reason, by: me.id, at: Date.now() });
+}
+function recordGrade(e, date, reason) {
+  (e.gradeHist = e.gradeHist || []).push({ from: date, gradeId: e.gradeId || '', desigId: e.desigId || '', reason, by: me.id, at: Date.now() });
+}
+/* applies a reporting change now, or keeps it until its effective date */
+function applyReporting(e, m) {
+  const old = e.managerId || '';
+  if (m.lineManagerId !== undefined) e.managerId = m.lineManagerId;
+  if (m.matrixIds) e.matrixManagerIds = m.matrixIds.filter((id) => id !== e.managerId && id !== e.id);
+  if (m.deptId !== undefined && m.deptId !== e.deptId) e.deptId = m.deptId;
+  if (m.reportees === 'stay' && old !== e.managerId) reportees(e.id).forEach((r) => { recordReporting(r, m.date, old, r.matrixManagerIds || [], `Line manager ${fullName(e)} moved`); r.managerId = old; r.history.push({ date: m.date, type: 'Reporting change', note: `Now reports to ${nameOf(old)}; ${fullName(e)} moved`, by: me.id }); });
+  recordReporting(e, m.date, e.managerId, e.matrixManagerIds || [], m.reason || 'Reporting change');
+  e.history.push({ date: m.date, type: 'Reporting change', note: m.summary, by: me.id });
+  audit('Reporting change', `${fullName(e)}: ${m.summary}`, 'org', 'employee', e.id);
+}
+function applyDueMoves() {
+  let n = 0; const t = todayISO();
+  S.employees.forEach((e) => {
+    const due = (e.pendingMoves || []).filter((m) => m.date <= t && isHR(e.companyId));
+    if (!due.length) return;
+    due.sort((a, b) => (a.date < b.date ? -1 : 1)).forEach((m) => { applyReporting(e, m); n++; });
+    e.pendingMoves = (e.pendingMoves || []).filter((m) => !due.includes(m));
+  });
+  if (n) setTimeout(() => { saveNow(); toast(`${n} scheduled reporting change${n > 1 ? 's' : ''} took effect`); }, 0);
+  return n;
+}
+/* Move dialog: from drag-and-drop, the ⇄ button or the reporting page */
+function moveDialog(e, targetId) {
+  const sameCo = (x) => x.companyId === e.companyId && active(x) && x.id !== e.id && !allReportees(e.id).includes(x.id);
+  const mgrs = S.employees.filter(sameCo).sort((a, b) => fullName(a).localeCompare(fullName(b)));
+  const target = targetId ? empById(targetId) : null;
+  const team = reportees(e.id);
+  openDlg(`<form class="dlg" id="mvF" novalidate><h2>Move ${esc(fullName(e))}</h2>
+    <p class="fine" style="margin:0">Now reports to <b>${esc(nameOf(e.managerId))}</b>${(e.matrixManagerIds || []).length ? `, dotted line to ${esc(e.matrixManagerIds.map(nameOf).join(', '))}` : ''}. ${team.length ? `${team.length} people report to ${esc(e.firstName)}.` : ''}</p>
+    <div class="form">
+      <label class="field">New manager<select class="inp" name="mgr"><option value="">No one (top of the chart)</option>${mgrs.map((m) => `<option value="${m.id}" ${target && m.id === target.id ? 'selected' : ''}>${esc(fullName(m))}, ${esc((desig(m.desigId) || {}).name || '')}</option>`).join('')}</select></label>
+      <label class="field">Relationship<select class="inp" name="rel"><option value="line">Line manager (replaces ${esc(nameOf(e.managerId) === '—' ? 'none' : nameOf(e.managerId))})</option><option value="dotted">Dotted-line manager, in addition</option></select></label>
+      <label class="field">Effective date<input class="inp" type="date" name="date" value="${todayISO()}"><small>A future date is applied automatically on that day.</small></label>
+      <label class="field">Department<select class="inp" name="dept"><option value="keep">Keep ${esc((dept(e.deptId) || {}).name || 'current')}</option><option value="mgr">Move to the new manager’s department</option></select></label>
+      ${team.length ? `<label class="field wide">${esc(e.firstName)}’s team<select class="inp" name="team"><option value="with">Moves with ${esc(e.firstName)}</option><option value="stay">Stays: they report to ${esc(nameOf(e.managerId))} instead</option></select></label>` : ''}
+      <label class="field wide">Reason<input class="inp" name="note" placeholder="e.g. Reorganisation of the warehouse team"></label></div>
+    <p class="err" id="mvE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Move</button></div></form>`, true);
+  $('#mvF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target;
+    const mgr = f.elements.mgr.value, rel = f.elements.rel.value, date = f.elements.date.value || todayISO();
+    if (rel === 'dotted' && !mgr) { $('#mvE').textContent = 'Choose the dotted-line manager.'; return; }
+    if (rel === 'line' && mgr === (e.managerId || '')) { $('#mvE').textContent = `${e.firstName} already reports to ${nameOf(mgr)}.`; return; }
+    if (rel === 'dotted' && (mgr === e.managerId || (e.matrixManagerIds || []).includes(mgr))) { $('#mvE').textContent = 'That is already one of their managers.'; return; }
+    const m = { date, reason: f.elements.note.value.trim() || (rel === 'line' ? 'Moved on the organisation chart' : 'Dotted line added'), reportees: f.elements.team ? f.elements.team.value : 'with', by: me.id };
+    if (rel === 'line') { m.lineManagerId = mgr; m.summary = `Line manager ${nameOf(e.managerId)} → ${mgr ? nameOf(mgr) : 'none'}`; }
+    else { m.matrixIds = uniq([...(e.matrixManagerIds || []), mgr]); m.summary = `Dotted line to ${nameOf(mgr)} added`; }
+    if (f.elements.dept.value === 'mgr' && mgr) { const nd = (empById(mgr) || {}).deptId || ''; if (nd !== e.deptId) { m.deptId = nd; m.summary += `; department ${(dept(e.deptId) || {}).name || '—'} → ${(dept(nd) || {}).name || '—'}`; } }
+    if (m.reason) m.summary += `. ${m.reason}`;
+    if (date > todayISO()) { (e.pendingMoves = e.pendingMoves || []).push(m); audit('Reporting change scheduled', `${fullName(e)} from ${dmy(date)}: ${m.summary}`, 'org', 'employee', e.id); toast(`Scheduled for ${dmy(date)}`); }
+    else { applyReporting(e, m); toast('Moved'); }
+    saveNow(); closeDlg(); route();
+  };
+}
+ACT.orgMove = (b) => moveDialog(empById(b.dataset.id));
+function wireOrgDrag(tree) {
+  let dragId = '';
+  tree.querySelectorAll('[data-org][draggable="true"]').forEach((n) => {
+    n.addEventListener('dragstart', (ev) => { dragId = n.dataset.org; ev.dataTransfer.setData('text/plain', dragId); ev.dataTransfer.effectAllowed = 'move'; n.classList.add('dragging'); });
+    n.addEventListener('dragend', () => { n.classList.remove('dragging'); tree.querySelectorAll('.dropok').forEach((x) => x.classList.remove('dropok')); });
+  });
+  tree.querySelectorAll('[data-org]').forEach((n) => {
+    n.addEventListener('dragover', (ev) => { const id = n.dataset.org; if (!dragId || id === dragId || allReportees(dragId).includes(id)) return; ev.preventDefault(); n.classList.add('dropok'); });
+    n.addEventListener('dragleave', () => n.classList.remove('dropok'));
+    n.addEventListener('drop', (ev) => { ev.preventDefault(); n.classList.remove('dropok'); const id = ev.dataTransfer.getData('text/plain') || dragId; const e = empById(id); if (e && id !== n.dataset.org) moveDialog(e, n.dataset.org); });
+  });
+}
+/* Reporting lines dialog (personnel action and reporting page): line manager plus any number of dotted-line managers */
+ACT.reportEdit = (b) => {
+  const e = empById(b.dataset.id); closeDlg();
+  const others = S.employees.filter((x) => x.companyId === e.companyId && active(x) && x.id !== e.id && !allReportees(e.id).includes(x.id)).sort((a, c) => fullName(a).localeCompare(fullName(c)));
+  setTimeout(() => {
+    openDlg(`<form class="dlg" id="rlF" novalidate><h2>Reporting lines: ${esc(fullName(e))}</h2><div class="form">
+      <label class="field">Line manager<select class="inp" name="mgr"><option value="">No one</option>${others.map((m) => `<option value="${m.id}" ${m.id === e.managerId ? 'selected' : ''}>${esc(fullName(m))}</option>`).join('')}</select><small>Approves leave, attendance and goals.</small></label>
+      <label class="field">Effective date<input class="inp" type="date" name="date" value="${todayISO()}"></label>
+      <div class="field wide">Dotted-line managers<small>See this person in their team views and can take part in approval workflows that include dotted-line managers.</small>${checkList('mx', others.map((m) => [m.id, `${fullName(m)}, ${(desig(m.desigId) || {}).name || ''}`]), e.matrixManagerIds || [])}</div>
+      <label class="field wide">Reason<input class="inp" name="note"></label></div>
+      <p class="err" id="rlE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+    $('#rlF').onsubmit = (ev) => {
+      ev.preventDefault(); const f = ev.target; const mgr = f.elements.mgr.value; const mx = checked(f, 'mx').filter((x) => x !== mgr);
+      const same = mgr === (e.managerId || '') && mx.slice().sort().join() === (e.matrixManagerIds || []).slice().sort().join();
+      if (same) { $('#rlE').textContent = 'Nothing changes.'; return; }
+      const parts = []; if (mgr !== (e.managerId || '')) parts.push(`line manager ${nameOf(e.managerId)} → ${mgr ? nameOf(mgr) : 'none'}`);
+      if (mx.slice().sort().join() !== (e.matrixManagerIds || []).slice().sort().join()) parts.push(`dotted line: ${mx.length ? mx.map(nameOf).join(', ') : 'none'}`);
+      const m = { date: f.elements.date.value || todayISO(), lineManagerId: mgr, matrixIds: mx, reason: f.elements.note.value.trim() || 'Reporting lines changed', summary: parts.join('; ') + (f.elements.note.value.trim() ? `. ${f.elements.note.value.trim()}` : '') };
+      if (m.date > todayISO()) { (e.pendingMoves = e.pendingMoves || []).push(m); audit('Reporting change scheduled', `${fullName(e)} from ${dmy(m.date)}`, 'org', 'employee', e.id); toast(`Scheduled for ${dmy(m.date)}`); }
+      else { applyReporting(e, m); toast('Reporting lines saved'); }
+      saveNow(); closeDlg(); route();
+    };
+  }, 0);
+};
+VIEWS.reporting = () => {
+  if (isHR()) applyDueMoves();
+  const q = (R.q.get('q') || '').toLowerCase();
+  const emps = (isHR() ? coEmployees() : visibleEmps()).filter((e) => !q || `${fullName(e)} ${(desig(e.desigId) || {}).name || ''} ${nameOf(e.managerId)}`.toLowerCase().includes(q))
+    .sort((a, b) => nameOf(a.managerId).localeCompare(nameOf(b.managerId)) || fullName(a).localeCompare(fullName(b)));
+  const since = (e) => { const h = (e.reportingHist || []).slice(-1)[0]; return h ? dmy(h.from) : dmy(e.doj); };
+  const recent = coEmployees().flatMap((e) => (e.reportingHist || []).map((h) => ({ e, h }))).filter(({ h }) => h.at > Date.now() - 90 * 86400000).sort((a, b) => b.h.at - a.h.at).slice(0, 15);
+  const scheduled = coEmployees().flatMap((e) => (e.pendingMoves || []).map((m) => ({ e, m })));
+  return { title: 'Reporting structure', html: `
+    <div class="card"><div class="hd"><div><h2>Who reports to whom</h2><p class="sub">Each person has one line manager and any number of dotted-line managers. Changes keep their effective dates. You can also drag people on the <a href="#/org">organisation chart</a>.</p></div>
+      <input class="inp" placeholder="Find a person or manager" value="${esc(R.q.get('q') || '')}" data-ch="repQ" style="width:220px"></div>
+      <div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Line manager</th><th>Dotted-line managers</th><th class="r">Direct reports</th><th class="r">Dotted reports</th><th>Since</th><th></th></tr></thead><tbody>
+      ${emps.map((e) => `<tr><td><a href="#/profile/${e.id}?tab=reporting"><b>${esc(fullName(e))}</b></a><div class="fine">${esc((desig(e.desigId) || {}).name || '')}, ${esc((dept(e.deptId) || {}).name || '')}</div></td>
+        <td>${esc(nameOf(e.managerId))}</td><td>${(e.matrixManagerIds || []).map((id) => `<span class="chip">${esc(nameOf(id))}</span>`).join('') || '<span class="fine">—</span>'}</td>
+        <td class="r">${reportees(e.id).length || ''}</td><td class="r">${matrixReportees(e.id).length || ''}</td><td class="fine">${since(e)}${(e.pendingMoves || []).length ? ' <span class="badge warn">Change scheduled</span>' : ''}</td>
+        <td class="r">${isHR(e.companyId) ? `<button class="btn sm" data-act="reportEdit" data-id="${e.id}">Change</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="grid g2"><div class="card"><h2>Recent changes</h2>${recent.length ? `<table class="t"><tbody>${recent.map(({ e, h }) => `<tr><td class="fine" style="white-space:nowrap">${dmy(h.from)}</td><td><b>${esc(fullName(e))}</b> → ${esc(nameOf(h.managerId))}${(h.matrixManagerIds || []).length ? ` <span class="fine">(dotted: ${esc(h.matrixManagerIds.map(nameOf).join(', '))})</span>` : ''}<div class="fine">${esc(h.reason || '')}, by ${esc(nameOf(h.by))}</div></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No changes in the last 90 days.</div>'}</div>
+      <div class="card"><h2>Scheduled</h2>${scheduled.length ? `<table class="t"><tbody>${scheduled.map(({ e, m }) => `<tr><td class="fine">${dmy(m.date)}</td><td><b>${esc(fullName(e))}</b><div class="fine">${esc(m.summary)}</div></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing scheduled.</div>'}</div></div>` };
+};
+ACT.repQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/reporting?' + p); };
+
+/* ---------------------------------------------------------------- profile tabs added in v2 */
+const PROFILE_TABS = {};
+PROFILE_TABS.reporting = (e, { hr }) => {
+  const hist = (e.reportingHist || []).slice().reverse();
+  return `<div class="card"><div class="hd"><div><h2>Reporting lines</h2><p class="sub">Line manager approves leave, attendance and goals. Dotted-line managers see this person in their team views and take part in workflows that include them.</p></div>
+    ${hr ? `<button class="btn" data-act="reportEdit" data-id="${e.id}">Change reporting lines</button>` : ''}</div>
+    <div class="grid g2"><div><h3 style="margin-top:0">Reports to</h3><p><b>${esc(nameOf(e.managerId))}</b> <span class="badge">Line</span></p>${(e.matrixManagerIds || []).map((id) => `<p style="margin:4px 0">${esc(nameOf(id))} <span class="badge">Dotted line</span></p>`).join('')}
+      ${(e.pendingMoves || []).map((m) => `<div class="note warn">From ${dmy(m.date)}: ${esc(m.summary)}</div>`).join('')}</div>
+      <div><h3 style="margin-top:0">Team</h3><p class="fine">${reportees(e.id).length} direct, ${matrixReportees(e.id).length} dotted line, ${allReportees(e.id).length} in total under them.</p>
+        ${reportees(e.id).map((r) => `<span class="chip">${esc(fullName(r))}</span>`).join('')}${matrixReportees(e.id).map((r) => `<span class="chip">⋯ ${esc(fullName(r))}</span>`).join('')}</div></div>
+    <h3>History</h3>${hist.length ? `<table class="t"><thead><tr><th>From</th><th>Line manager</th><th>Dotted line</th><th>Reason</th><th>By</th></tr></thead><tbody>${hist.map((h) => `<tr><td>${dmy(h.from)}</td><td>${esc(nameOf(h.managerId))}</td><td>${esc((h.matrixManagerIds || []).map(nameOf).join(', ') || '—')}</td><td>${esc(h.reason || '')}</td><td class="fine">${esc(nameOf(h.by))}</td></tr>`).join('')}</tbody></table>` : `<p class="fine">Reports to ${esc(nameOf(e.managerId))} since joining on ${dmy(e.doj)}.</p>`}</div>`;
+};
+PROFILE_TABS.activity = (e) => {
+  const rows = S.audit.filter((a) => a.refId === e.id || (a.refType === 'employee' && a.refId === e.id));
+  return `<div class="card"><h2>Activity log</h2><p class="sub">Changes made to ${esc(e.firstName)}’s records, and by whom. Personnel actions with effective dates are on the History tab.</p>
+    ${rows.length ? `<table class="t"><thead><tr><th>When</th><th>Who</th><th>Area</th><th>What</th><th>Details</th></tr></thead><tbody>${rows.map((a) => `<tr><td class="fine" style="white-space:nowrap">${dt(a.at)}</td><td>${esc(nameOf(a.by))}</td><td class="fine">${esc(MODULES[a.module] || a.module || '')}</td><td>${esc(a.what)}</td><td class="fine">${esc(a.detail || '')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing recorded yet.</div>'}</div>`;
+};
+
+/* ---------------------------------------------------------------- approval workflows */
+/* Each company sets, per request type, the chain of approvers. The chain is resolved to
+   people when a request is submitted, so later reorganisations do not change open requests. */
+const FLOW_TYPES = {
+  expense: { label: 'Expense claims', def: [{ level: 'manager' }, { level: 'hr' }], hrLast: false },
+  encash: { label: 'Leave encashment', def: [{ level: 'manager' }, { level: 'hr' }], hrLast: true },
+  promotion: { label: 'Promotion proposals', def: [{ level: 'skip' }, { level: 'hr' }], hrLast: true },
+  statutory: { label: 'Statutory details changes', def: [{ level: 'hr' }], hrLast: true, note: 'Employees request changes to PAN, Aadhaar, UAN and other statutory details with supporting documents. HR is e-mailed and approves last.' },
+  attendance: { label: 'Attendance corrections (punch times)', def: [{ level: 'manager' }], hrLast: false, note: 'When an employee edits a punch-in or punch-out time. Approved times replace the punches for that day.' },
+  shiftchange: { label: 'Shift changes', def: [{ level: 'manager' }], hrLast: false, note: 'When an employee asks to work a different shift, or a weekly off, on a day. Approved changes update the roster.' },
+  leave: { label: 'Leave', def: [{ level: 'manager' }], hrLast: false, unit: 'days', note: 'Applies to new leave requests. A step “only from” a number of days applies to longer leave. HR is added when the leave type or the company’s HR approval limit requires it.' },
+};
+const LEVELS = { manager: 'Line manager', matrix: 'Dotted-line manager', skip: 'Manager’s manager', deptHead: 'Head of department', payroll: 'Payroll approver', person: 'A named person', hr: 'HR' };
+const flowFor = (coId, type) => (((coById(coId) || {}).flows || {})[type] || FLOW_TYPES[type].def);
+function buildSteps(type, emp, amount, requesterId) {
+  const co = coById(emp.companyId) || {};
+  const steps = [];
+  const resolve = (l) => {
+    const mgr = empById(emp.managerId);
+    if (l.level === 'manager') return [emp.managerId];
+    if (l.level === 'matrix') return emp.matrixManagerIds || [];
+    if (l.level === 'skip') return [mgr && mgr.managerId];
+    if (l.level === 'deptHead') return [(dept(emp.deptId) || {}).headId];
+    if (l.level === 'payroll') return [co.payrollApproverId];
+    if (l.level === 'person') return [l.personId];
+    if (l.level === 'hr') return hrIdsOf(emp.companyId);
+    return [];
+  };
+  const unit = FLOW_TYPES[type].unit;
+  let chain = flowFor(emp.companyId, type).filter((l) => !(+l.minAmount > 0) || (unit ? (+amount || 0) > +l.minAmount : (+amount || 0) >= +l.minAmount));
+  if (FLOW_TYPES[type].hrLast && (!chain.length || chain[chain.length - 1].level !== 'hr')) chain = [...chain, { level: 'hr' }];
+  chain.forEach((l) => {
+    const ids = uniq(resolve(l)).filter((id) => empById(id) && active(empById(id)) && id !== emp.id && (l.level === 'hr' || id !== requesterId));
+    if (!ids.length) return;                                     // nobody in that role: the step is skipped
+    const prev = steps[steps.length - 1];
+    if (prev && prev.approverIds.join() === ids.join()) return;  // same person twice in a row approves once
+    steps.push({ level: l.level, label: l.level === 'person' ? nameOf(l.personId) : LEVELS[l.level], approverIds: ids, decision: '', by: '', at: 0, note: '' });
+  });
+  return steps;
+}
+const stepNow = (rec) => (rec.steps || []).find((s) => !s.decision);
+const canDecide = (rec) => { const s = stepNow(rec); return rec.status === 'pending' && s && me.id !== rec.empId && (s.approverIds.includes(me.id) || (s.level === 'hr' && isHR(rec.companyId))); };
+function participantsOf(rec, extra = []) { return uniq([rec.empId, rec.by, ...(rec.steps || []).flatMap((s) => s.approverIds), ...hrIdsOf(rec.companyId), ...extra]); }
+const stepsHtml = (rec) => `<ol class="steps">${(rec.steps || []).map((s) => `<li class="${s.decision || (s === stepNow(rec) && rec.status === 'pending' ? 'now' : '')}"><b>${esc(s.label)}</b>: ${esc(s.level === 'hr' ? 'any HR administrator' : s.approverIds.map(nameOf).join(' or '))}
+  ${s.decision ? `<div class="fine">${s.decision === 'approved' ? 'Approved' : 'Rejected'} by ${esc(nameOf(s.by))}, ${dt(s.at)}${s.note ? `: ${esc(s.note)}` : ''}</div>` : s === stepNow(rec) && rec.status === 'pending' ? '<div class="fine">Waiting</div>' : ''}</li>`).join('') || '<li>No approval needed.</li>'}</ol>`;
+/* records a decision; returns true when the whole chain is approved */
+function decide(rec, ok, note) {
+  const s = stepNow(rec);
+  Object.assign(s, { decision: ok ? 'approved' : 'rejected', by: me.id, at: Date.now(), note: note || '' });
+  logEntry(rec, `${ok ? 'Approved' : 'Rejected'} (${s.label})`, note);
+  if (!ok) rec.status = 'rejected';
+  else if (!stepNow(rec)) rec.status = 'approved';
+  return rec.status === 'approved';
+}
+function decideDialog(title, onDone) {
+  openDlg(`<form class="dlg" id="dcF"><h2>${esc(title)}</h2><label class="field">Note (optional for approval, needed to reject)<textarea class="inp" name="n"></textarea></label><p class="err" id="dcE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn danger" id="dcNo">Reject</button><button class="btn ok">Approve</button></div></form>`);
+  $('#dcF').onsubmit = (ev) => { ev.preventDefault(); onDone(true, ev.target.elements.n.value.trim()); };
+  $('#dcNo').onclick = () => { const n = $('#dcF').elements.n.value.trim(); if (!n) { $('#dcE').textContent = 'Say why it is rejected.'; return; } onDone(false, n); };
+}
+VIEWS.flows = () => {
+  const co = company(); const flows = co.flows || {};
+  return { title: 'Approval workflows', html: `<div class="card"><h2>Approval workflows for ${esc(co.name)}</h2>
+    <p class="sub">Who approves each kind of request, in order. A step is skipped when nobody holds that role (for example no dotted-line manager), and someone never approves their own request. Leave, attendance, overtime and goals keep their own rules under Leave and Time Management.</p></div>
+    ${Object.entries(FLOW_TYPES).filter(([, t]) => !t.hidden).map(([k, t]) => { const ch = flows[k] || t.def; return `<div class="card"><div class="hd"><div><h2>${esc(t.label)}</h2><p class="sub">${t.note || (t.hrLast ? 'HR always approves last, because the result changes pay or leave records.' : 'After approval, HR pays the claim through payroll or marks it paid.')}</p></div><button class="btn" data-act="flowEdit" data-k="${k}">Change</button></div>
+      <ol class="steps">${ch.map((l) => `<li><b>${esc(l.level === 'person' ? nameOf(l.personId) : LEVELS[l.level])}</b>${+l.minAmount > 0 ? ` <span class="fine">only for ${t.unit ? `more than ${l.minAmount} ${t.unit}` : `${inr0(l.minAmount)} or more`}</span>` : ''}</li>`).join('')}${t.hrLast && ch[ch.length - 1]?.level !== 'hr' ? '<li><b>HR</b> <span class="fine">added automatically</span></li>' : ''}</ol></div>`; }).join('')}` };
+};
+ACT.flowEdit = (b) => {
+  const co = company(); const k = b.dataset.k; let ch = JSON.parse(JSON.stringify(flowFor(co.id, k)));
+  const people = coEmployees().sort((a, c) => fullName(a).localeCompare(fullName(c)));
+  const draw = () => {
+    openDlg(`<form class="dlg" id="flF" novalidate><h2>${esc(FLOW_TYPES[k].label)}: approvers in order</h2><div id="flRows">${ch.map((l, i) => `<div class="form" style="grid-template-columns:2fr 2fr ${k === 'expense' || FLOW_TYPES[k].unit ? '1.2fr ' : ''}auto;align-items:end;margin-bottom:6px">
+      <label class="field">Step ${i + 1}<select class="inp" data-i="${i}" data-f="level">${Object.entries(LEVELS).map(([v, n]) => `<option value="${v}" ${v === l.level ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+      <label class="field" ${l.level === 'person' ? '' : 'style="visibility:hidden"'}>Person<select class="inp" data-i="${i}" data-f="personId"><option value="">Choose</option>${people.map((p) => `<option value="${p.id}" ${p.id === l.personId ? 'selected' : ''}>${esc(fullName(p))}</option>`).join('')}</select></label>
+      ${k === 'expense' || FLOW_TYPES[k].unit ? `<label class="field">Only from (${FLOW_TYPES[k].unit || '₹'})<input class="inp" type="number" min="0" data-i="${i}" data-f="minAmount" value="${esc(l.minAmount || '')}"></label>` : ''}
+      <div class="tools"><button type="button" class="btn sm" data-mv="${i}" data-d="-1" ${i ? '' : 'disabled'}>↑</button><button type="button" class="btn sm" data-mv="${i}" data-d="1" ${i < ch.length - 1 ? '' : 'disabled'}>↓</button><button type="button" class="btn sm danger" data-rm="${i}">✕</button></div></div>`).join('')}</div>
+      <button type="button" class="btn sm" id="flAdd">Add a step</button>
+      <p class="err" id="flE"></p><div class="btns"><button type="button" class="btn ghost" id="flReset" style="margin-right:auto">Restore default</button><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+    const f = $('#flF');
+    f.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('change', () => { ch[+el.dataset.i][el.dataset.f] = el.dataset.f === 'minAmount' ? +el.value || 0 : el.value; if (el.dataset.f === 'level') draw(); }));
+    f.querySelectorAll('[data-mv]').forEach((el) => { el.onclick = () => { const i = +el.dataset.mv, j = i + +el.dataset.d; [ch[i], ch[j]] = [ch[j], ch[i]]; draw(); }; });
+    f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { ch.splice(+el.dataset.rm, 1); draw(); }; });
+    $('#flAdd').onclick = () => { ch.push({ level: 'hr' }); draw(); };
+    $('#flReset').onclick = () => { ch = JSON.parse(JSON.stringify(FLOW_TYPES[k].def)); draw(); };
+    f.onsubmit = (ev) => {
+      ev.preventDefault();
+      if (ch.some((l) => l.level === 'person' && !l.personId)) { $('#flE').textContent = 'Choose the person for each “named person” step.'; return; }
+      co.flows = { ...(co.flows || {}), [k]: ch }; audit('Approval workflow changed', `${FLOW_TYPES[k].label}: ${ch.map((l) => LEVELS[l.level]).join(' → ')}`, 'approvals');
+      saveNow(); closeDlg(); toast('Workflow saved'); route();
+    };
+  };
+  draw();
+};
+
+/* a generic request (promotion proposal or leave encashment) on its own page */
+const REQ_KIND = { promotion: 'Promotion proposal', encash: 'Leave encashment', statutory: 'Statutory details change' };
+const reqSummary = (r) => (r.kind === 'promotion' ? `${(desig(r.desigId) || {}).name || '—'}, grade ${(grade(r.gradeId) || {}).name || '—'}${r.ctc ? `, fixed CTC ${inr0(r.ctc)}` : ''}`
+  : r.kind === 'encash' ? `${num(r.days)} days of ${(ltById(r.typeId) || {}).name || 'leave'}, about ${inr0(r.estAmount)}`
+  : r.kind === 'statutory' ? `${Object.keys(r.changes || {}).map((k) => statLabel(k)).join(', ')} with ${(r.documents || []).length} document${(r.documents || []).length === 1 ? '' : 's'}` : '');
+VIEWS.request = () => {
+  const r = S.requests.find((x) => x.id === R.arg);
+  if (!r) return { title: 'Request', html: '<div class="empty">That request no longer exists.</div>' };
+  const e = empById(r.empId) || {};
+  const hrCan = isHR(r.companyId) && r.status === 'approved' && FLOW_TYPES[r.kind] && FLOW_TYPES[r.kind].hrLast;
+  return { title: `${REQ_KIND[r.kind]}: ${fullName(e)}`, html: `<div class="grid g21"><div class="card"><div class="hd"><div><h2>${esc(REQ_KIND[r.kind])} for ${esc(fullName(e))}</h2><p class="sub">${esc(r.no || '')} · raised by ${esc(nameOf(r.by))} on ${dt(r.at)} · ${pill(r.status)}</p></div>
+      <div class="tools">${canDecide(r) ? `<button class="btn pri" data-act="reqDecide" data-id="${r.id}">Approve or reject</button>` : ''}${hrCan ? `<button class="btn pri" data-act="reqApply" data-id="${r.id}">Apply now</button>` : ''}
+        ${r.by === me.id && r.status === 'pending' && !(r.steps || []).some((s) => s.decision) ? `<button class="btn" data-act="reqWithdraw" data-id="${r.id}">Withdraw</button>` : ''}</div></div>
+      <table class="t"><tbody>${r.kind === 'statutory' ? `${Object.entries(r.changes || {}).map(([k, v]) => `<tr><td class="mut">${esc(statLabel(k))}</td><td>${esc(r.old && r.old[k] ? (k === 'aadhaar' && !isHR(r.companyId) ? 'XXXX XXXX ' + String(r.old[k]).slice(-4) : r.old[k]) : '—')} → <b>${esc(v)}</b>
+          ${(r.documents || []).filter((d) => d.field === k).map((d) => `<div><a href="/api/files/${d.fileId}" target="_blank" rel="noopener">📎 ${esc(d.name)}</a></div>`).join('')}</td></tr>`).join('')}
+        ${r.reason ? `<tr><td class="mut">Note</td><td>${esc(r.reason)}</td></tr>` : ''}`
+        : r.kind === 'promotion' ? `<tr><td class="mut">Now</td><td>${esc((desig(e.desigId) || {}).name || '—')}, grade ${esc((grade(e.gradeId) || {}).name || '—')}, ${monthsInGrade(e)} months in grade</td></tr>
+        <tr><td class="mut">Proposed</td><td><b>${esc(reqSummary(r))}</b>${r.variable ? `, variable target ${inr0(r.variable)}` : ''}</td></tr><tr><td class="mut">Effective</td><td>${dmy(r.date)}</td></tr>
+        <tr><td class="mut">Justification</td><td style="white-space:pre-wrap">${esc(r.reason || '')}</td></tr>`
+        : `<tr><td class="mut">Leave type</td><td>${esc((ltById(r.typeId) || {}).name || '')}</td></tr><tr><td class="mut">Days</td><td>${num(r.days)}</td></tr><tr><td class="mut">Estimated amount</td><td>${inr0(r.estAmount)} <span class="fine">(${num(r.days)} × daily wages)</span></td></tr>${r.payMonth ? `<tr><td class="mut">Paid in</td><td>${monthName(r.payMonth)} payroll</td></tr>` : ''}`}</tbody></table></div>
+    <div><div class="card"><h2>Approvals</h2>${stepsHtml(r)}</div><div class="card"><h2>Activity</h2>${logTable(r.log)}</div></div></div>` };
+};
+ACT.reqDecide = (b) => {
+  const r = S.requests.find((x) => x.id === b.dataset.id);
+  decideDialog(`${REQ_KIND[r.kind]}: ${nameOf(r.empId)}`, (ok, note) => {
+    const done = decide(r, ok, note);
+    audit(`${REQ_KIND[r.kind]} ${ok ? 'approved' : 'rejected'}`, `${nameOf(r.empId)}: ${reqSummary(r)}`, 'approvals', 'employee', r.empId);
+    if (done && isHR(r.companyId)) applyRequest(r);
+    saveNow(); closeDlg(); toast(ok ? (r.status === 'applied' ? 'Approved and applied' : 'Approved') : 'Rejected'); route();
+    if (r.kind === 'statutory' && ['applied', 'rejected'].includes(r.status)) notifyRequest(r, 'decided').then((how) => toast(`Employee informed (${how})`));
+  });
+};
+ACT.reqApply = (b) => { const r = S.requests.find((x) => x.id === b.dataset.id); applyRequest(r); saveNow(); toast('Applied'); route(); };
+ACT.reqWithdraw = async (b) => { const r = S.requests.find((x) => x.id === b.dataset.id); if (!(await confirmBox('Withdraw this request?', 'Approvers will no longer see it.', 'Withdraw'))) return; r.status = 'withdrawn'; logEntry(r, 'Withdrawn'); saveNow(); route(); };
+/* the effect of an approved request; HR only, because it changes pay, leave or job records */
+function applyRequest(r) {
+  const e = empById(r.empId); if (!e || r.status !== 'approved') return;
+  if (r.kind === 'promotion') {
+    const was = `${(desig(e.desigId) || {}).name || '—'}, grade ${(grade(e.gradeId) || {}).name || '—'}`;
+    e.history.push({ date: r.date, type: 'Promotion', note: `${was} to ${reqSummary(r)}. ${r.no}`, by: me.id });
+    e.desigId = r.desigId || e.desigId; e.gradeId = r.gradeId || e.gradeId; recordGrade(e, r.date, `Promotion ${r.no}`);
+    if (r.ctc) reviseSalary(e, r.date, r.ctc, 'Promotion', r.variable === '' || r.variable == null ? undefined : r.variable);
+    audit('Promotion applied', `${fullName(e)}: ${reqSummary(r)}`, 'promotion', 'employee', e.id);
+  }
+  if (r.kind === 'encash') {
+    const month = nextOpenMonth(e.companyId); ensureComp(e.companyId, '1700', 'Leave encashment');
+    const amount = Math.round(r.days * wagesPerDay(e, month));
+    S.leaveAdj.push({ id: uid(), empId: e.id, typeId: r.typeId, date: todayISO(), days: -r.days, note: `Encashed, ${r.no}`, by: me.id, at: Date.now(), encashed: true });
+    S.payInputs.push({ id: uid(), companyId: e.companyId, empId: e.id, month, code: '1700', amount, note: `Leave encashment ${num(r.days)} days, ${r.no}`, reqId: r.id });
+    r.payMonth = month; r.amount = amount;
+    audit('Leave encashment applied', `${fullName(e)}: ${num(r.days)} days, ${inr0(amount)} in ${monthName(month)}`, 'leave', 'employee', e.id);
+  }
+  if (r.kind === 'statutory') applyStatutory(r);
+  r.status = 'applied'; logEntry(r, 'Applied', r.kind === 'encash' ? `${inr0(r.amount)} in ${monthName(r.payMonth)} payroll` : `effective ${dmy(r.date)}`);
+}
+function newRequest(kind, emp, data) {
+  const r = { id: uid(), kind, companyId: emp.companyId, empId: emp.id, by: me.id, at: Date.now(), no: nextNo('req-' + kind, `${(coById(emp.companyId) || {}).code}-${{ promotion: 'PRO', encash: 'ENC', statutory: 'STA' }[kind] || 'REQ'}-`), status: 'pending', log: [], ...data };
+  r.steps = buildSteps(kind, emp, data.estAmount || data.ctc || 0, me.id);
+  r.participants = participantsOf(r);
+  logEntry(r, 'Raised', reqSummary(r));
+  if (!r.steps.length) r.status = 'approved';
+  S.requests.push(r);
+  audit(`${REQ_KIND[kind]} raised`, `${fullName(emp)}: ${reqSummary(r)}`, 'approvals', 'employee', emp.id);
+  if (r.status === 'approved' && isHR(r.companyId)) applyRequest(r);
+  return r;
+}
+
+/* ---------------------------------------------------------------- shift-based or time management only */
+VIEWS.timemode = () => {
+  const co = company(); const sb = shiftBased(co.id);
+  const inShift = coEmployees().filter((e) => e.attGroup === 'shift').length;
+  const otPending = S.otRecs.filter((x) => x.status === 'pending' && (empById(x.empId) || {}).companyId === co.id).length;
+  return { title: 'Shifts or time management', html: `<div class="card"><h2>How ${esc(co.name)} works</h2>
+    <p class="sub">This is set for the whole company.</p>
+    <div class="grid g2" style="margin-top:8px">
+      <label class="choice ${sb ? 'on' : ''}"><input type="radio" name="tm" value="shift" ${sb ? 'checked' : ''} data-ch="timeMode"> <b>Shift-based</b>
+        <span>Shift definitions, rosters and rotation patterns. People in the Shift attendance group can earn overtime, paid or as comp-off.</span></label>
+      <label class="choice ${sb ? '' : 'on'}"><input type="radio" name="tm" value="time" ${sb ? '' : 'checked'} data-ch="timeMode"> <b>Time management only</b>
+        <span>Punch in and out against standard working hours, attendance corrections and the register. No rosters and no overtime.</span></label></div>
+    ${sb ? `<p class="fine" style="margin-top:12px">${inShift} people are in the Shift attendance group. Overtime applies only to them.</p>`
+      : `<div class="note" style="margin-top:12px">Overtime is off for ${esc(co.name)}${inShift ? `. ${inShift} people are set to the Shift group; they are treated as regular until shifts are switched back on` : ''}.</div>`}
+    ${otPending && !sb ? `<div class="note warn">${otPending} overtime entries were still waiting for approval; they are no longer shown.</div>` : ''}</div>` };
+};
+ACT.timeMode = async (el) => {
+  const co = company(); const v = el.value;
+  if (v === 'time' && !(await confirmBox('Switch to time management only?', 'Rosters, rotation patterns and overtime will be hidden for this company and nobody will earn overtime. Records already saved are kept.', 'Switch'))) { route(); return; }
+  co.timeMode = v; audit('Working pattern changed', `${co.name}: ${v === 'shift' ? 'shift-based' : 'time management only'}`, 'time');
+  saveNow(); toast('Saved'); route();
+};
+
+/* ---------------------------------------------------------------- goal templates by designation, grade and department */
+/* the most specific matching template: designation counts most, then grade, then department */
+function templateFor(emp) {
+  const fits = (t, k, v) => !(t[k] || []).length || (t[k] || []).includes(v);
+  return S.perfTemplates.filter((t) => t.companyId === emp.companyId && t.active !== false && fits(t, 'desigIds', emp.desigId) && fits(t, 'gradeIds', emp.gradeId) && fits(t, 'deptIds', emp.deptId))
+    .sort((a, b) => ((b.desigIds || []).length ? 4 : 0) + ((b.gradeIds || []).length ? 2 : 0) + ((b.deptIds || []).length ? 1 : 0) - (((a.desigIds || []).length ? 4 : 0) + ((a.gradeIds || []).length ? 2 : 0) + ((a.deptIds || []).length ? 1 : 0)))[0];
+}
+function tplBanner(emp, cyc, goals, can) {
+  if (!can) return '';
+  const t = templateFor(emp);
+  if (!t) return isHR(emp.companyId) ? '<p class="fine">No goal template matches this person’s designation. <a href="#/perftemplates">Set up templates</a>.</p>' : '';
+  const w = t.goals.reduce((s, g) => s + (+g.weight || 0), 0);
+  return goals.length ? `<p class="fine">Template for this role: <b>${esc(t.name)}</b>. <a href="#" data-act="tplApply" data-t="${t.id}" data-c="${cyc.id}" data-emp="${emp.id}">Replace these goals with it</a>.</p>`
+    : `<div class="note">There is a goal template for this role: <b>${esc(t.name)}</b>, ${t.goals.length} goals adding up to ${w}%. <button class="btn sm pri" data-act="tplApply" data-t="${t.id}" data-c="${cyc.id}" data-emp="${emp.id}">Start from the template</button> You can change the goals afterwards.</div>`;
+}
+function goalsFromTemplate(t, cycId, empId) {
+  S.goals = S.goals.filter((g) => !(g.cycleId === cycId && g.empId === empId && g.status !== 'approved'));
+  t.goals.forEach((g) => S.goals.push({ id: uid(), cycleId: cycId, empId, status: 'draft', checkins: [], progress: 0, title: g.title, desc: g.desc || '', kra: g.kra, weight: +g.weight, target: g.target || '', fromTemplate: t.id }));
+}
+ACT.tplApply = async (b) => {
+  const t = S.perfTemplates.find((x) => x.id === b.dataset.t); const has = S.goals.some((g) => g.cycleId === b.dataset.c && g.empId === b.dataset.emp);
+  if (has && !(await confirmBox('Replace the goals?', `The goals not yet approved are replaced by the ${t.goals.length} goals of “${t.name}”.`, 'Replace'))) return;
+  goalsFromTemplate(t, b.dataset.c, b.dataset.emp);
+  audit('Goals set from template', `${nameOf(b.dataset.emp)}: ${t.name}`, 'performance', 'employee', b.dataset.emp);
+  saveNow(); toast('Goals added from the template'); route();
+};
+VIEWS.perftemplates = () => {
+  const ts = S.perfTemplates.filter((t) => t.companyId === CO);
+  const cyc = curCycle(CO);
+  const missing = cyc ? coEmployees().filter((e) => templateFor(e) && !S.goals.some((g) => g.cycleId === cyc.id && g.empId === e.id)) : [];
+  const names = (ids, fn) => (ids || []).map((id) => (fn(id) || {}).name).filter(Boolean).join(', ');
+  return { title: 'Goal templates', html: `<div class="card"><div class="hd"><div><h2>Goal templates</h2><p class="sub">Goals and competencies for a role. Each person gets the most specific match: designation first, then grade, then department. A template with no conditions applies to everyone else.</p></div>
+      <div class="tools">${cyc && missing.length ? `<button class="btn" data-act="tplBulk" data-c="${cyc.id}">Give ${missing.length} people without goals their template</button>` : ''}<button class="btn pri" data-act="tplEdit">Add template</button></div></div>
+    ${ts.length ? `<table class="t"><thead><tr><th>Template</th><th>For designations</th><th>Grades</th><th>Departments</th><th class="r">Goals</th><th class="r">People</th></tr></thead><tbody>${ts.map((t) => `<tr class="click" data-act="tplEdit" data-id="${t.id}"><td><b>${esc(t.name)}</b>${t.active === false ? ' <span class="badge">Off</span>' : ''}</td><td>${esc(names(t.desigIds, desig) || 'Any')}</td><td>${esc(names(t.gradeIds, grade) || 'Any')}</td><td>${esc(names(t.deptIds, dept) || 'Any')}</td>
+      <td class="r">${t.goals.length} (${t.goals.reduce((s, g) => s + (+g.weight || 0), 0)}%)</td><td class="r">${coEmployees().filter((e) => (templateFor(e) || {}).id === t.id).length}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No templates yet.</div>'}</div>` };
+};
+ACT.tplEdit = (b) => {
+  const t0 = b.dataset.id ? S.perfTemplates.find((x) => x.id === b.dataset.id) : null;
+  const t = t0 ? JSON.parse(JSON.stringify(t0)) : { name: '', desigIds: [], gradeIds: [], deptIds: [], active: true, goals: [{ kra: KRAS[0], title: '', desc: '', weight: 40, target: '' }, { kra: 'Competencies', title: '', desc: '', weight: 20, target: '' }] };
+  const kras = [...KRAS, 'Competencies'];
+  const co = (coll) => S[coll].filter((x) => x.companyId === CO).map((x) => [x.id, x.name]);
+  const draw = () => {
+    openDlg(`<form class="dlg" id="tpF" novalidate><h2>${t0 ? 'Edit' : 'New'} goal template</h2><div class="form">
+      <label class="field wide">Name<input class="inp" name="name" value="${esc(t.name)}" placeholder="e.g. Sales managers"></label>
+      <div class="field">For designations${checkList('ds', co('desigs'), t.desigIds)}</div><div class="field">Grades${checkList('gr', co('grades'), t.gradeIds)}</div><div class="field">Departments${checkList('dp', co('depts'), t.deptIds)}</div>
+      <label class="chk" style="align-self:end"><input type="checkbox" name="active" ${t.active !== false ? 'checked' : ''}> In use</label></div>
+      <h3>Goals and competencies <span class="fine" id="tpW"></span></h3>
+      ${t.goals.map((g, i) => `<div class="form" style="grid-template-columns:1.2fr 2fr 2fr .7fr 1.2fr auto;align-items:end;margin-bottom:6px">
+        <label class="field">Area<select class="inp" data-i="${i}" data-f="kra">${kras.map((k) => `<option ${k === g.kra ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select></label>
+        <label class="field">Goal or competency<input class="inp" data-i="${i}" data-f="title" value="${esc(g.title)}"></label>
+        <label class="field">How it is measured<input class="inp" data-i="${i}" data-f="desc" value="${esc(g.desc || '')}"></label>
+        <label class="field">Weight %<input class="inp" type="number" min="0" max="100" data-i="${i}" data-f="weight" value="${esc(g.weight)}"></label>
+        <label class="field">Target<input class="inp" data-i="${i}" data-f="target" value="${esc(g.target || '')}"></label>
+        <button type="button" class="btn sm danger" data-rm="${i}" aria-label="Remove">✕</button></div>`).join('')}
+      <button type="button" class="btn sm" id="tpAdd">Add a line</button>
+      <p class="err" id="tpE"></p><div class="btns">${t0 ? '<button type="button" class="btn danger" id="tpDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+    const f = $('#tpF');
+    const sync = () => { t.name = f.elements.name.value; t.desigIds = checked(f, 'ds'); t.gradeIds = checked(f, 'gr'); t.deptIds = checked(f, 'dp'); t.active = f.elements.active.checked; $('#tpW').textContent = `Total ${t.goals.reduce((s, g) => s + (+g.weight || 0), 0)}%`; };
+    f.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', () => { t.goals[+el.dataset.i][el.dataset.f] = el.dataset.f === 'weight' ? +el.value || 0 : el.value; sync(); }));
+    f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { sync(); t.goals.splice(+el.dataset.rm, 1); draw(); }; });
+    $('#tpAdd').onclick = () => { sync(); t.goals.push({ kra: KRAS[0], title: '', desc: '', weight: 10, target: '' }); draw(); };
+    if ($('#tpDel')) $('#tpDel').onclick = async () => { if (await confirmBox('Delete this template?', 'Goals already given to people stay.', 'Delete')) { S.perfTemplates = S.perfTemplates.filter((x) => x.id !== t0.id); saveNow(); route(); } };
+    sync();
+    f.onsubmit = (ev) => {
+      ev.preventDefault(); sync();
+      t.goals = t.goals.filter((g) => g.title.trim());
+      if (!t.name.trim()) { $('#tpE').textContent = 'Name the template.'; return; }
+      if (!t.goals.length) { $('#tpE').textContent = 'Add at least one goal.'; return; }
+      const w = t.goals.reduce((s, g) => s + (+g.weight || 0), 0);
+      if (w !== 100) { $('#tpE').textContent = `Weights add up to ${w}%. Make them 100%.`; return; }
+      if (t0) Object.assign(t0, t); else S.perfTemplates.push({ id: uid(), companyId: CO, ...t });
+      audit(`Goal template ${t0 ? 'changed' : 'added'}`, t.name, 'performance');
+      saveNow(); closeDlg(); toast('Template saved'); route();
+    };
+  };
+  draw();
+};
+ACT.tplBulk = async (b) => {
+  const cyc = S.cycles.find((c) => c.id === b.dataset.c);
+  const list = coEmployees().filter((e) => templateFor(e) && !S.goals.some((g) => g.cycleId === cyc.id && g.empId === e.id));
+  if (!(await confirmBox(`Give ${list.length} people their template?`, `Draft goals are created in ${cyc.name}. Each person can adjust them and send them to their manager.`, 'Create goals'))) return;
+  list.forEach((e) => goalsFromTemplate(templateFor(e), cyc.id, e.id));
+  audit('Goals set from templates', `${list.length} people, ${cyc.name}`, 'performance'); saveNow(); toast(`Goals created for ${list.length} people`); route();
+};
+
+/* ---------------------------------------------------------------- fixed and variable pay */
+/* Fixed CTC runs through monthly payroll. The variable target is paid per period against the final performance rating. */
+const VP_DEFAULT = { 5: 120, 4: 100, 3: 80, 2: 50, 1: 0 };
+const VP = { over: {} };
+const ymDiff = (a, b) => (+b.slice(0, 4) - +a.slice(0, 4)) * 12 + (+b.slice(5, 7) - +a.slice(5, 7));
+/* one person's variable pay for a period: the annual target × months served in the period ÷ 12 × payout % */
+function vpCalc(co, kind, start, cyc, e) {
+  const months = { month: 1, quarter: 3, half: 6, year: 12 }[kind]; const end = ymAdd(start, months - 1);
+  const sal = salaryAt(e, `${end}-28`); const target = sal ? +sal.variable || 0 : 0; if (!target) return null;
+  const served = e.doj && e.doj.slice(0, 7) > start ? Math.max(0, ymDiff(e.doj.slice(0, 7), end) + 1) : months;
+  const periodTarget = Math.round(target * Math.min(months, served) / 12);
+  const rv = cyc ? S.reviews.find((x) => x.cycleId === cyc.id && x.empId === e.id) : null;
+  const rating = rv && +rv.final ? +rv.final : null;
+  const pctv = VP.over[e.id] != null ? VP.over[e.id] : rating ? +(co.varPayout || VP_DEFAULT)[rating] : 100;
+  return { target, periodTarget, rating, pct: pctv, amount: Math.round(periodTarget * pctv / 100) };
+}
+VIEWS.varpay = () => {
+  const co = company(); const pay = co.varPayout || VP_DEFAULT;
+  const kind = R.q.get('k') || 'quarter';
+  const months = { month: 1, quarter: 3, half: 6, year: 12 }[kind];
+  const cur = todayISO().slice(0, 7);
+  const start = R.q.get('p') || ymAdd(cur, -months);
+  const end = ymAdd(start, months - 1);
+  const payMonth = R.q.get('m') || nextOpenMonth(co.id);
+  const cycles = S.cycles.filter((c) => c.companyId === co.id).sort((a, b) => (a.to < b.to ? 1 : -1));
+  const cyc = cycles.find((c) => c.id === R.q.get('c')) || cycles.find((c) => c.stage === 'closed') || cycles[0];
+  const key = `${co.id}:${kind}:${start}`;
+  const rows = coEmployees().map((e) => { const c = vpCalc(co, kind, start, cyc, e); if (!c) return null; return { e, ...c, posted: S.payInputs.find((i) => i.varKey === key && i.empId === e.id) }; }).filter(Boolean);
+  const sel = (k, opts, v) => `<select class="inp" data-ch="vpSet" data-k="${k}">${opts.map(([o, l]) => `<option value="${o}" ${String(o) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  const starts = [...Array(12)].map((_, i) => ymAdd(cur, -i - 1)).filter((m) => kind === 'month' || (kind === 'quarter' && (+m.slice(5) - 1) % 3 === 0) || (kind === 'half' && (+m.slice(5) - 1) % 6 === 0) || (kind === 'year' && m.slice(5) === String((co.leaveYearStart || 1)).padStart(2, '0')));
+  const todo = rows.filter((r) => !r.posted && r.amount > 0);
+  return { title: 'Variable pay', html: `<div class="card"><div class="hd"><div><h2>Variable pay for ${esc(co.name)}</h2><p class="sub">Fixed CTC is paid every month. The variable target, set with each salary revision, is paid for a period against the final performance rating and posted to payroll as Variable pay (1550).</p></div></div>
+    <div class="form" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+      <label class="field">Period${sel('k', [['month', 'Month'], ['quarter', 'Quarter'], ['half', 'Half year'], ['year', 'Year']], kind)}</label>
+      <label class="field">Starting${sel('p', (starts.includes(start) ? starts : [start, ...starts]).map((m) => [m, monthName(m)]), start)}</label>
+      <label class="field">Rating from${sel('c', cycles.map((c) => [c.id, c.name]), cyc ? cyc.id : '')}</label>
+      <label class="field">Pay in${sel('m', monthOpts(co.id), payMonth)}</label></div>
+    <h3>Payout by final rating</h3><div class="tools">${[5, 4, 3, 2, 1].map((r) => `<label class="field" style="width:120px">${r} ${esc(RATING[r])}<input class="inp" type="number" min="0" max="300" value="${pay[r]}" data-ch="vpPay" data-r="${r}"></label>`).join('')}<span class="fine">% of the period’s target. No rating yet: 100%, or set it per person below.</span></div></div>
+    <div class="card"><div class="hd"><div><h2>${monthName(start)} to ${monthName(end)}</h2><p class="sub">${rows.length} people have a variable target. ${todo.length ? `${todo.length} to post, ${inr0(todo.reduce((s, r) => s + r.amount, 0))} in total.` : 'All posted.'}</p></div>
+      ${todo.length ? `<button class="btn pri" data-act="vpPost" data-key="${key}" data-m="${payMonth}">Post ${todo.length} to ${monthName(payMonth)} payroll</button>` : ''}</div>
+    ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th class="r">Annual target</th><th class="r">Period target</th><th>Final rating</th><th class="r">Payout %</th><th class="r">Amount</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr><td><b>${esc(fullName(r.e))}</b><div class="fine">${esc((desig(r.e.desigId) || {}).name || '')}</div></td>
+      <td class="r">${inr0(r.target)}</td><td class="r">${inr0(r.periodTarget)}</td><td>${r.rating ? `${r.rating} ${esc(RATING[r.rating])}` : '<span class="fine">Not rated</span>'}</td>
+      <td class="r">${r.posted ? num(r.posted.varPct != null ? r.posted.varPct : r.pct) : `<input class="inp" type="number" min="0" max="300" style="width:80px;text-align:right" value="${r.pct}" data-ch="vpOver" data-id="${r.e.id}">`}</td><td class="r"><b>${inr0(r.posted ? r.posted.amount : r.amount)}</b></td>
+      <td>${r.posted ? `Posted to ${monthName(r.posted.month)}` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nobody has a variable pay target. Set one with Personnel action → Salary revision.</div>'}</div>` };
+};
+ACT.vpSet = (el) => { const p = new URLSearchParams(R.q); p.set(el.dataset.k, el.value); if (el.dataset.k === 'k') p.delete('p'); VP.over = {}; go('#/varpay?' + p); };
+ACT.vpPay = (el) => { const co = company(); co.varPayout = { ...(co.varPayout || VP_DEFAULT), [el.dataset.r]: +el.value || 0 }; saveNow(); route(); };
+ACT.vpOver = (el) => { VP.over[el.dataset.id] = +el.value || 0; route(); };
+ACT.vpPost = async (b) => {
+  const co = company(); const key = b.dataset.key, month = b.dataset.m;
+  const [, kind, start] = key.split(':'); const months = { month: 1, quarter: 3, half: 6, year: 12 }[kind];
+  const cycles = S.cycles.filter((c) => c.companyId === co.id).sort((a, c) => (a.to < c.to ? 1 : -1));
+  const cyc = cycles.find((c) => c.id === R.q.get('c')) || cycles.find((c) => c.stage === 'closed') || cycles[0];
+  if (!(await confirmBox('Post variable pay?', `Amounts go to ${monthName(month)} payroll as Variable pay.`, 'Post'))) return;
+  ensureComp(co.id, '1550', 'Variable pay', { variable: true });
+  let n = 0, total = 0;
+  coEmployees().forEach((e) => {
+    if (S.payInputs.some((i) => i.varKey === key && i.empId === e.id)) return;
+    const c = vpCalc(co, kind, start, cyc, e); if (!c || c.amount <= 0) return;
+    S.payInputs.push({ id: uid(), companyId: co.id, empId: e.id, month, code: '1550', amount: c.amount, note: `Variable pay ${monthName(start)}${months > 1 ? ' to ' + monthName(ymAdd(start, months - 1)) : ''}, ${c.pct}%`, varKey: key, varPct: c.pct });
+    n++; total += c.amount;
+  });
+  audit('Variable pay posted', `${n} people, ${inr0(total)} in ${monthName(month)}`, 'payroll'); VP.over = {}; saveNow(); toast(`${n} posted`); route();
+};
+
+/* ---------------------------------------------------------------- leave encashment during the year */
+function encashable(e, lt) {
+  const b = leaveBalance(e, lt);
+  const done = r2(S.leaveAdj.filter((a) => a.empId === e.id && a.typeId === lt.id && a.encashed && a.date >= b.year.start && a.date <= b.year.end).reduce((s, a) => s - (+a.days || 0), 0));
+  const pend = r2(S.requests.filter((r) => r.kind === 'encash' && r.empId === e.id && r.typeId === lt.id && ['pending', 'approved'].includes(r.status)).reduce((s, r) => s + r.days, 0));
+  const byBalance = b.available - (+lt.encashMin || 0) - pend;
+  const byYear = +lt.encashMaxYear > 0 ? +lt.encashMaxYear - done - pend : Infinity;
+  return { balance: b.available, done, pend, max: Math.max(0, Math.floor(Math.min(byBalance, byYear) * 2) / 2) };
+}
+VIEWS.encash = () => {
+  const tab = isHR() ? R.q.get('tab') || 'mine' : 'mine';
+  const types = leaveTypesFor(me).filter((t) => t.encashAnytime);
+  const mine = S.requests.filter((r) => r.kind === 'encash' && r.empId === me.id).sort((a, b) => b.at - a.at);
+  const all = S.requests.filter((r) => r.kind === 'encash' && r.companyId === CO).sort((a, b) => b.at - a.at);
+  const list = (rs, who) => (rs.length ? `<table class="t"><thead><tr>${who ? '<th>Employee</th>' : ''}<th>Raised</th><th>Leave</th><th class="r">Days</th><th class="r">Amount</th><th>Status</th><th></th></tr></thead><tbody>${rs.map((r) => `<tr>${who ? `<td>${esc(nameOf(r.empId))}</td>` : ''}<td>${dShort(isoOf(new Date(r.at)))}</td><td>${esc((ltById(r.typeId) || {}).name || '')}</td><td class="r">${num(r.days)}</td><td class="r">${inr0(r.amount || r.estAmount)}</td><td>${pill(r.status)}${r.payMonth ? ` <span class="fine">${monthName(r.payMonth)}</span>` : ''}</td><td class="r"><a class="btn sm" href="#/request/${r.id}">Open</a></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No requests yet.</div>');
+  return { title: 'Leave encashment', html: `${isHR() ? `<div class="tabs"><a href="#/encash?tab=mine" class="${tab === 'mine' ? 'on' : ''}">Mine</a><a href="#/encash?tab=all" class="${tab === 'all' ? 'on' : ''}">Everyone in ${esc(company().code)}</a></div>` : ''}
+    ${tab === 'all' ? `<div class="card"><h2>Encashment requests</h2><p class="sub">Approved requests are applied by HR: the days come off the balance and the amount goes to the next open payroll month as Leave encashment (1700).</p>${list(all, true)}</div>` : `
+    <div class="card"><div class="hd"><div><h2>Encash leave</h2><p class="sub">Leave types that allow it can be turned into pay. Daily wages are basic and DA ÷ ${S.stat.encashDivisor || 30}.</p></div></div>
+      ${types.length ? `<table class="t"><thead><tr><th>Leave type</th><th class="r">Balance</th><th class="r">Keep at least</th><th class="r">Encashed this year</th><th class="r">You can encash</th><th></th></tr></thead><tbody>${types.map((t) => { const x = encashable(me, t); return `<tr><td>${esc(t.name)}</td><td class="r">${num(x.balance)}</td><td class="r">${num(+t.encashMin || 0)}</td><td class="r">${num(x.done)}${+t.encashMaxYear ? ` of ${num(+t.encashMaxYear)}` : ''}</td><td class="r"><b>${num(x.max)}</b></td>
+        <td class="r">${x.max > 0 ? `<button class="btn sm pri" data-act="encNew" data-t="${t.id}">Request</button>` : ''}</td></tr>`; }).join('')}</tbody></table>` : '<div class="empty">None of your leave types can be encashed during the year. Earned leave is still encashed when you leave.</div>'}</div>
+    <div class="card"><h2>My requests</h2>${list(mine)}</div>`}` };
+};
+ACT.encNew = (b) => {
+  const lt = ltById(b.dataset.t); const x = encashable(me, lt); const rate = wagesPerDay(me, nextOpenMonth(me.companyId));
+  openDlg(`<form class="dlg" id="enF" novalidate><h2>Encash ${esc(lt.name)}</h2><p class="fine" style="margin:0">Up to ${num(x.max)} days. About ${inr0(rate)} a day before tax.</p>
+    <label class="field">Days<input class="inp" type="number" name="days" min="0.5" step="0.5" max="${x.max}" value="${x.max}" autofocus></label><label class="field">Reason (optional)<input class="inp" name="why"></label>
+    <p class="err" id="enE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send for approval</button></div></form>`);
+  $('#enF').onsubmit = (ev) => {
+    ev.preventDefault(); const days = parseNum(ev.target.elements.days.value);
+    if (!(days > 0) || days > x.max || (days * 2) % 1) { $('#enE').textContent = `Enter between 0.5 and ${num(x.max)} days, in half days.`; return; }
+    const r = newRequest('encash', me, { typeId: lt.id, days, estAmount: Math.round(days * rate), reason: ev.target.elements.why.value.trim() });
+    saveNow(); closeDlg(); toast(r.status === 'applied' ? 'Encashed' : 'Sent for approval'); go('#/request/' + r.id);
+  };
+};
+
+/* ---------------------------------------------------------------- year-end carry forward and encashment */
+/* Balances carry forward automatically up to each type's limit. This page shows the result for a leave year,
+   and encashes days above the carry limit (up to the year-end encashment limit); the rest lapses. */
+VIEWS.yearend = () => {
+  const co = company(); const startM = +co.leaveYearStart || 1;
+  const thisStart = `${todayISO().slice(0, 4) - (+todayISO().slice(5, 7) < startM ? 1 : 0)}-${pad(startM)}-01`;
+  const years = [1, 2, 3].map((i) => { const s = `${+thisStart.slice(0, 4) - i}${thisStart.slice(4)}`; return { start: s, end: addDays(`${+s.slice(0, 4) + 1}${s.slice(4)}`, -1) }; });
+  const y = years.find((x) => x.end === R.q.get('y')) || years[0];
+  const payMonth = R.q.get('m') || nextOpenMonth(co.id);
+  const types = S.leaveTypes.filter((t) => t.companyId === co.id && t.active !== false && (+t.carryMax > 0 || +t.yearEndEncashMax > 0 || t.credit !== 'none'));
+  const rows = [];
+  coEmployees(co.id, true).filter((e) => (e.doj || '') <= y.end && (e.status !== 'exited' || ((e.exit || {}).lwd || '') > y.end)).forEach((e) => types.forEach((t) => {
+    const b = leaveBalance(e, t, y.end); const closing = Math.max(0, b.available + b.pending);
+    if (!closing) return;
+    const key = `ye:${y.end}:${t.id}`;
+    const done = S.leaveAdj.find((a) => a.empId === e.id && a.yeKey === key);
+    const carry = Math.min(+t.carryMax || 0, closing);
+    const enc = done ? -done.days : Math.min(Math.max(0, closing - carry), +t.yearEndEncashMax || 0);
+    rows.push({ e, t, closing, carry, enc, lapse: r2(closing - carry - enc), done, key });
+  }));
+  const todo = rows.filter((r) => !r.done && r.enc > 0);
+  const amount = (r) => Math.round(r.enc * wagesPerDay(r.e, payMonth));
+  return { title: 'Year-end carry forward', html: `<div class="card"><div class="hd"><div><h2>Leave year ending ${dmy(y.end)}</h2><p class="sub">Each type carries forward up to its limit automatically, and carried days can be set to lapse after some months (Leave policies). Days above the carry limit are encashed here up to the year-end encashment limit; anything more lapses.</p></div>
+      <div class="tools"><select class="inp" data-ch="yeSet" data-k="y">${years.map((x) => `<option value="${x.end}" ${x.end === y.end ? 'selected' : ''}>${dmy(x.start)} to ${dmy(x.end)}</option>`).join('')}</select><select class="inp" data-ch="yeSet" data-k="m">${monthOpts(co.id).map(([v, l]) => `<option value="${v}" ${v === payMonth ? 'selected' : ''}>Pay in ${l}</option>`).join('')}</select>
+      ${todo.length ? `<button class="btn pri" data-act="yePost" data-y="${y.end}" data-m="${payMonth}">Encash ${todo.length} and post to payroll</button>` : ''}<button class="btn" data-act="yeCsv" data-y="${y.end}">Download</button></div></div>
+    <div class="grid g4" style="margin-bottom:10px"><div class="kpi"><span>Carried forward</span><b>${num(rows.reduce((s, r) => s + r.carry, 0))} days</b></div><div class="kpi"><span>Encashed</span><b>${num(rows.reduce((s, r) => s + r.enc, 0))} days</b><small>${inr0(rows.filter((r) => !r.done).reduce((s, r) => s + amount(r), 0))} still to post</small></div>
+      <div class="kpi"><span>Lapsed</span><b>${num(rows.reduce((s, r) => s + r.lapse, 0))} days</b></div><div class="kpi"><span>People</span><b>${new Set(rows.map((r) => r.e.id)).size}</b></div></div>
+    ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Leave type</th><th class="r">Closing</th><th class="r">Carried</th><th class="r">Encashed</th><th class="r">Lapsed</th><th class="r">Amount</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(fullName(r.e))}</td><td>${esc(r.t.name)}</td><td class="r">${num(r.closing)}</td><td class="r">${num(r.carry)}</td><td class="r">${num(r.enc)}</td><td class="r">${num(r.lapse)}</td><td class="r">${r.enc ? inr0(r.done ? (S.payInputs.find((i) => i.yeKey === r.key && i.empId === r.e.id) || {}).amount || 0 : amount(r)) : ''}</td><td>${r.done ? '<span class="badge ok">Posted</span>' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No balances at the end of that year.</div>'}</div>` };
+};
+ACT.yeSet = (el) => { const p = new URLSearchParams(R.q); p.set(el.dataset.k, el.value); go('#/yearend?' + p); };
+ACT.yePost = async (b) => {
+  const co = company(); const yEnd = b.dataset.y, month = b.dataset.m;
+  const types = S.leaveTypes.filter((t) => t.companyId === co.id && +t.yearEndEncashMax > 0);
+  if (!(await confirmBox('Encash and post?', `Days above each carry limit are taken off the ${dmy(yEnd)} balance and paid in ${monthName(month)} as Leave encashment.`, 'Encash'))) return;
+  ensureComp(co.id, '1700', 'Leave encashment');
+  let n = 0, total = 0;
+  coEmployees(co.id, true).forEach((e) => types.forEach((t) => {
+    const key = `ye:${yEnd}:${t.id}`; if (S.leaveAdj.some((a) => a.empId === e.id && a.yeKey === key)) return;
+    if ((e.doj || '') > yEnd) return;
+    const bl = leaveBalance(e, t, yEnd); const closing = Math.max(0, bl.available + bl.pending);
+    const enc = Math.min(Math.max(0, closing - Math.min(+t.carryMax || 0, closing)), +t.yearEndEncashMax || 0); if (!(enc > 0)) return;
+    const amount = Math.round(enc * wagesPerDay(e, month));
+    S.leaveAdj.push({ id: uid(), empId: e.id, typeId: t.id, date: yEnd, days: -enc, note: `Year-end encashment ${dmy(yEnd)}`, by: me.id, at: Date.now(), encashed: true, yeKey: key });
+    S.payInputs.push({ id: uid(), companyId: co.id, empId: e.id, month, code: '1700', amount, note: `Year-end leave encashment, ${t.code} ${num(enc)} days`, yeKey: key });
+    n++; total += amount;
+  }));
+  audit('Year-end encashment posted', `${n} entries, ${inr0(total)} in ${monthName(month)}`, 'leave'); saveNow(); toast(`${n} posted`); route();
+};
+ACT.yeCsv = (b) => {
+  const t = document.querySelector('#content table.t'); if (!t) return;
+  const csv = [...t.rows].map((r) => [...r.cells].map((c) => `"${c.textContent.replace(/"/g, '""').trim()}"`).join(',')).join('\r\n');
+  downloadText(`year-end-leave-${b.dataset.y}.csv`, '\ufeff' + csv, 'text/csv');
+};
+
+/* ---------------------------------------------------------------- expense claims */
+const EXP_UNITS = { amount: 'Amount', km: 'Kilometres × rate', day: 'Days × rate' };
+const catById = (id) => S.expenseCats.find((c) => c.id === id);
+function seedExpenseCats(coId) {
+  if (S.expenseCats.some((c) => c.companyId === coId)) return false;
+  [['Travel: air, rail, bus', 'amount', 0, 0, 0, 0], ['Local conveyance (own vehicle)', 'km', 9, 0, 3000, 0], ['Taxi and auto', 'amount', 0, 2000, 0, 0], ['Hotel stay', 'day', 4000, 0, 0, 0],
+   ['Meals while travelling', 'day', 800, 0, 0, 0], ['Client entertainment', 'amount', 0, 5000, 0, 0], ['Mobile and internet', 'amount', 0, 0, 1000, 0], ['Other', 'amount', 0, 2000, 0, 0]]
+    .forEach(([name, unit, rate, limitPerClaim, limitPerMonth], i) => S.expenseCats.push({ id: uid(), companyId: coId, name, code: String(5100 + i * 10), unit, rate, limitPerClaim, limitPerMonth, receiptAbove: unit === 'km' ? 0 : 500, active: true }));
+  return true;
+}
+VIEWS.expcats = () => {
+  if (isHR() && seedExpenseCats(CO)) setTimeout(saveNow, 0);
+  return { title: 'Expense categories', html: crudCard('expenseCats', { coll: 'expenseCats', title: 'Expense categories and limits', one: 'expense category', wide: true, filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }),
+    sub: 'Master data for claims: the GL code each category posts to, how it is claimed and its limits. Claims over a limit can still be sent, with the excess shown to approvers.',
+    sort: (a, b) => (a.code || '').localeCompare(b.code || ''), defaults: { unit: 'amount', active: true, receiptAbove: 500 },
+    inUse: (r) => (S.expenseClaims.some((c) => (c.lines || []).some((l) => l.catId === r.id)) ? 'Claims use this category. Switch it off instead.' : ''),
+    fields: [{ k: 'name', label: 'Category', req: true }, { k: 'code', label: 'GL code' }, { k: 'unit', label: 'Claimed as', type: 'select', opts: Object.entries(EXP_UNITS) },
+      { k: 'rate', label: 'Rate per km or day (₹)', type: 'number', min: 0 }, { k: 'limitPerClaim', label: 'Limit per claim line (₹, 0 = none)', type: 'number', min: 0 },
+      { k: 'limitPerMonth', label: 'Limit per month (₹, 0 = none)', type: 'number', min: 0 }, { k: 'receiptAbove', label: 'Receipt needed above (₹)', type: 'number', min: 0 },
+      { k: 'active', label: 'In use', type: 'check' }],
+    cols: [{ k: 'code', label: 'GL code' }, { k: 'name', label: 'Category' }, { label: 'Claimed as', fmt: (r) => (r.unit === 'amount' ? 'Amount' : `${EXP_UNITS[r.unit]}, ${inr0(r.rate)}`) },
+      { label: 'Per line', cls: 'r', fmt: (r) => (+r.limitPerClaim ? inr0(r.limitPerClaim) : '—') }, { label: 'Per month', cls: 'r', fmt: (r) => (+r.limitPerMonth ? inr0(r.limitPerMonth) : '—') }, { label: 'Receipt above', cls: 'r', fmt: (r) => inr0(+r.receiptAbove || 0) }, { label: '', fmt: (r) => (r.active === false ? '<span class="badge">Off</span>' : '') }] }) };
+};
+const claimTotal = (c) => r2((c.lines || []).reduce((s, l) => s + (+l.amount || 0), 0));
+function lineIssues(c, l) {
+  const cat = catById(l.catId) || {}; const out = [];
+  if (+cat.limitPerClaim && +l.amount > +cat.limitPerClaim) out.push(`over the ${inr0(cat.limitPerClaim)} limit`);
+  if (+cat.limitPerMonth) {
+    const ym = (l.date || '').slice(0, 7);
+    const used = S.expenseClaims.filter((x) => x.empId === c.empId && x.id !== c.id && !['rejected', 'withdrawn', 'draft'].includes(x.status)).flatMap((x) => x.lines || []).filter((y) => y.catId === l.catId && (y.date || '').slice(0, 7) === ym).reduce((s, y) => s + (+y.amount || 0), 0);
+    const same = (c.lines || []).filter((y) => y.catId === l.catId && (y.date || '').slice(0, 7) === ym).reduce((s, y) => s + (+y.amount || 0), 0);
+    if (used + same > +cat.limitPerMonth) out.push(`monthly limit ${inr0(cat.limitPerMonth)} exceeded`);
+  }
+  if (+l.amount > (+cat.receiptAbove || 0) && !l.fileId && cat.unit !== 'km') out.push('receipt missing');
+  return out;
+}
+VIEWS.expenses = () => {
+  const tab = R.q.get('tab') || 'mine';
+  const mine = S.expenseClaims.filter((c) => c.empId === me.id).sort((a, b) => (b.at || 0) - (a.at || 0));
+  const team = S.expenseClaims.filter((c) => c.empId !== me.id && (isHR(c.companyId) || (c.participants || []).includes(me.id)) && c.status !== 'draft').sort((a, b) => (b.at || 0) - (a.at || 0));
+  const st = R.q.get('s') || 'open';
+  const shown = tab === 'team' ? team.filter((c) => (st === 'open' ? ['pending', 'approved'].includes(c.status) : st === 'all' || c.status === st)) : mine;
+  const table = (cs, who) => (cs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Claim</th>${who ? '<th>Employee</th>' : ''}<th>Submitted</th><th class="r">Amount</th><th>Status</th><th>Waiting for</th></tr></thead><tbody>${cs.map((c) => `<tr class="click" data-act="claimOpen" data-id="${c.id}"><td><b>${esc(c.title || c.no)}</b><div class="fine">${esc(c.no || '')}, ${(c.lines || []).length} item${(c.lines || []).length === 1 ? '' : 's'}</div></td>${who ? `<td>${esc(nameOf(c.empId))}</td>` : ''}
+    <td class="fine">${c.submittedAt ? dShort(isoOf(new Date(c.submittedAt))) : '—'}</td><td class="r">${inr0(claimTotal(c))}</td><td>${pill(c.status)}</td><td class="fine">${c.status === 'pending' ? esc((stepNow(c) || {}).label || '') : c.status === 'approved' ? 'HR to pay' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No claims here.</div>');
+  return { title: tab === 'team' ? 'Claims to approve and pay' : 'My expense claims', html: tab === 'team' ? `<div class="card"><div class="hd"><div><h2>Claims</h2><p class="sub">Claims where you are an approver${isHR() ? ', and every claim in the company' : ''}. Approved claims are paid by HR through payroll as a reimbursement, or marked paid.</p></div>
+      <div class="tabs" style="border:0;margin:0">${[['open', 'Open'], ['pending', 'Waiting'], ['approved', 'To pay'], ['paid', 'Paid'], ['rejected', 'Rejected'], ['all', 'All']].map(([k, n]) => `<a href="#/expenses?tab=team&s=${k}" class="${st === k ? 'on' : ''}">${n}</a>`).join('')}</div></div>${table(shown, true)}</div>`
+    : `<div class="card"><div class="hd"><div><h2>My expense claims</h2><p class="sub">Add each expense with its receipt, then send the claim. It goes through the approvers set by HR and is paid with your salary.</p></div><button class="btn pri" data-act="claimEdit">New claim</button></div>${table(mine)}</div>` };
+};
+ACT.claimOpen = (b) => go('#/claim/' + b.dataset.id);
+ACT.claimEdit = (b) => {
+  if (isHR() && seedExpenseCats(me.companyId)) saveNow();
+  const c0 = b.dataset.id ? S.expenseClaims.find((x) => x.id === b.dataset.id) : null;
+  const c = c0 ? JSON.parse(JSON.stringify(c0)) : { title: '', empId: me.id, lines: [{ id: uid(), date: todayISO(), catId: '', desc: '', qty: '', amount: '' }] };
+  const cats = S.expenseCats.filter((x) => x.companyId === me.companyId && x.active !== false);
+  if (!cats.length) { toast('HR has not set up expense categories yet.'); return; }
+  const draw = () => {
+    openDlg(`<form class="dlg" id="clF" novalidate><h2>${c0 ? 'Edit claim' : 'New expense claim'}</h2><label class="field">Purpose<input class="inp" name="title" value="${esc(c.title)}" placeholder="e.g. Customer visit to Pune, 12–14 Oct"></label>
+      <div class="scroll"><table class="t"><thead><tr><th>Date</th><th>Category</th><th>Details</th><th class="r">Km / days</th><th class="r">Amount ₹</th><th>Receipt</th><th></th></tr></thead><tbody>
+      ${c.lines.map((l, i) => { const cat = catById(l.catId) || {}; const iss = l.catId ? lineIssues(c, l) : []; return `<tr><td><input class="inp" type="date" data-i="${i}" data-f="date" value="${esc(l.date)}" style="min-width:130px"></td>
+        <td><select class="inp" data-i="${i}" data-f="catId"><option value="">Choose</option>${cats.map((x) => `<option value="${x.id}" ${x.id === l.catId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
+        <td><input class="inp" data-i="${i}" data-f="desc" value="${esc(l.desc)}" placeholder="From–to, bill no."></td>
+        <td class="r">${cat.unit && cat.unit !== 'amount' ? `<input class="inp" type="number" min="0" step="0.5" data-i="${i}" data-f="qty" value="${esc(l.qty)}" style="width:80px">` : ''}</td>
+        <td class="r"><input class="inp" type="number" min="0" data-i="${i}" data-f="amount" value="${esc(l.amount)}" style="width:110px" ${cat.unit && cat.unit !== 'amount' ? 'readonly' : ''}>${iss.length ? `<div class="fine" style="color:var(--warn)">${esc(iss.join('; '))}</div>` : ''}</td>
+        <td>${l.fileId ? `<a href="/api/files/${l.fileId}" target="_blank" rel="noopener">${esc(l.fileName || 'Receipt')}</a>` : ''}<label class="btn sm" style="margin-left:4px">${l.fileId ? 'Replace' : 'Attach'}<input type="file" accept="image/*,application/pdf" hidden data-up="${i}"></label></td>
+        <td><button type="button" class="btn sm danger" data-rm="${i}" aria-label="Remove line">✕</button></td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td colspan="4"><button type="button" class="btn sm" id="clAdd">Add an expense</button></td><td class="r"><b>${inr0(claimTotal(c))}</b></td><td colspan="2"></td></tr></tfoot></table></div>
+      <p class="err" id="clE"></p><div class="btns">${c0 ? '<button type="button" class="btn danger" id="clDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn" id="clDraft">Save draft</button><button class="btn pri">Send for approval</button></div></form>`, true);
+    const f = $('#clF');
+    f.elements.title.oninput = () => { c.title = f.elements.title.value; };
+    f.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('change', () => {
+      const l = c.lines[+el.dataset.i]; l[el.dataset.f] = el.value; const cat = catById(l.catId) || {};
+      if (cat.unit && cat.unit !== 'amount') l.amount = r2((+l.qty || 0) * (+cat.rate || 0));
+      c.title = f.elements.title.value; draw();
+    }));
+    f.querySelectorAll('[data-up]').forEach((el) => el.addEventListener('change', async () => {
+      const file = el.files[0]; if (!file) return; $('#clE').textContent = 'Uploading…';
+      try { const up = await uploadFile(file); Object.assign(c.lines[+el.dataset.up], { fileId: up.id, fileName: file.name }); c.title = f.elements.title.value; draw(); }
+      catch (er) { $('#clE').textContent = er.message; }
+    }));
+    f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { c.title = f.elements.title.value; c.lines.splice(+el.dataset.rm, 1); if (!c.lines.length) c.lines.push({ id: uid(), date: todayISO(), catId: '', desc: '', qty: '', amount: '' }); draw(); }; });
+    $('#clAdd').onclick = () => { c.title = f.elements.title.value; c.lines.push({ id: uid(), date: todayISO(), catId: '', desc: '', qty: '', amount: '' }); draw(); };
+    if ($('#clDel')) $('#clDel').onclick = async () => { if (await confirmBox('Delete this claim?', 'It has not been sent.', 'Delete')) { S.expenseClaims = S.expenseClaims.filter((x) => x.id !== c0.id); saveNow(); closeDlg(); route(); } };
+    const store = (send) => {
+      c.title = f.elements.title.value.trim(); c.lines = c.lines.filter((l) => l.catId || +l.amount);
+      if (!c.lines.length) { $('#clE').textContent = 'Add at least one expense.'; c.lines.push({ id: uid(), date: todayISO(), catId: '', desc: '', qty: '', amount: '' }); return; }
+      const bad = c.lines.find((l) => !l.catId || !(+l.amount > 0) || !l.date);
+      if (bad) { $('#clE').textContent = 'Each expense needs a date, a category and an amount.'; return; }
+      if (c.lines.some((l) => l.date > todayISO())) { $('#clE').textContent = 'Expenses cannot be in the future.'; return; }
+      c.lines.forEach((l) => { l.amount = +l.amount; l.qty = l.qty === '' ? '' : +l.qty; });
+      const rec = c0 || { id: uid(), companyId: me.companyId, empId: me.id, by: me.id, at: Date.now(), no: nextNo('exp-' + me.companyId, `${company().code}-EXP-`), log: [] };
+      Object.assign(rec, { title: c.title || `Expenses ${dShort(c.lines[0].date)}`, lines: c.lines, total: claimTotal(c) });
+      if (send) {
+        rec.status = 'pending'; rec.submittedAt = Date.now(); rec.steps = buildSteps('expense', me, rec.total, me.id);
+        rec.participants = participantsOf(rec); logEntry(rec, 'Sent for approval', inr0(rec.total));
+        if (!rec.steps.length) { rec.status = 'approved'; logEntry(rec, 'No approval needed'); }
+        audit('Expense claim sent', `${rec.no}: ${inr0(rec.total)}`, 'expenses', 'employee', me.id);
+      } else { rec.status = 'draft'; rec.participants = participantsOf({ ...rec, steps: [] }); if (!c0) logEntry(rec, 'Created'); }
+      if (!c0) S.expenseClaims.push(rec);
+      saveNow(); closeDlg(); toast(send ? 'Sent for approval' : 'Draft saved'); go('#/claim/' + rec.id);
+    };
+    $('#clDraft').onclick = () => store(false);
+    f.onsubmit = (ev) => { ev.preventDefault(); store(true); };
+  };
+  draw();
+};
+VIEWS.claim = () => {
+  const c = S.expenseClaims.find((x) => x.id === R.arg);
+  if (!c) return { title: 'Expense claim', html: '<div class="empty">That claim no longer exists.</div>' };
+  const mine = c.empId === me.id; const hr = isHR(c.companyId);
+  return { title: `${c.no}: ${c.title || ''}`, html: `<div class="grid g21"><div class="card"><div class="hd"><div><h2>${esc(c.title || 'Expense claim')}</h2><p class="sub">${esc(c.no)} · ${esc(nameOf(c.empId))} · ${pill(c.status)}${c.payMonth ? ` paid in ${monthName(c.payMonth)} payroll` : c.paidRef ? ` paid, ${esc(c.paidRef)}` : ''}</p></div>
+      <div class="tools">${mine && ['draft', 'rejected'].includes(c.status) ? `<button class="btn pri" data-act="claimEdit" data-id="${c.id}">${c.status === 'rejected' ? 'Correct and send again' : 'Edit and send'}</button>` : ''}
+        ${mine && c.status === 'pending' && !(c.steps || []).some((s) => s.decision) ? `<button class="btn" data-act="claimWithdraw" data-id="${c.id}">Withdraw</button>` : ''}
+        ${canDecide(c) ? `<button class="btn pri" data-act="claimDecide" data-id="${c.id}">Approve or reject</button>` : ''}${hr && c.status === 'approved' ? `<button class="btn pri" data-act="claimPay" data-id="${c.id}">Pay</button>` : ''}</div></div>
+      <div class="scroll"><table class="t"><thead><tr><th>Date</th><th>Category</th><th>Details</th><th class="r">Amount</th><th>Receipt</th></tr></thead><tbody>${(c.lines || []).map((l) => { const cat = catById(l.catId) || {}; const iss = lineIssues(c, l); return `<tr><td>${dmy(l.date)}</td><td>${esc(cat.name || '')}<div class="fine mono">${esc(cat.code || '')}</div></td><td>${esc(l.desc || '')}${l.qty ? `<div class="fine">${num(l.qty)} × ${inr0(cat.rate)}</div>` : ''}${iss.length ? `<div class="fine" style="color:var(--warn)">${esc(iss.join('; '))}</div>` : ''}</td><td class="r">${inr0(l.amount)}</td><td>${l.fileId ? `<a href="/api/files/${l.fileId}" target="_blank" rel="noopener">${esc(l.fileName || 'View')}</a>` : '—'}</td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td colspan="3"><b>Total</b></td><td class="r"><b>${inr0(claimTotal(c))}</b></td><td></td></tr></tfoot></table></div></div>
+    <div><div class="card"><h2>Approvals</h2>${c.status === 'draft' ? '<p class="fine">Not sent yet.</p>' : stepsHtml(c)}</div><div class="card"><h2>Activity</h2>${logTable(c.log)}</div></div></div>` };
+};
+ACT.claimDecide = (b) => {
+  const c = S.expenseClaims.find((x) => x.id === b.dataset.id);
+  decideDialog(`${c.no}: ${inr0(claimTotal(c))} for ${nameOf(c.empId)}`, (ok, note) => {
+    decide(c, ok, note); audit(`Expense claim ${ok ? 'approved' : 'rejected'}`, `${c.no}: ${inr0(claimTotal(c))}`, 'expenses', 'employee', c.empId);
+    saveNow(); closeDlg(); toast(ok ? 'Approved' : 'Rejected'); route();
+  });
+};
+ACT.claimWithdraw = async (b) => { const c = S.expenseClaims.find((x) => x.id === b.dataset.id); if (!(await confirmBox('Withdraw this claim?', 'You can edit it and send it again.', 'Withdraw'))) return; c.status = 'draft'; c.steps = []; logEntry(c, 'Withdrawn'); saveNow(); route(); };
+ACT.claimPay = (b) => {
+  const c = S.expenseClaims.find((x) => x.id === b.dataset.id);
+  openDlg(`<form class="dlg" id="cpF"><h2>Pay ${esc(c.no)}: ${inr0(claimTotal(c))}</h2>
+    <label class="chk"><input type="radio" name="how" value="payroll" checked> With salary, as a reimbursement (not taxed)</label>
+    <label class="field">Payroll month<select class="inp" name="m">${monthOpts(c.companyId).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+    <label class="chk"><input type="radio" name="how" value="outside"> Already paid outside payroll</label><label class="field">Payment reference<input class="inp" name="ref" placeholder="UTR or cheque number"></label>
+    <p class="err" id="cpE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Record payment</button></div></form>`);
+  $('#cpF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target; const how = f.querySelector('input[name=how]:checked').value;
+    if (how === 'outside' && !f.elements.ref.value.trim()) { $('#cpE').textContent = 'Enter the payment reference.'; return; }
+    if (how === 'payroll') {
+      ensureComp(c.companyId, '1900', 'Expense reimbursement', { taxable: false, esi: false, wages: false });
+      S.payInputs.push({ id: uid(), companyId: c.companyId, empId: c.empId, month: f.elements.m.value, code: '1900', amount: Math.round(claimTotal(c)), note: `Expense claim ${c.no}`, claimId: c.id });
+      c.payMonth = f.elements.m.value; logEntry(c, 'Paid with salary', monthName(c.payMonth));
+    } else { c.paidRef = f.elements.ref.value.trim(); logEntry(c, 'Paid outside payroll', c.paidRef); }
+    c.status = 'paid'; c.paidAt = Date.now(); audit('Expense claim paid', `${c.no}: ${inr0(claimTotal(c))}`, 'expenses', 'employee', c.empId);
+    saveNow(); closeDlg(); toast('Payment recorded'); route();
+  };
+};
+
+/* ---------------------------------------------------------------- employee enrolment: HR and the departments together */
+/* Checklists per department. Owners are people (for example the IT administrator), or a role:
+   HR, the new joiner's manager, the head of their department, or the new joiner. */
+const OWNER_KINDS = { people: 'Named people', hr: 'HR', manager: 'The new joiner’s manager', head: 'Head of the new joiner’s department', employee: 'The new joiner' };
+function seedOnboardTemplates(coId) {
+  if (S.onboardTemplates.some((t) => t.companyId === coId)) return false;
+  [['HR', 'hr', -3, ['Offer letter signed', 'Documents collected and verified', 'PF and ESI enrolment', 'Policies and handbook shared']],
+   ['IT', 'people', -2, [{ name: 'Laptop', asset: 'Laptop' }, 'E-mail account', 'System and VPN access']],
+   ['Administration', 'people', -1, [{ name: 'ID card', asset: 'ID card' }, { name: 'Access card', asset: 'Access card' }, 'Seat and stationery']],
+   ['Finance', 'people', 0, ['Salary account verified', 'Reimbursement set-up']],
+   ['Manager', 'manager', 0, ['Welcome and team introductions', 'Buddy assigned', 'First-week plan shared']],
+   ['New joiner', 'employee', 3, ['Complete personal, bank and statutory details', 'Confirm assets received']]]
+    .forEach(([deptName, ownerKind, dueDays, items], i) => S.onboardTemplates.push({ id: uid(), companyId: coId, dept: deptName, ownerKind, ownerIds: [], dueDays, order: i,
+      items: items.map((x) => (typeof x === 'string' ? { name: x } : x)), active: true }));
+  return true;
+}
+const isCustodian = () => S.onboardTemplates.some((t) => (t.ownerIds || []).includes(me.id) && (t.items || []).some((x) => x.asset));
+function ownersFor(t, e) {
+  const k = t.ownerKind;
+  const ids = k === 'hr' ? hrIdsOf(e.companyId) : k === 'manager' ? [e.managerId] : k === 'head' ? [(dept(e.deptId) || {}).headId] : k === 'employee' ? [e.id] : t.ownerIds || [];
+  const ok = uniq(ids).filter((id) => empById(id));
+  return ok.length ? ok : hrIdsOf(e.companyId);          // nobody named yet: HR takes the task
+}
+const onbOf = (empId) => S.onboardings.find((o) => o.empId === empId && o.status !== 'cancelled');
+const onboardTasksFor = (id) => S.onboardings.filter((o) => o.status === 'open').flatMap((o) => (o.tasks || []).filter((t) => t.status === 'pending' && (t.ownerIds || []).includes(id)).map((t) => ({ o, t })));
+function startOnboarding(e) {
+  seedOnboardTemplates(e.companyId);
+  const doj = e.doj || todayISO();
+  const tasks = S.onboardTemplates.filter((t) => t.companyId === e.companyId && t.active !== false).sort((a, b) => (a.order || 0) - (b.order || 0))
+    .flatMap((t) => (t.items || []).map((x) => ({ id: uid(), dept: t.dept, item: x.name, asset: x.asset || '', ownerKind: t.ownerKind, ownerIds: ownersFor(t, e), due: addDays(doj, +t.dueDays || 0), status: 'pending' })));
+  const o = { id: uid(), companyId: e.companyId, empId: e.id, doj, status: 'open', tasks, by: me.id, at: Date.now(), log: [] };
+  o.participants = uniq([...tasks.flatMap((t) => t.ownerIds), ...hrIdsOf(e.companyId), e.managerId, e.id]);
+  logEntry(o, 'Enrolment started', `${tasks.length} tasks for ${uniq(tasks.map((t) => t.dept)).length} departments`);
+  S.onboardings.push(o);
+  audit('Enrolment started', `${fullName(e)}, joining ${dmy(doj)}`, 'onboarding', 'employee', e.id);
+  return o;
+}
+ACT.onbStart = (b) => {
+  const e = empById(b.dataset.id); closeDlg();
+  if (!active(e)) { toast('This person has left.'); return; }
+  if (onbOf(e.id)) { go('#/onboarding/' + onbOf(e.id).id); return; }
+  const o = startOnboarding(e); saveNow(); toast('Departments informed'); go('#/onboarding/' + o.id);
+};
+/* after HR adds someone: offer to start enrolment straight away */
+async function offerEnrolment(e) {
+  // ask first: changing page closes any open dialog
+  if (isHR(e.companyId) && (await confirmBox('Start enrolment?', `IT, Administration, Finance and the manager get their tasks for ${e.firstName}: laptop, ID card, accounts and the rest.`, 'Start enrolment'))) {
+    const o = startOnboarding(e); saveNow(); go('#/onboarding/' + o.id); return;
+  }
+  go('#/profile/' + e.id);
+}
+VIEWS.onboarding = () => {
+  if (R.arg) return onboardingOne(R.arg);
+  if (isHR() && seedOnboardTemplates(CO)) setTimeout(saveNow, 0);
+  const mineTasks = onboardTasksFor(me.id);
+  const list = S.onboardings.filter((o) => (isHR(o.companyId) && o.companyId === CO) || (o.participants || []).includes(me.id)).sort((a, b) => (a.doj < b.doj ? 1 : -1));
+  const recent = isHR() ? coEmployees().filter((e) => !onbOf(e.id) && (e.doj || '') >= addDays(todayISO(), -60)) : [];
+  const prog = (o) => { const n = (o.tasks || []).length, d = (o.tasks || []).filter((t) => t.status !== 'pending').length; return { n, d, p: n ? d / n : 0 }; };
+  return { title: 'Employee enrolment', html: `
+    ${mineTasks.length ? `<div class="card"><h2>Your tasks</h2><p class="sub">New joiners waiting for something from you.</p><table class="t"><tbody>${mineTasks.map(({ o, t }) => `<tr><td><b>${esc(t.item)}</b><div class="fine">${esc(t.dept)} · for ${esc(nameOf(o.empId))}, joining ${dmy(o.doj)}</div></td><td class="fine" style="${t.due < todayISO() ? 'color:var(--bad)' : ''}">Due ${dmy(t.due)}</td><td class="r"><a class="btn sm pri" href="#/onboarding/${o.id}">Open</a></td></tr>`).join('')}</tbody></table></div>` : ''}
+    <div class="card"><div class="hd"><div><h2>New joiners</h2><p class="sub">HR starts enrolment and every department gets its checklist: IT the laptop and accounts, Administration the ID card and access, Finance the salary account, the manager the welcome plan, and the joiner their own details.</p></div>
+      ${recent.length ? `<select class="inp" data-ch="onbPick" style="width:auto"><option value="">Start enrolment for…</option>${recent.map((e) => `<option value="${e.id}">${esc(fullName(e))}, joined ${dShort(e.doj)}</option>`).join('')}</select>` : ''}</div>
+      ${list.length ? `<table class="t"><thead><tr><th>New joiner</th><th>Joining</th><th>Progress</th><th>Waiting on</th><th>Status</th></tr></thead><tbody>${list.map((o) => { const g = prog(o); const waiting = uniq((o.tasks || []).filter((t) => t.status === 'pending').map((t) => t.dept)); return `<tr class="click" data-act="onbOpen" data-id="${o.id}"><td><b>${esc(nameOf(o.empId))}</b><div class="fine">${esc((desig((empById(o.empId) || {}).desigId) || {}).name || '')}</div></td><td>${dmy(o.doj)}</td>
+        <td style="min-width:140px"><div class="bar"><i style="width:${Math.round(g.p * 100)}%"></i></div><span class="fine">${g.d} of ${g.n}</span></td><td class="fine">${esc(waiting.join(', '))}</td><td>${pill(o.status)}</td></tr>`; }).join('')}</tbody></table>` : '<div class="empty">No enrolments yet. Start one from an employee’s Personnel action, or when adding a new employee.</div>'}</div>` };
+};
+ACT.onbOpen = (b) => go('#/onboarding/' + b.dataset.id);
+ACT.onbPick = (el) => { if (!el.value) return; const o = startOnboarding(empById(el.value)); saveNow(); go('#/onboarding/' + o.id); };
+function onboardingOne(id) {
+  const o = S.onboardings.find((x) => x.id === id);
+  if (!o) return { title: 'Enrolment', html: '<div class="empty">Not found.</div>' };
+  const e = empById(o.empId) || {}; const hr = isHR(o.companyId);
+  const depts = uniq(o.tasks.map((t) => t.dept));
+  const allDone = o.tasks.every((t) => t.status !== 'pending');
+  const mailto = () => { const ids = uniq(o.tasks.filter((t) => t.status === 'pending').flatMap((t) => t.ownerIds)).filter((x) => x !== me.id); const to = ids.map((x) => (empById(x) || {}).email).filter(Boolean);
+    const body = `${fullName(e)} joins on ${dmy(o.doj)} as ${(desig(e.desigId) || {}).name || ''}, ${(dept(e.deptId) || {}).name || ''}, reporting to ${nameOf(e.managerId)}.\n\nPlease complete your part:\n${o.tasks.filter((t) => t.status === 'pending').map((t) => `- ${t.dept}: ${t.item} (by ${dmy(t.due)})`).join('\n')}\n\nMark each item done in PeopleDesk under Personnel Information → Employee enrolment.`;
+    return `mailto:${to.join(',')}?subject=${encodeURIComponent(`New joiner: ${fullName(e)} on ${dmy(o.doj)}`)}&body=${encodeURIComponent(body)}`; };
+  return { title: `Enrolment: ${fullName(e)}`, html: `<div class="card"><div class="hd"><div><h2>${esc(fullName(e))}</h2><p class="sub">${esc([(desig(e.desigId) || {}).name, (dept(e.deptId) || {}).name].filter(Boolean).join(', ') || 'No designation yet')} · joining ${dmy(o.doj)} · reports to ${esc(nameOf(e.managerId))} · ${pill(o.status)}</p></div>
+      <div class="tools">${hr && o.status === 'open' ? `<a class="btn" href="${esc(mailto())}" data-act="onbMailed" data-id="${o.id}">E-mail departments</a>${allDone ? `<button class="btn pri" data-act="onbComplete" data-id="${o.id}">Complete enrolment</button>` : ''}` : ''}<a class="btn" href="#/profile/${e.id}">Profile</a></div></div>
+      <p class="fine" style="margin:0">Each department sees its tasks under Approvals and here. ${o.notifiedAt ? `Departments e-mailed ${dt(o.notifiedAt)}.` : ''}</p></div>
+    <div class="grid g21"><div>${depts.map((d) => { const ts = o.tasks.filter((t) => t.dept === d); return `<div class="card"><div class="hd"><h2>${esc(d)}</h2><span class="fine">${esc(uniq(ts.flatMap((t) => t.ownerIds)).map(nameOf).join(', '))}</span></div><table class="t"><tbody>${ts.map((t) => { const can = o.status === 'open' && t.status === 'pending' && ((t.ownerIds || []).includes(me.id) || hr);
+      const asset = t.assetId ? S.assets.find((a) => a.id === t.assetId) : null; return `<tr><td><b>${esc(t.item)}</b>${asset ? `<div class="fine">${esc(asset.type)} ${esc(asset.tag)}${asset.serial ? `, serial ${esc(asset.serial)}` : ''}</div>` : ''}${t.note ? `<div class="fine">${esc(t.note)}</div>` : ''}${t.doneBy ? `<div class="fine">${esc(nameOf(t.doneBy))}, ${dt(t.doneAt)}</div>` : ''}</td>
+      <td class="fine" style="white-space:nowrap;${t.status === 'pending' && t.due < todayISO() ? 'color:var(--bad)' : ''}">Due ${dShort(t.due)}</td><td>${pill(t.status)}</td>
+      <td class="r" style="white-space:nowrap">${can ? (t.asset ? `<button class="btn sm pri" data-act="onbAsset" data-o="${o.id}" data-t="${t.id}">Allocate ${esc(t.asset)}</button>` : `<button class="btn sm pri" data-act="onbDone" data-o="${o.id}" data-t="${t.id}">Done</button>`) + ` <button class="btn sm" data-act="onbNA" data-o="${o.id}" data-t="${t.id}">Not needed</button>` : ''}
+        ${t.ownerKind === 'employee' && t.status === 'pending' && t.item.startsWith('Complete') && o.empId === me.id ? `<a class="btn sm" href="#/profile/${me.id}?tab=personal">Open my details</a>` : ''}</td></tr>`; }).join('')}</tbody></table></div>`; }).join('')}</div>
+      <div><div class="card"><h2>Assets issued</h2>${S.assets.filter((a) => a.empId === e.id && a.status === 'issued').map((a) => `<p style="margin:4px 0"><b>${esc(a.type)}</b> ${esc(a.tag)} <span class="fine">${esc([a.make, a.serial].filter(Boolean).join(', '))}${a.ackAt ? ' · received' : ''}</span></p>`).join('') || '<p class="fine">None yet.</p>'}</div>
+      <div class="card"><h2>Activity</h2>${logTable(o.log)}</div></div></div>` };
+}
+function onbTaskDone(o, t, status, note) {
+  Object.assign(t, { status, doneBy: me.id, doneAt: Date.now(), note: note || t.note || '' });
+  logEntry(o, `${t.dept}: ${t.item} ${status === 'na' ? 'not needed' : 'done'}`, note);
+  if (t.item.startsWith('Confirm assets')) S.assets.filter((a) => a.empId === o.empId && a.status === 'issued' && !a.ackAt).forEach((a) => { a.ackAt = Date.now(); logEntry(a, 'Receipt confirmed by the employee'); });
+  audit(`Enrolment: ${t.item}`, `${nameOf(o.empId)}: ${status === 'na' ? 'not needed' : 'done'}`, 'onboarding', 'employee', o.empId);
+}
+ACT.onbDone = (b) => { const o = S.onboardings.find((x) => x.id === b.dataset.o); const t = o.tasks.find((x) => x.id === b.dataset.t); onbTaskDone(o, t, 'done'); saveNow(); toast('Done'); route(); };
+ACT.onbNA = (b) => { const o = S.onboardings.find((x) => x.id === b.dataset.o); const t = o.tasks.find((x) => x.id === b.dataset.t); onbTaskDone(o, t, 'na'); saveNow(); route(); };
+ACT.onbMailed = (b) => { const o = S.onboardings.find((x) => x.id === b.dataset.id); o.notifiedAt = Date.now(); logEntry(o, 'Departments e-mailed'); saveNow(); };
+ACT.onbComplete = (b) => { const o = S.onboardings.find((x) => x.id === b.dataset.id); o.status = 'completed'; logEntry(o, 'Enrolment completed'); audit('Enrolment completed', nameOf(o.empId), 'onboarding', 'employee', o.empId); saveNow(); toast('Enrolment completed'); route(); };
+ACT.onbAsset = (b) => {
+  const o = S.onboardings.find((x) => x.id === b.dataset.o); const t = o.tasks.find((x) => x.id === b.dataset.t);
+  const stock = S.assets.filter((a) => a.companyId === o.companyId && a.type === t.asset && a.status === 'in stock');
+  openDlg(`<form class="dlg" id="oaF" novalidate><h2>Allocate ${esc(t.asset)} to ${esc(nameOf(o.empId))}</h2><div class="form">
+    ${stock.length ? `<label class="field wide">From stock<select class="inp" name="stock"><option value="">A new one (enter below)</option>${stock.map((a) => `<option value="${a.id}">${esc(a.tag)} ${esc([a.make, a.serial].filter(Boolean).join(', '))}</option>`).join('')}</select></label>` : ''}
+    <label class="field">Asset tag<input class="inp" name="tag" placeholder="e.g. LT-0042"></label><label class="field">Serial number<input class="inp" name="serial"></label>
+    <label class="field">Make and model<input class="inp" name="make"></label><label class="field">Issued on<input class="inp" type="date" name="on" value="${o.doj > todayISO() ? o.doj : todayISO()}"></label>
+    <label class="field wide">Note<input class="inp" name="note"></label></div><p class="err" id="oaE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Allocate</button></div></form>`);
+  $('#oaF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target; let a = f.elements.stock && f.elements.stock.value ? S.assets.find((x) => x.id === f.elements.stock.value) : null;
+    if (!a && !f.elements.tag.value.trim()) { $('#oaE').textContent = 'Enter the asset tag, or choose one from stock.'; return; }
+    if (!a) { a = { id: uid(), companyId: o.companyId, type: t.asset, tag: f.elements.tag.value.trim(), serial: f.elements.serial.value.trim(), make: f.elements.make.value.trim(), custodianIds: uniq([...t.ownerIds]), log: [] }; S.assets.push(a); }
+    issueAsset(a, o.empId, f.elements.on.value || todayISO(), f.elements.note.value.trim());
+    t.assetId = a.id; onbTaskDone(o, t, 'done', `${a.tag}${a.serial ? `, ${a.serial}` : ''}`); t.note = '';
+    saveNow(); closeDlg(); toast(`${t.asset} allocated`); route();
+  };
+};
+VIEWS.onbsetup = () => {
+  if (isHR() && seedOnboardTemplates(CO)) setTimeout(saveNow, 0);
+  const ts = S.onboardTemplates.filter((t) => t.companyId === CO).sort((a, b) => (a.order || 0) - (b.order || 0));
+  return { title: 'Enrolment checklists', html: `<div class="card"><div class="hd"><div><h2>Enrolment checklists</h2><p class="sub">What each department sets up for a new joiner, who does it, and when, counted from the joining date (−2 is two days before). Items marked as assets go into the assets register when allocated.</p></div><button class="btn pri" data-act="obtEdit">Add department</button></div>
+    <table class="t"><thead><tr><th>Department</th><th>Done by</th><th>Items</th><th class="r">Due</th></tr></thead><tbody>${ts.map((t) => `<tr class="click" data-act="obtEdit" data-id="${t.id}"><td><b>${esc(t.dept)}</b>${t.active === false ? ' <span class="badge">Off</span>' : ''}</td>
+      <td>${t.ownerKind === 'people' ? ((t.ownerIds || []).length ? esc(t.ownerIds.map(nameOf).join(', ')) : '<span class="badge warn">Nobody named: HR does it</span>') : esc(OWNER_KINDS[t.ownerKind])}</td>
+      <td class="fine">${(t.items || []).map((x) => esc(x.name) + (x.asset ? ' <span class="badge">asset</span>' : '')).join(', ')}</td><td class="r">${+t.dueDays > 0 ? '+' : ''}${+t.dueDays || 0} days</td></tr>`).join('')}</tbody></table></div>` };
+};
+ACT.obtEdit = (b) => {
+  const t0 = b.dataset.id ? S.onboardTemplates.find((x) => x.id === b.dataset.id) : null;
+  const t = t0 ? JSON.parse(JSON.stringify(t0)) : { dept: '', ownerKind: 'people', ownerIds: [], dueDays: 0, items: [{ name: '' }], active: true };
+  const ppl = coEmployees().sort((a, c) => fullName(a).localeCompare(fullName(c))).map((x) => [x.id, `${fullName(x)}, ${(dept(x.deptId) || {}).name || ''}`]);
+  const draw = () => {
+    openDlg(`<form class="dlg" id="obF" novalidate><h2>${t0 ? 'Edit' : 'Add'} department checklist</h2><div class="form">
+      <label class="field">Department<input class="inp" name="dept" value="${esc(t.dept)}" placeholder="e.g. IT"></label>
+      <label class="field">Done by<select class="inp" name="kind">${Object.entries(OWNER_KINDS).map(([k, n]) => `<option value="${k}" ${k === t.ownerKind ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+      <label class="field">Due (days from joining)<input class="inp" type="number" name="due" value="${esc(t.dueDays)}"></label><label class="chk" style="align-self:end"><input type="checkbox" name="active" ${t.active !== false ? 'checked' : ''}> In use</label>
+      ${t.ownerKind === 'people' ? `<div class="field wide">People who do it${checkList('own', ppl, t.ownerIds)}</div>` : ''}</div>
+      <h3>Items</h3>${t.items.map((x, i) => `<div class="form" style="grid-template-columns:2fr 1.2fr auto;align-items:end;margin-bottom:6px"><label class="field">Item<input class="inp" data-i="${i}" data-f="name" value="${esc(x.name)}"></label>
+        <label class="field">Asset type (if it is one)<input class="inp" data-i="${i}" data-f="asset" value="${esc(x.asset || '')}" placeholder="e.g. Laptop"></label><button type="button" class="btn sm danger" data-rm="${i}">✕</button></div>`).join('')}
+      <button type="button" class="btn sm" id="obAdd">Add an item</button><p class="err" id="obE"></p>
+      <div class="btns">${t0 ? '<button type="button" class="btn danger" id="obDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+    const f = $('#obF');
+    const sync = () => { t.dept = f.elements.dept.value; t.ownerKind = f.elements.kind.value; t.dueDays = +f.elements.due.value || 0; t.active = f.elements.active.checked; if (f.querySelector('input[name=own]')) t.ownerIds = checked(f, 'own'); };
+    f.elements.kind.onchange = () => { sync(); draw(); };
+    f.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('input', () => { t.items[+el.dataset.i][el.dataset.f] = el.value; }));
+    f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { sync(); t.items.splice(+el.dataset.rm, 1); draw(); }; });
+    $('#obAdd').onclick = () => { sync(); t.items.push({ name: '' }); draw(); };
+    if ($('#obDel')) $('#obDel').onclick = async () => { if (await confirmBox('Delete this checklist?', 'Enrolments already started keep their tasks.', 'Delete')) { S.onboardTemplates = S.onboardTemplates.filter((x) => x.id !== t0.id); saveNow(); route(); } };
+    f.onsubmit = (ev) => {
+      ev.preventDefault(); sync(); t.items = t.items.filter((x) => x.name.trim()).map((x) => ({ name: x.name.trim(), ...(x.asset && x.asset.trim() ? { asset: x.asset.trim() } : {}) }));
+      if (!t.dept.trim() || !t.items.length) { $('#obE').textContent = 'Name the department and add at least one item.'; return; }
+      if (t0) Object.assign(t0, t); else S.onboardTemplates.push({ id: uid(), companyId: CO, order: S.onboardTemplates.filter((x) => x.companyId === CO).length, ...t });
+      audit('Enrolment checklist saved', t.dept, 'onboarding'); saveNow(); closeDlg(); toast('Saved'); route();
+    };
+  };
+  draw();
+};
+
+/* ---------------------------------------------------------------- assets: ID cards, laptops, access cards and others */
+function issueAsset(a, empId, on, note) {
+  const e = empById(empId);
+  Object.assign(a, { empId, status: 'issued', issuedOn: on, returnedOn: '', ackAt: 0 });
+  a.custodianIds = uniq(a.custodianIds || []); a.participants = uniq([...a.custodianIds, ...hrIdsOf(a.companyId), empId]);
+  logEntry(a, `Issued to ${fullName(e)}`, note);
+  audit(`${a.type} issued`, `${a.tag} to ${fullName(e)}`, 'assets', 'employee', empId);
+}
+VIEWS.assets = () => {
+  const hr = isHR(); const f = R.q.get('f') || 'issued'; const ty = R.q.get('t') || '';
+  const mine = S.assets.filter((a) => a.empId === me.id && a.status === 'issued');
+  const all = S.assets.filter((a) => a.companyId === CO && (hr || (a.custodianIds || []).includes(me.id)));
+  const types = uniq(all.map((a) => a.type)).sort();
+  const shown = all.filter((a) => (f === 'all' || a.status === f) && (!ty || a.type === ty));
+  const leaving = all.filter((a) => a.status === 'issued' && S.exits.some((x) => x.empId === a.empId && ['notice', 'hr', 'requested'].includes(x.status)));
+  return { title: 'Assets', html: `${mine.length ? `<div class="card"><h2>With you</h2><table class="t"><tbody>${mine.map((a) => `<tr><td><b>${esc(a.type)}</b> ${esc(a.tag)}<div class="fine">${esc([a.make, a.serial].filter(Boolean).join(', '))} · since ${dmy(a.issuedOn)}</div></td><td class="r">${a.ackAt ? '<span class="badge ok">Received</span>' : `<button class="btn sm" data-act="assetAck" data-id="${a.id}">Confirm I have it</button>`}</td></tr>`).join('')}</tbody></table></div>` : ''}
+    ${hr || isCustodian() ? `${leaving.length ? `<div class="note warn">${leaving.length} asset${leaving.length > 1 ? 's are' : ' is'} with people who are leaving: ${esc(leaving.map((a) => `${a.type} ${a.tag} (${nameOf(a.empId)})`).join(', '))}.</div>` : ''}
+    <div class="card"><div class="hd"><div><h2>Assets register</h2><p class="sub">Everything issued to employees, with who issued it and when. Returns are recorded at exit or any time.</p></div>
+      <div class="tools"><select class="inp" data-ch="assetF" data-k="f">${[['issued', 'Issued'], ['in stock', 'In stock'], ['returned', 'Returned'], ['all', 'All']].map(([v, l]) => `<option value="${v}" ${v === f ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <select class="inp" data-ch="assetF" data-k="t"><option value="">All types</option>${types.map((x) => `<option ${x === ty ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select><button class="btn pri" data-act="assetEdit">Add asset</button></div></div>
+      ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Type</th><th>Tag</th><th>Make and serial</th><th>With</th><th>Since</th><th>Status</th><th></th></tr></thead><tbody>${shown.map((a) => `<tr><td>${esc(a.type)}</td><td><b>${esc(a.tag)}</b></td><td class="fine">${esc([a.make, a.serial].filter(Boolean).join(', '))}</td><td>${a.empId && a.status === 'issued' ? `<a href="#/profile/${a.empId}?tab=assets">${esc(nameOf(a.empId))}</a>` : '—'}</td>
+        <td class="fine">${a.status === 'issued' ? dmy(a.issuedOn) : a.returnedOn ? dmy(a.returnedOn) : ''}</td><td>${pill(a.status)}${a.status === 'issued' && a.ackAt ? ' <span class="fine">received</span>' : ''}</td>
+        <td class="r" style="white-space:nowrap">${a.status === 'issued' ? `<button class="btn sm" data-act="assetReturn" data-id="${a.id}">Returned</button>` : a.status === 'in stock' ? `<button class="btn sm" data-act="assetIssue" data-id="${a.id}">Issue</button>` : ''} <button class="btn sm" data-act="assetLog" data-id="${a.id}">History</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing here.</div>'}</div>` : ''}` };
+};
+ACT.assetF = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set(el.dataset.k, el.value) : p.delete(el.dataset.k); go('#/assets?' + p); };
+ACT.assetAck = (b) => { const a = S.assets.find((x) => x.id === b.dataset.id); a.ackAt = Date.now(); logEntry(a, 'Receipt confirmed by the employee'); saveNow(); toast('Thank you'); route(); };
+ACT.assetEdit = () => {
+  openDlg(`<form class="dlg" id="asF" novalidate><h2>Add asset to stock</h2><div class="form"><label class="field">Type<input class="inp" name="type" list="asTypes" placeholder="Laptop, ID card, Phone…"><datalist id="asTypes">${uniq(S.assets.map((a) => a.type)).map((x) => `<option value="${esc(x)}">`).join('')}</datalist></label>
+    <label class="field">Tag<input class="inp" name="tag"></label><label class="field">Serial number<input class="inp" name="serial"></label><label class="field">Make and model<input class="inp" name="make"></label></div>
+    <p class="err" id="asE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`);
+  $('#asF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target; if (!f.elements.type.value.trim() || !f.elements.tag.value.trim()) { $('#asE').textContent = 'Enter the type and tag.'; return; }
+    if (S.assets.some((a) => a.companyId === CO && a.tag === f.elements.tag.value.trim())) { $('#asE').textContent = 'That tag is already in the register.'; return; }
+    const a = { id: uid(), companyId: CO, type: f.elements.type.value.trim(), tag: f.elements.tag.value.trim(), serial: f.elements.serial.value.trim(), make: f.elements.make.value.trim(), status: 'in stock', custodianIds: [me.id], log: [] };
+    a.participants = uniq([me.id, ...hrIdsOf(CO)]); logEntry(a, 'Added to stock'); S.assets.push(a); audit(`${a.type} added`, a.tag, 'assets'); saveNow(); closeDlg(); route();
+  };
+};
+ACT.assetIssue = (b) => {
+  const a = S.assets.find((x) => x.id === b.dataset.id);
+  openDlg(`<form class="dlg" id="aiF"><h2>Issue ${esc(a.type)} ${esc(a.tag)}</h2><label class="field">To<select class="inp" name="emp">${coEmployees().sort((x, y) => fullName(x).localeCompare(fullName(y))).map((e) => `<option value="${e.id}">${esc(fullName(e))}</option>`).join('')}</select></label>
+    <label class="field">On<input class="inp" type="date" name="on" value="${todayISO()}"></label><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Issue</button></div></form>`);
+  $('#aiF').onsubmit = (ev) => { ev.preventDefault(); issueAsset(a, ev.target.elements.emp.value, ev.target.elements.on.value || todayISO(), ''); saveNow(); closeDlg(); route(); };
+};
+ACT.assetReturn = (b) => {
+  const a = S.assets.find((x) => x.id === b.dataset.id);
+  openDlg(`<form class="dlg" id="arF"><h2>${esc(a.type)} ${esc(a.tag)} returned by ${esc(nameOf(a.empId))}</h2><label class="field">On<input class="inp" type="date" name="on" value="${todayISO()}"></label>
+    <label class="field">Condition<select class="inp" name="cond"><option value="in stock">Good: back to stock</option><option value="returned">Damaged or retired</option></select></label><label class="field">Note<input class="inp" name="note"></label>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Record return</button></div></form>`);
+  $('#arF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target; const who = a.empId;
+    logEntry(a, `Returned by ${nameOf(who)}`, f.elements.note.value.trim()); audit(`${a.type} returned`, `${a.tag} by ${nameOf(who)}`, 'assets', 'employee', who);
+    Object.assign(a, { status: f.elements.cond.value, returnedOn: f.elements.on.value || todayISO(), empId: f.elements.cond.value === 'in stock' ? '' : who });
+    saveNow(); closeDlg(); toast('Return recorded'); route();
+  };
+};
+ACT.assetLog = (b) => { const a = S.assets.find((x) => x.id === b.dataset.id); openDlg(`<div class="dlg"><h2>${esc(a.type)} ${esc(a.tag)}</h2>${logTable(a.log)}<div class="btns"><button class="btn ghost" data-act="close">Close</button></div></div>`, true); };
+PROFILE_TABS.assets = (e, { hr }) => {
+  const as = S.assets.filter((a) => a.empId === e.id || (a.log || []).some((l) => (l.what || '').includes(fullName(e))));
+  const o = onbOf(e.id);
+  return `<div class="card"><div class="hd"><div><h2>Assets</h2><p class="sub">ID cards, laptops and anything else issued to ${esc(e.firstName)}.</p></div>${hr ? `${o ? `<a class="btn" href="#/onboarding/${o.id}">Enrolment</a>` : active(e) ? `<button class="btn" data-act="onbStart" data-id="${e.id}">Start enrolment</button>` : ''}` : ''}</div>
+    ${as.length ? `<table class="t"><thead><tr><th>Type</th><th>Tag</th><th>Issued</th><th>Status</th></tr></thead><tbody>${as.map((a) => `<tr><td>${esc(a.type)}</td><td>${esc(a.tag)} <span class="fine">${esc(a.serial || '')}</span></td><td>${dmy(a.issuedOn)}</td><td>${a.empId === e.id && a.status === 'issued' ? pill('issued') : pill('returned')}${a.ackAt && a.empId === e.id ? ' <span class="fine">received</span>' : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing issued.</div>'}</div>`;
+};
+
+/* ---------------------------------------------------------------- promotions and progression */
+function monthsInGrade(e) {
+  const h = (e.gradeHist || []).filter((x) => x.gradeId === e.gradeId).sort((a, b) => (a.from < b.from ? -1 : 1));
+  let since = h.length ? h[0].from : '';
+  const lastPromo = (e.history || []).filter((x) => x.type === 'Promotion').map((x) => x.date).sort().pop();
+  if (!since) since = lastPromo || e.doj || todayISO();
+  return Math.max(0, ymDiff(since.slice(0, 7), todayISO().slice(0, 7)));
+}
+function lastRating(e) {
+  const cs = S.cycles.filter((c) => c.companyId === e.companyId && c.stage === 'closed').sort((a, b) => (a.to < b.to ? 1 : -1));
+  for (const c of cs) { const rv = S.reviews.find((x) => x.cycleId === c.id && x.empId === e.id); if (rv && +rv.final) return { r: +rv.final, cycle: c }; }
+  return null;
+}
+function gradeBandNote(e, ctc) {
+  const g = grade(e.gradeId); if (!g || !(+g.minCTC || +g.maxCTC)) return '';
+  if (+g.minCTC && ctc < +g.minCTC) return ` <span class="badge warn">Below the ${esc(g.name)} band (${inr0(g.minCTC)}–${inr0(g.maxCTC)})</span>`;
+  if (+g.maxCTC && ctc > +g.maxCTC) return ` <span class="badge warn">Above the ${esc(g.name)} band (${inr0(g.minCTC)}–${inr0(g.maxCTC)})</span>`;
+  return ` <span class="fine">Within the ${esc(g.name)} band.</span>`;
+}
+const nextGrade = (e) => { const g = grade(e.gradeId); if (!g || !+g.level) return null; return S.grades.filter((x) => x.companyId === e.companyId && +x.level > +g.level).sort((a, b) => +a.level - +b.level)[0] || null; };
+function eligibility(e) {
+  const g = grade(e.gradeId) || {}; const m = monthsInGrade(e); const lr = lastRating(e);
+  const timeOk = !(+g.minMonths) || m >= +g.minMonths; const rateOk = !lr || lr.r >= 3;
+  return { months: m, need: +g.minMonths || 0, rating: lr, eligible: timeOk && rateOk && !S.requests.some((r) => r.kind === 'promotion' && r.empId === e.id && ['pending', 'approved'].includes(r.status)) };
+}
+VIEWS.promotions = () => {
+  const tab = R.q.get('tab') || 'eligible';
+  const pool = (isHR() ? coEmployees() : allReportees(me.id).map(empById).filter((e) => e && active(e)));
+  const props = S.requests.filter((r) => r.kind === 'promotion' && (isHR(r.companyId) ? r.companyId === CO : (r.participants || []).includes(me.id))).sort((a, b) => b.at - a.at);
+  const done = coEmployees().flatMap((e) => (e.history || []).filter((h) => h.type === 'Promotion' && h.date >= addDays(todayISO(), -365)).map((h) => ({ e, h }))).sort((a, b) => (a.h.date < b.h.date ? 1 : -1));
+  const elig = pool.map((e) => ({ e, x: eligibility(e) })).sort((a, b) => b.x.eligible - a.x.eligible || b.x.months - a.x.months);
+  return { title: 'Promotions and progression', html: `<div class="tabs">${[['eligible', 'Who is due'], ['proposals', `Proposals (${props.filter((r) => r.status === 'pending' || r.status === 'approved').length} open)`], ['done', 'Promoted this year']].map(([k, n]) => `<a href="#/promotions?tab=${k}" class="${tab === k ? 'on' : ''}">${n}</a>`).join('')}</div>
+    ${tab === 'eligible' ? `<div class="card"><h2>Time in grade and ratings</h2><p class="sub">Due when the months in grade reach the grade’s minimum and the last final rating is at least 3. Grades, levels, pay bands and minimum months are set under Departments, designations and grades.</p>
+      <div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Designation and grade</th><th class="r">Months in grade</th><th>Last rating</th><th>Pay against band</th><th></th></tr></thead><tbody>${elig.map(({ e, x }) => { const sal = salaryAt(e, todayISO()); return `<tr><td><a href="#/profile/${e.id}?tab=career"><b>${esc(fullName(e))}</b></a></td><td>${esc((desig(e.desigId) || {}).name || '—')}<div class="fine">Grade ${esc((grade(e.gradeId) || {}).name || '—')}${nextGrade(e) ? `, next ${esc(nextGrade(e).name)}` : ''}</div></td>
+        <td class="r">${x.months}${x.need ? ` of ${x.need}` : ''}</td><td>${x.rating ? `${x.rating.r} ${esc(RATING[x.rating.r])}<div class="fine">${esc(x.rating.cycle.name)}</div>` : '<span class="fine">Not rated</span>'}</td><td class="fine">${sal ? gradeBandNote(e, sal.ctc) : ''}</td>
+        <td class="r">${x.eligible ? '<span class="badge ok">Due</span> ' : ''}<button class="btn sm" data-act="promoNew" data-id="${e.id}">Propose</button></td></tr>`; }).join('')}</tbody></table></div></div>`
+    : tab === 'proposals' ? `<div class="card"><h2>Promotion proposals</h2><p class="sub">Proposed by managers or HR, approved through the promotion workflow, and applied by HR on the effective date: new designation, grade and pay, all recorded in the employee’s history.</p>
+      ${props.length ? `<table class="t"><thead><tr><th>Employee</th><th>Proposed</th><th>Effective</th><th>By</th><th>Status</th><th></th></tr></thead><tbody>${props.map((r) => `<tr><td><b>${esc(nameOf(r.empId))}</b></td><td>${esc(reqSummary(r))}</td><td>${dmy(r.date)}</td><td class="fine">${esc(nameOf(r.by))}</td><td>${pill(r.status)}</td><td class="r"><a class="btn sm" href="#/request/${r.id}">Open</a></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No proposals.</div>'}</div>`
+    : `<div class="card"><h2>Promoted in the last 12 months</h2>${done.length ? `<table class="t"><tbody>${done.map(({ e, h }) => `<tr><td>${dmy(h.date)}</td><td><b>${esc(fullName(e))}</b><div class="fine">${esc(h.note)}</div></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nobody yet.</div>'}</div>`}` };
+};
+ACT.promoNew = (b) => {
+  const e = empById(b.dataset.id); const sal = salaryAt(e, todayISO()); const ng = nextGrade(e);
+  const fields = [{ k: 'date', label: 'Effective date', type: 'date', req: true }, { k: 'desigId', label: 'New designation', type: 'select', opts: () => S.desigs.filter((d) => d.companyId === e.companyId).map((d) => [d.id, d.name]) },
+    { k: 'gradeId', label: 'New grade', type: 'select', opts: () => S.grades.filter((g) => g.companyId === e.companyId).sort((a, c) => (+a.level || 0) - (+c.level || 0)).map((g) => [g.id, `${g.name}${g.minCTC ? ` (${inr0(g.minCTC)}–${inr0(g.maxCTC)})` : ''}`]) },
+    { k: 'ctc', label: `New annual fixed CTC (now ${sal ? inr0(sal.ctc) : '—'})`, type: 'number', min: 0 }, { k: 'variable', label: `Variable pay target (now ${sal ? inr0(sal.variable || 0) : '—'})`, type: 'number', min: 0 },
+    { k: 'reason', label: 'Why this person should be promoted', type: 'textarea', wide: true, req: true }];
+  openDlg(`<form class="dlg" id="pmF" novalidate><h2>Propose promotion: ${esc(fullName(e))}</h2><p class="fine" style="margin:0">${monthsInGrade(e)} months in grade ${esc((grade(e.gradeId) || {}).name || '—')}. The proposal goes through the promotion approval workflow.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, { date: `${ymAdd(todayISO().slice(0, 7), 1)}-01`, desigId: e.desigId, gradeId: ng ? ng.id : e.gradeId, ctc: '', variable: '' }[f.k])).join('')}</div><p class="err" id="pmE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send proposal</button></div></form>`, true);
+  $('#pmF').onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields);
+    if (!d.reason) { $('#pmE').textContent = 'Write the justification.'; return; }
+    if (d.desigId === e.desigId && d.gradeId === e.gradeId) { $('#pmE').textContent = 'Choose a new designation or grade.'; return; }
+    const g = grade(d.gradeId);
+    if (g && d.ctc && ((+g.minCTC && d.ctc < +g.minCTC) || (+g.maxCTC && d.ctc > +g.maxCTC)) && !$('#pmF').dataset.warned) { $('#pmF').dataset.warned = '1'; $('#pmE').textContent = `The pay is outside the ${g.name} band (${inr0(g.minCTC)}–${inr0(g.maxCTC)}). Send again to propose it anyway.`; return; }
+    const r = newRequest('promotion', e, { date: d.date, desigId: d.desigId, gradeId: d.gradeId, ctc: d.ctc || '', variable: d.variable === '' ? '' : d.variable, reason: d.reason });
+    saveNow(); closeDlg(); toast(r.status === 'applied' ? 'Promotion applied' : 'Proposal sent'); go('#/request/' + r.id);
+  };
+};
+PROFILE_TABS.career = (e, { hr }) => {
+  const steps = [];
+  (e.gradeHist || []).forEach((h) => steps.push({ date: h.from, what: `${(desig(h.desigId) || {}).name || '—'}, grade ${(grade(h.gradeId) || {}).name || '—'}`, why: h.reason }));
+  (e.history || []).filter((h) => ['Hire', 'Promotion', 'Confirmation', 'Transfer'].includes(h.type) && !steps.some((s) => s.date === h.date && h.type === 'Promotion')).forEach((h) => steps.push({ date: h.date, what: h.type, why: h.note }));
+  steps.sort((a, b) => (a.date < b.date ? 1 : -1));
+  const x = eligibility(e); const sal = salaryAt(e, todayISO()); const canPropose = hr || allReportees(me.id).includes(e.id);
+  return `<div class="card"><div class="hd"><div><h2>Career</h2><p class="sub">${esc((desig(e.desigId) || {}).name || '—')}, grade ${esc((grade(e.gradeId) || {}).name || '—')} for ${x.months} months${x.need ? ` (promotion considered after ${x.need})` : ''}. ${x.rating ? `Last rating ${x.rating.r}, ${esc(RATING[x.rating.r])}.` : ''}${hr && sal ? gradeBandNote(e, sal.ctc) : ''}</p></div>
+    ${canPropose && active(e) ? `<button class="btn" data-act="promoNew" data-id="${e.id}">Propose promotion</button>` : ''}</div>
+    ${steps.length ? `<ol class="steps">${steps.map((s) => `<li class="approved"><b>${dmy(s.date)}</b> · ${esc(s.what)}${s.why ? `<div class="fine">${esc(s.why)}</div>` : ''}</li>`).join('')}</ol>` : `<p class="fine">Joined ${dmy(e.doj)}.</p>`}</div>`;
+};
+
+/* ---------------------------------------------------------------- activity log */
+const MODULES = { org: 'Organisation', approvals: 'Approvals', leave: 'Leave', time: 'Time', payroll: 'Payroll', promotion: 'Promotions', onboarding: 'Enrolment', assets: 'Assets', expenses: 'Expenses', performance: 'Performance', settings: 'Settings' };
+VIEWS.activity = () => {
+  const m = R.q.get('m') || '', who = R.q.get('w') || '', q = (R.q.get('q') || '').toLowerCase(), from = R.q.get('from') || '';
+  const rows = S.audit.filter((a) => (!m || a.module === m) && (!who || a.by === who) && (!q || `${a.what} ${a.detail}`.toLowerCase().includes(q)) && (!from || isoOf(new Date(a.at)) >= from));
+  const people = uniq(S.audit.map((a) => a.by)).map((id) => [id, nameOf(id)]).sort((a, b) => a[1].localeCompare(b[1]));
+  const ref = (a) => (a.refType === 'employee' && a.refId ? `<a href="#/profile/${a.refId}?tab=activity">${esc(nameOf(a.refId))}</a>` : '');
+  return { title: 'Activity log', html: `<div class="card"><div class="hd"><div><h2>Activity log</h2><p class="sub">Who changed what, and when, across PeopleDesk: the latest 1,000 entries. Each employee’s own log is on their profile; requests, claims, enrolments and assets keep their own logs too.</p></div>
+      <div class="tools"><select class="inp" data-ch="actF" data-k="m"><option value="">All areas</option>${Object.entries(MODULES).map(([k, n]) => `<option value="${k}" ${k === m ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+        <select class="inp" data-ch="actF" data-k="w"><option value="">Everyone</option>${people.map(([id, n]) => `<option value="${id}" ${id === who ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+        <input class="inp" type="date" value="${esc(from)}" data-ch="actF" data-k="from" title="From"><input class="inp" placeholder="Search" value="${esc(R.q.get('q') || '')}" data-ch="actF" data-k="q" style="width:150px">
+        <button class="btn" data-act="actCsv">Download</button></div></div>
+    ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>When</th><th>Who</th><th>Area</th><th>What</th><th>Details</th><th>About</th></tr></thead><tbody>${rows.slice(0, 500).map((a) => `<tr><td class="fine" style="white-space:nowrap">${dt(a.at)}</td><td>${esc(nameOf(a.by))}</td><td class="fine">${esc(MODULES[a.module] || '')}</td><td>${esc(a.what)}</td><td class="fine">${esc(a.detail || '')}</td><td>${ref(a)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing matches.</div>'}</div>` };
+};
+ACT.actF = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set(el.dataset.k, el.value) : p.delete(el.dataset.k); go('#/activity?' + p); };
+ACT.actCsv = () => {
+  const csv = [['When', 'Who', 'Area', 'What', 'Details'], ...S.audit.map((a) => [new Date(a.at).toISOString(), nameOf(a.by), MODULES[a.module] || '', a.what, a.detail || ''])].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  downloadText(`activity-log-${todayISO()}.csv`, '\ufeff' + csv, 'text/csv');
+};
+
+/* ---------------------------------------------------------------- approvals inbox and data upgrades */
+function extPending() {
+  if (!me) return [];
+  applyApprovedRegs();
+  const out = [];
+  S.requests.filter(canDecide).forEach((r) => out.push({ kind: 'req2', r: { empId: r.empId }, what: `${REQ_KIND[r.kind]}: ${reqSummary(r)}`, link: '#/request/' + r.id }));
+  S.requests.filter((r) => r.status === 'approved' && isHR(r.companyId) && FLOW_TYPES[r.kind] && FLOW_TYPES[r.kind].hrLast).forEach((r) => out.push({ kind: 'req2', r: { empId: r.empId }, what: `${REQ_KIND[r.kind]} approved: apply it`, link: '#/request/' + r.id }));
+  S.expenseClaims.filter(canDecide).forEach((c) => out.push({ kind: 'exp', r: { empId: c.empId }, what: `Expense claim ${c.no}: ${inr0(claimTotal(c))}`, link: '#/claim/' + c.id }));
+  S.expenseClaims.filter((c) => c.status === 'approved' && isHR(c.companyId)).forEach((c) => out.push({ kind: 'exp', r: { empId: c.empId }, what: `Expense claim ${c.no} to pay: ${inr0(claimTotal(c))}`, link: '#/claim/' + c.id }));
+  const byOnb = {}; onboardTasksFor(me.id).forEach(({ o, t }) => { (byOnb[o.id] = byOnb[o.id] || { o, items: [] }).items.push(t.item); });
+  Object.values(byOnb).forEach(({ o, items }) => out.push({ kind: 'onb', r: { empId: o.empId }, what: `New joiner on ${dShort(o.doj)}: ${items.join(', ')}`, link: '#/onboarding/' + o.id }));
+  S.assets.filter((a) => a.status === 'issued' && (a.custodianIds || []).includes(me.id) && S.exits.some((x) => x.empId === a.empId && ['notice', 'hr'].includes(x.status)))
+    .forEach((a) => out.push({ kind: 'asset', r: { empId: a.empId }, what: `Collect ${a.type.toLowerCase()} ${a.tag} before they leave`, link: '#/assets' }));
+  return out;
+}
+function extEnsureSchema() {
+  S.employees.forEach((e) => { if (e.emergency && !e.emergencyName && !e.emergencyRelation) e.emergencyName = e.emergency; });
+  S.companies.forEach((co) => { if (!co.timeMode) co.timeMode = 'shift'; });
+  ['requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+}
+
+
+/* =====================================================================
+   PeopleDesk v2.1: employee self-service
+   Personal details with structured address and emergency contact, family members,
+   statutory changes approved by HR (with documents and an e-mail to HR), bank list,
+   leave through the workflow engine with supporting documents, and one place to see
+   letters, payslips, reviews and reimbursements.
+   ===================================================================== */
+const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', 'Bombay (hh)'];
+const EMERGENCY_RELATIONS = ['Spouse', 'Father', 'Mother', 'Son', 'Daughter', 'Brother', 'Sister', 'Friend', 'Other'];
+const FAMILY_RELATIONS = ['Father', 'Mother', 'Spouse', 'Child', 'Brother', 'Sister', 'Father-in-law', 'Mother-in-law', 'Other'];
+const COUNTRIES = ['India', 'Nepal', 'Bhutan', 'Bangladesh', 'Sri Lanka', 'United Arab Emirates', 'Saudi Arabia', 'Qatar', 'Oman', 'Kuwait', 'Singapore', 'Malaysia',
+  'United Kingdom', 'United States', 'Canada', 'Australia', 'New Zealand', 'Germany', 'France', 'Netherlands', 'Other'];
+const IN_STATES = ['Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala',
+  'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh',
+  'Uttarakhand', 'West Bengal', 'Andaman and Nicobar Islands', 'Chandigarh', 'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Jammu and Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry'];
+const CITY_BY_STATE = {
+  'Andhra Pradesh': 'Amaravati, Visakhapatnam, Vijayawada, Guntur, Nellore, Kurnool, Tirupati, Rajahmundry, Kakinada, Kadapa, Anantapur, Eluru, Ongole, Vizianagaram, Srikakulam, Chittoor, Machilipatnam',
+  'Arunachal Pradesh': 'Itanagar, Naharlagun, Pasighat',
+  Assam: 'Guwahati, Dispur, Dibrugarh, Silchar, Jorhat, Tezpur, Nagaon, Tinsukia, Bongaigaon',
+  Bihar: 'Patna, Gaya, Bhagalpur, Muzaffarpur, Darbhanga, Purnia, Bihar Sharif, Arrah, Begusarai, Katihar, Chapra, Hajipur',
+  Chhattisgarh: 'Raipur, Naya Raipur, Bhilai, Bilaspur, Korba, Durg, Rajnandgaon, Jagdalpur, Raigarh, Ambikapur',
+  Goa: 'Panaji, Margao, Vasco da Gama, Mapusa, Ponda',
+  Gujarat: 'Ahmedabad, Surat, Vadodara, Rajkot, Bhavnagar, Jamnagar, Gandhinagar, Junagadh, Anand, Nadiad, Bharuch, Vapi, Mehsana, Morbi, Gandhidham, Navsari, Porbandar, Bhuj, Valsad, Surendranagar',
+  Haryana: 'Gurugram, Faridabad, Panipat, Ambala, Yamunanagar, Rohtak, Hisar, Karnal, Sonipat, Panchkula, Bhiwani, Sirsa, Bahadurgarh, Rewari, Kurukshetra, Manesar',
+  'Himachal Pradesh': 'Shimla, Dharamshala, Solan, Mandi, Baddi, Kullu, Manali, Hamirpur, Una, Palampur',
+  Jharkhand: 'Ranchi, Jamshedpur, Dhanbad, Bokaro Steel City, Hazaribagh, Deoghar, Giridih, Ramgarh',
+  Karnataka: 'Bengaluru, Mysuru, Mangaluru, Hubballi, Dharwad, Belagavi, Kalaburagi, Davanagere, Ballari, Vijayapura, Shivamogga, Tumakuru, Udupi, Manipal, Hosapete, Hassan, Raichur, Bidar, Chitradurga, Mandya, Kolar, Chikkamagaluru, Karwar, Bagalkot',
+  Kerala: 'Thiruvananthapuram, Kochi, Kozhikode, Thrissur, Kollam, Kannur, Alappuzha, Palakkad, Kottayam, Malappuram, Kasaragod, Pathanamthitta',
+  'Madhya Pradesh': 'Bhopal, Indore, Jabalpur, Gwalior, Ujjain, Sagar, Dewas, Satna, Ratlam, Rewa, Katni, Singrauli, Burhanpur, Khandwa, Chhindwara, Pithampur',
+  Maharashtra: 'Mumbai, Pune, Nagpur, Thane, Navi Mumbai, Nashik, Chhatrapati Sambhajinagar (Aurangabad), Solapur, Kolhapur, Amravati, Pimpri-Chinchwad, Vasai-Virar, Kalyan-Dombivli, Bhiwandi, Panvel, Sangli, Jalgaon, Akola, Latur, Dhule, Ahilyanagar (Ahmednagar), Chandrapur, Parbhani, Nanded, Satara, Ratnagiri, Baramati, Wardha, Yavatmal, Dharashiv (Osmanabad), Palghar, Lonavala, Chakan',
+  Manipur: 'Imphal', Meghalaya: 'Shillong, Tura', Mizoram: 'Aizawl', Nagaland: 'Kohima, Dimapur',
+  Odisha: 'Bhubaneswar, Cuttack, Rourkela, Berhampur, Sambalpur, Puri, Balasore, Bhadrak, Baripada, Jharsuguda, Angul',
+  Punjab: 'Ludhiana, Amritsar, Jalandhar, Patiala, Bathinda, Mohali, Hoshiarpur, Pathankot, Moga, Phagwara, Firozpur, Kapurthala, Rajpura',
+  Rajasthan: 'Jaipur, Jodhpur, Kota, Bikaner, Ajmer, Udaipur, Bhilwara, Alwar, Bharatpur, Sikar, Sri Ganganagar, Pali, Neemrana, Bhiwadi, Chittorgarh, Tonk, Jhunjhunu, Barmer',
+  Sikkim: 'Gangtok, Namchi',
+  'Tamil Nadu': 'Chennai, Coimbatore, Madurai, Tiruchirappalli, Salem, Tirunelveli, Tiruppur, Vellore, Erode, Thoothukudi, Dindigul, Thanjavur, Hosur, Nagercoil, Kanchipuram, Kumbakonam, Karur, Sivakasi, Cuddalore, Sriperumbudur, Ooty, Krishnagiri, Tiruvallur, Chengalpattu',
+  Telangana: 'Hyderabad, Secunderabad, Warangal, Nizamabad, Karimnagar, Khammam, Ramagundam, Mahbubnagar, Nalgonda, Adilabad, Siddipet, Sangareddy',
+  Tripura: 'Agartala',
+  'Uttar Pradesh': 'Lucknow, Kanpur, Ghaziabad, Noida, Greater Noida, Agra, Varanasi, Meerut, Prayagraj, Bareilly, Aligarh, Moradabad, Saharanpur, Gorakhpur, Jhansi, Firozabad, Mathura, Ayodhya, Muzaffarnagar, Shahjahanpur, Rampur, Bulandshahr, Etawah, Hapur, Sitapur, Rae Bareli',
+  Uttarakhand: 'Dehradun, Haridwar, Roorkee, Haldwani, Rudrapur, Kashipur, Rishikesh, Nainital',
+  'West Bengal': 'Kolkata, Howrah, Durgapur, Asansol, Siliguri, Bardhaman, Kharagpur, Haldia, Malda, Baharampur, Darjeeling, Bally, Barasat, Krishnanagar',
+  'Andaman and Nicobar Islands': 'Sri Vijaya Puram (Port Blair)', Chandigarh: 'Chandigarh', 'Dadra and Nagar Haveli and Daman and Diu': 'Silvassa, Daman, Diu',
+  Delhi: 'New Delhi, Delhi', 'Jammu and Kashmir': 'Srinagar, Jammu, Anantnag, Baramulla, Kathua', Ladakh: 'Leh, Kargil', Lakshadweep: 'Kavaratti', Puducherry: 'Puducherry, Karaikal, Mahe, Yanam',
+};
+const CITY_STATE = {};
+Object.entries(CITY_BY_STATE).forEach(([st, list]) => list.split(', ').forEach((c) => { CITY_STATE[c] = st; }));
+const cityState = (c) => CITY_STATE[c] || '';
+const cityOpts = () => [...Object.keys(CITY_STATE).sort((a, b) => a.localeCompare(b)).map((c) => [c, `${c}, ${CITY_STATE[c]}`]), ['__other', 'Other city (type it below)']];
+
+/* Banks in India with the first four letters of their IFSC codes */
+const BANKS = [
+  ['State Bank of India', 'SBIN'], ['Punjab National Bank', 'PUNB'], ['Bank of Baroda', 'BARB'], ['Canara Bank', 'CNRB'], ['Union Bank of India', 'UBIN'], ['Bank of India', 'BKID'],
+  ['Indian Bank', 'IDIB'], ['Central Bank of India', 'CBIN'], ['Indian Overseas Bank', 'IOBA'], ['UCO Bank', 'UCBA'], ['Bank of Maharashtra', 'MAHB'], ['Punjab & Sind Bank', 'PSIB'],
+  ['HDFC Bank', 'HDFC'], ['ICICI Bank', 'ICIC'], ['Axis Bank', 'UTIB'], ['Kotak Mahindra Bank', 'KKBK'], ['IndusInd Bank', 'INDB'], ['Yes Bank', 'YESB'], ['IDFC FIRST Bank', 'IDFB'],
+  ['IDBI Bank', 'IBKL'], ['Federal Bank', 'FDRL'], ['South Indian Bank', 'SIBL'], ['Karur Vysya Bank', 'KVBL'], ['Karnataka Bank', 'KARB'], ['City Union Bank', 'CIUB'],
+  ['Tamilnad Mercantile Bank', 'TMBL'], ['DCB Bank', 'DCBL'], ['RBL Bank', 'RATN'], ['Bandhan Bank', 'BDBL'], ['CSB Bank', 'CSBK'], ['Dhanlaxmi Bank', 'DLXB'],
+  ['Jammu & Kashmir Bank', 'JAKA'], ['Nainital Bank', 'NTBL'], ['AU Small Finance Bank', 'AUBL'], ['Equitas Small Finance Bank', 'ESFB'], ['Ujjivan Small Finance Bank', 'UJVN'],
+  ['Jana Small Finance Bank', 'JSFB'], ['Suryoday Small Finance Bank', 'SURY'], ['ESAF Small Finance Bank', 'ESMF'], ['Utkarsh Small Finance Bank', 'UTKS'],
+  ['Airtel Payments Bank', 'AIRP'], ['India Post Payments Bank', 'IPOS'], ['Fino Payments Bank', 'FINO'],
+  ['Standard Chartered Bank', 'SCBL'], ['HSBC', 'HSBC'], ['Citibank', 'CITI'], ['Deutsche Bank', 'DEUT'], ['DBS Bank India', 'DBSS'],
+  ['Saraswat Co-operative Bank', 'SRCB'], ['Cosmos Co-operative Bank', 'COSB'],
+];
+const bankOpts = () => [...BANKS.map(([n]) => [n, n]), ['__other', 'Other bank (type it below)']];
+/* the bank tab gets an extra field for a bank that is not in the list */
+EMP_FIELDS.bank.splice(1, 0, { k: 'bankOther', label: 'Bank name (if not in the list)' });
+
+/* ---------------------------------------------------------------- address, emergency contact, bank */
+function wireAddress(form) {
+  const el = (k) => form.elements[k];
+  const field = (k) => el(k) && el(k).closest('.field');
+  const sync = () => {
+    const india = el('addrCountry').value === 'India';
+    const st = el('addrState').value;
+    const other = el('addrCity').value === '__other' || !india;
+    field('addrCityOther').style.display = other ? '' : 'none';
+    field('addrCity').style.display = india ? '' : 'none';
+    // only the cities of the chosen state, when a state is chosen
+    [...el('addrCity').options].forEach((o) => { if (o.value && o.value !== '__other') o.hidden = !!st && st !== 'Outside India' && CITY_STATE[o.value] !== st; });
+    field('addrPin').firstChild.textContent = india ? 'PIN code' : 'Postal or ZIP code';
+  };
+  el('addrCity').addEventListener('change', () => { const st = cityState(el('addrCity').value); if (st) { el('addrState').value = st; el('addrCountry').value = 'India'; } sync(); });
+  el('addrState').addEventListener('change', () => { const c = el('addrCity').value; if (c && c !== '__other' && cityState(c) !== el('addrState').value) el('addrCity').value = ''; sync(); });
+  el('addrCountry').addEventListener('change', () => { if (el('addrCountry').value !== 'India') { el('addrState').value = 'Outside India'; el('addrCity').value = '__other'; } else if (el('addrState').value === 'Outside India') el('addrState').value = ''; sync(); });
+  sync();
+}
+function checkPersonal(d) {
+  if (d.addrCity === '__other' || d.addrCountry !== 'India') d.addrCity = (d.addrCityOther || '').trim();
+  delete d.addrCityOther;
+  if (d.addrCountry === 'India' && d.addrPin && !/^[1-9]\d{5}$/.test(d.addrPin)) return 'The PIN code has 6 digits and does not start with 0.';
+  if (d.addrCountry === 'India' && d.addrCity && d.addrState && cityState(d.addrCity) && cityState(d.addrCity) !== d.addrState) return `${d.addrCity} is in ${cityState(d.addrCity)}.`;
+  const phone = (p) => !p || /^\+?[\d\s-]{8,16}$/.test(p);
+  if (!phone(d.phone)) return 'Enter the mobile number with digits only, with or without +91.';
+  if (!phone(d.emergencyPhone)) return 'Enter the emergency contact’s phone with digits only.';
+  if ((d.emergencyName || d.emergencyPhone) && !(d.emergencyName && d.emergencyPhone && d.emergencyRelation)) return 'For the emergency contact, give the name, relationship and phone.';
+  d.emergency = d.emergencyName ? `${d.emergencyName} (${d.emergencyRelation}), ${d.emergencyPhone}` : '';   // kept for older screens and exports
+  return '';
+}
+function personalRo(e) {
+  const val = (k, v) => `<div class="field">${esc(k)}<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(v || '—')}</span></div>`;
+  const marital = { single: 'Single', married: 'Married', divorcee: 'Divorcee', widowed: 'Widowed', other: 'Other' }[e.marital];
+  const addr = [e.address, e.addrCity, e.addrState && e.addrState !== 'Outside India' ? e.addrState : '', e.addrPin, e.addrCountry].filter(Boolean).join(', ');
+  const emerg = e.emergencyName ? `${e.emergencyName} (${e.emergencyRelation}), ${e.emergencyPhone}` : e.emergency;
+  return `<div class="form">${val('First name', e.firstName)}${val('Last name', e.lastName)}${val('Gender', { M: 'Male', F: 'Female', O: 'Other' }[e.gender])}${val('Date of birth', dmy(e.dob))}
+    ${val('Marital status', marital)}${val('Mobile', e.phone)}${val('Personal e-mail', e.personalEmail)}${val('Blood group', e.blood)}
+    <div class="field wide">Address<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(addr || '—')}</span></div>
+    <div class="field wide">Emergency contact<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(emerg || '—')}</span></div></div>`;
+}
+function wireBank(form, e) {
+  const el = (k) => form.elements[k];
+  const sync = () => { el('bankOther').closest('.field').style.display = el('bankName').value === '__other' ? '' : 'none'; };
+  if (el('bankName').value === '__other') el('bankOther').value = e.bankName || '';
+  el('bankName').addEventListener('change', sync);
+  el('ifsc').addEventListener('input', () => {
+    const pre = el('ifsc').value.toUpperCase().slice(0, 4); const b = BANKS.find((x) => x[1] === pre);
+    if (b && (!el('bankName').value || el('bankName').value === '__other')) { el('bankName').value = b[0]; sync(); }
+  });
+  sync();
+}
+function checkBank(d, form) {
+  if (d.bankName === '__other') d.bankName = (d.bankOther || '').trim();
+  delete d.bankOther;
+  const b = BANKS.find((x) => x[0] === d.bankName);
+  const pre = (d.ifsc || '').toUpperCase().slice(0, 4);
+  if (b && pre && pre !== b[1] && !form.dataset.ifscOk) { form.dataset.ifscOk = '1'; return `IFSC codes of ${b[0]} start with ${b[1]}. Check the IFSC, or save again if it is right.`; }
+  return '';
+}
+
+/* ---------------------------------------------------------------- family members */
+PROFILE_TABS.family = (e, { hr, mine }) => {
+  const fam = (e.family || []).slice().sort((a, b) => FAMILY_RELATIONS.indexOf(a.relation) - FAMILY_RELATIONS.indexOf(b.relation) || String(a.dob || '').localeCompare(String(b.dob || '')));
+  let child = 0;
+  const label = (m) => (m.relation === 'Child' ? `Child ${++child}` : m.relation);
+  const can = hr || mine;
+  return `<div class="card"><div class="hd"><div><h2>Family members</h2><p class="sub">Parents, spouse, children and others: used for medical insurance, nominations and emergencies.</p></div>${can ? `<button class="btn pri" data-act="famEdit" data-emp="${e.id}">Add family member</button>` : ''}</div>
+    ${fam.length ? `<div class="scroll"><table class="t"><thead><tr><th>Relationship</th><th>Name</th><th>Date of birth</th><th>Gender</th><th>Phone</th><th>Dependant</th><th>Nominee</th><th></th></tr></thead><tbody>${fam.map((m) => `<tr>
+      <td><b>${esc(label(m))}</b></td><td>${esc(m.name)}${m.occupation ? `<div class="fine">${esc(m.occupation)}</div>` : ''}</td><td>${dmy(m.dob)}${m.dob ? ` <span class="fine">(${Math.floor(yearsBetween(m.dob, todayISO()))})</span>` : ''}</td>
+      <td>${esc({ M: 'Male', F: 'Female', O: 'Other' }[m.gender] || '')}</td><td>${esc(m.phone || '')}</td><td>${m.dependant ? 'Yes' : ''}</td><td>${m.nomineePct ? `${num(m.nomineePct)}%` : ''}</td>
+      <td class="r" style="white-space:nowrap">${can ? `<button class="btn sm" data-act="famEdit" data-emp="${e.id}" data-id="${m.id}">Edit</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No family members added yet.</div>'}
+    ${fam.some((m) => m.nomineePct) && fam.reduce((s, m) => s + (+m.nomineePct || 0), 0) !== 100 ? `<div class="note warn">Nomination shares add up to ${num(fam.reduce((s, m) => s + (+m.nomineePct || 0), 0))}%; they should add up to 100%.</div>` : ''}</div>`;
+};
+ACT.famEdit = (b) => {
+  const e = empById(b.dataset.emp); const m0 = b.dataset.id ? (e.family || []).find((x) => x.id === b.dataset.id) : null;
+  const fields = [{ k: 'relation', label: 'Relationship', type: 'select', opts: FAMILY_RELATIONS.map((x) => [x, x]), req: true }, { k: 'name', label: 'Full name', req: true },
+    { k: 'dob', label: 'Date of birth', type: 'date' }, { k: 'gender', label: 'Gender', type: 'select', opts: [['M', 'Male'], ['F', 'Female'], ['O', 'Other']], blank: '—' },
+    { k: 'phone', label: 'Phone' }, { k: 'occupation', label: 'Occupation' }, { k: 'nomineePct', label: 'Nomination share (%)', type: 'number', min: 0, max: 100, help: 'For PF, gratuity and insurance; leave empty if not a nominee' },
+    { k: 'dependant', label: 'Dependant (covered under medical insurance)', type: 'check' }];
+  openDlg(`<form class="dlg" id="fmF" novalidate><h2>${m0 ? 'Edit' : 'Add'} family member</h2><div class="form">${fields.map((f) => fieldHtml(f, (m0 || { relation: 'Child' })[f.k])).join('')}</div><p class="err" id="fmE"></p>
+    <div class="btns">${m0 ? '<button type="button" class="btn danger" id="fmDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#fmF').onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields);
+    if (!d.name) { $('#fmE').textContent = 'Enter the name.'; return; }
+    if (d.dob && d.dob > todayISO()) { $('#fmE').textContent = 'The date of birth is in the future.'; return; }
+    if (['Spouse', 'Father', 'Mother'].includes(d.relation) && (e.family || []).some((x) => x !== m0 && x.relation === d.relation)) { $('#fmE').textContent = `A ${d.relation.toLowerCase()} is already listed.`; return; }
+    if (m0) Object.assign(m0, d); else (e.family = e.family || []).push({ id: uid(), ...d });
+    (e.history = e.history || []).push({ date: todayISO(), type: 'Family details changed', note: `${d.relation}: ${d.name}`, by: me.id });
+    audit('Family member saved', `${fullName(e)}: ${d.relation}`, 'org', 'employee', e.id);
+    saveNow(); closeDlg(); toast('Saved'); route();
+  };
+  if ($('#fmDel')) $('#fmDel').onclick = async () => { if (!(await confirmBox('Remove this family member?', m0.name, 'Remove'))) return; e.family = e.family.filter((x) => x !== m0); saveNow(); route(); };
+};
+
+/* ---------------------------------------------------------------- statutory changes: request, documents, HR approval, e-mail */
+const STAT_EDIT = [['pan', 'PAN', 'PAN card'], ['aadhaar', 'Aadhaar', 'Aadhaar card'], ['uan', 'UAN (PF)', 'UAN card or PF statement'], ['pfNo', 'PF member ID', 'PF statement'],
+  ['esiNo', 'ESI IP number', 'ESI e-Pehchan card'], ['esiDispensary', 'ESI dispensary', 'ESI card']];
+const statLabel = (k) => (STAT_EDIT.find((x) => x[0] === k) || [k, k])[1];
+async function saveAndWait() { for (let i = 0; i < 5; i++) { await sync.flush(); if (!sync.pending()) return true; await new Promise((r) => setTimeout(r, 250)); } return false; }
+async function notifyRequest(r, event) {
+  try {
+    await saveAndWait();
+    const res = await fetch('/api/notify', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-peopledesk': '1' }, body: JSON.stringify({ requestId: r.id, event }) });
+    const d = await res.json().catch(() => ({}));
+    return d.sent ? `e-mail sent to ${d.to}` : d.reason || 'no e-mail sent';
+  } catch (e) { return 'no e-mail sent'; }
+}
+ACT.statReq = () => {
+  const e = me;
+  openDlg(`<form class="dlg" id="srF" novalidate><h2>Request a change to statutory details</h2><p class="fine" style="margin:0">Change only what is wrong or new. Attach a copy of the document for each change. HR is e-mailed and checks it before the change applies.</p>
+    <div class="scroll"><table class="t"><thead><tr><th>Detail</th><th>Now</th><th>New value</th><th>Document</th></tr></thead><tbody>${STAT_EDIT.map(([k, l, doc]) => `<tr><td><b>${esc(l)}</b></td>
+      <td class="fine">${esc(k === 'aadhaar' && e[k] ? 'XXXX XXXX ' + String(e[k]).slice(-4) : e[k] || '—')}</td><td><input class="inp" name="${k}" placeholder="Unchanged"></td>
+      <td><input type="file" class="inp" name="doc_${k}" accept="image/*,application/pdf" title="${esc(doc)}"><div class="fine">${esc(doc)}</div></td></tr>`).join('')}</tbody></table></div>
+    <label class="field">Note for HR<textarea class="inp" name="note" placeholder="Optional"></textarea></label><p class="err" id="srE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send to HR</button></div></form>`, true);
+  $('#srF').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = ev.target; const err = (m) => { $('#srE').textContent = m; };
+    const changes = {}, old = {}, docs = [];
+    for (const [k, l] of STAT_EDIT) {
+      let v = f.elements[k].value.trim(); if (!v) continue;
+      if (k === 'pan') v = v.toUpperCase(); if (k === 'aadhaar') v = v.replace(/\s/g, '');
+      if (k === 'pan' && !/^[A-Z]{5}\d{4}[A-Z]$/.test(v)) return err('PAN should look like ABCDE1234F.');
+      if (k === 'aadhaar' && !/^\d{12}$/.test(v)) return err('Aadhaar has 12 digits.');
+      if (k === 'uan' && !/^\d{12}$/.test(v)) return err('UAN has 12 digits.');
+      if (k === 'esiNo' && !/^\d{10}$/.test(v)) return err('The ESI IP number has 10 digits.');
+      if (v === String(e[k] || '')) continue;
+      if (!f.elements[`doc_${k}`].files[0]) return err(`Attach the document for the new ${l}.`);
+      changes[k] = v; old[k] = e[k] || '';
+    }
+    if (!Object.keys(changes).length) return err('Enter at least one new value.');
+    try {
+      for (const k of Object.keys(changes)) { const file = f.elements[`doc_${k}`].files[0]; err(`Uploading ${file.name}…`); const up = await uploadFile(file); docs.push({ field: k, fileId: up.id, name: file.name }); }
+    } catch (x) { return err(x.message); }
+    const r = newRequest('statutory', e, { changes, old, documents: docs, reason: f.elements.note.value.trim() });
+    closeDlg(); route();
+    const how = await notifyRequest(r, 'submitted');
+    toast(`Sent to HR for approval (${how})`);
+  };
+};
+function applyStatutory(r) {
+  const e = empById(r.empId);
+  Object.entries(r.changes || {}).forEach(([k, v]) => { e[k] = v; });
+  (e.documents = e.documents || []).push(...(r.documents || []).map((d) => ({ id: uid(), category: 'Statutory proof', name: `${statLabel(d.field)}: ${d.name}`, fileId: d.fileId, date: todayISO(), by: r.empId, at: Date.now() })));
+  e.history.push({ date: todayISO(), type: 'Statutory details changed', note: `${Object.keys(r.changes || {}).map(statLabel).join(', ')}. ${r.no}`, by: me.id });
+  audit('Statutory details changed', `${fullName(e)}: ${Object.keys(r.changes || {}).map(statLabel).join(', ')}`, 'org', 'employee', e.id);
+}
+
+/* ---------------------------------------------------------------- leave through the workflow engine */
+function leaveSteps(emp, r, lt) {
+  let steps = buildSteps('leave', emp, r.days, me.id);
+  const needsHR = r.needsHR;
+  if (needsHR && !steps.some((s) => s.level === 'hr')) steps = [...steps, ...buildSteps('_hr', emp, 0, me.id)];
+  if (!steps.length && me.id === emp.id) steps = buildSteps('_hr', emp, 0, me.id);   // nobody else in the chain: HR approves
+  return steps;
+}
+FLOW_TYPES._hr = { label: 'HR', def: [{ level: 'hr' }], hrLast: false, hidden: true };
+const attachLinks = (list) => ((list || []).length ? `<div class="fine">${list.map((a) => `<a href="/api/files/${a.fileId}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a>`).join(' ')}</div>` : '');
+
+/* ---------------------------------------------------------------- documents, performance and reimbursements on the profile */
+const DOC_CATEGORIES = ['Offer letter', 'Appointment and joining letter', 'Confirmation letter', 'Salary revision letter', 'Bonus letter', 'Promotion letter', 'Transfer letter',
+  'Appreciation letter', 'Experience or relieving letter', 'Policy acknowledgement', 'Statutory proof', 'Other'];
+PROFILE_TABS.documents = (e, { hr }) => {
+  const docs = (e.documents || []).slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  const runs = S.payRuns.filter((r) => r.companyId === e.companyId && r.status === 'locked' && r.results && r.results[e.id]).sort((a, b) => (a.month < b.month ? 1 : -1));
+  const revs = (e.salaryHist || []).slice().sort((a, b) => (a.effective < b.effective ? 1 : -1));
+  const bonuses = S.payInputs.filter((i) => i.empId === e.id && ['1500', '1550'].includes(i.code)).sort((a, b) => (a.month < b.month ? 1 : -1));
+  return `<div class="card"><div class="hd"><div><h2>Letters and service documents</h2><p class="sub">Joining, salary revision, bonus, promotion and other letters issued by HR, and the proofs you submitted.</p></div>${hr ? `<button class="btn pri" data-act="docAdd" data-emp="${e.id}">Upload a document</button>` : ''}</div>
+    ${docs.length ? `<table class="t"><thead><tr><th>Date</th><th>Document</th><th>Type</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr><td>${dmy(d.date)}</td><td><a href="/api/files/${d.fileId}" target="_blank" rel="noopener"><b>${esc(d.name)}</b></a></td><td class="fine">${esc(d.category)}</td>
+      <td class="r">${hr ? `<button class="btn sm ghost" data-act="docDel" data-emp="${e.id}" data-id="${d.id}">Remove</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No letters uploaded yet.</div>'}</div>
+  <div class="grid g2"><div class="card"><h2>Payslips</h2>${runs.length ? `<table class="t"><tbody>${runs.slice(0, 24).map((r) => `<tr><td>${monthName(r.month)}</td><td class="r">${inr0((r.results[e.id] || {}).net || 0)} net</td><td class="r">${e.id === me.id ? `<a class="btn sm" href="#/payslips">Open</a>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No payslips yet.</div>'}</div>
+    <div class="card"><h2>Salary revisions and bonuses</h2>${revs.length || bonuses.length ? `<table class="t"><tbody>${revs.map((s) => `<tr><td>${dmy(s.effective)}</td><td>Salary: fixed CTC ${inr0(s.ctc)}${s.variable ? `, variable ${inr0(s.variable)}` : ''}</td><td class="fine">${esc(s.reason || '')}</td></tr>`).join('')}
+      ${bonuses.map((i) => `<tr><td>${monthName(i.month)}</td><td>${i.code === '1550' ? 'Variable pay' : 'Bonus'} ${inr0(i.amount)}</td><td class="fine">${esc(i.note || '')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">None yet.</div>'}
+      <p class="fine">Letters for each revision or bonus appear above once HR uploads them.</p></div></div>`;
+};
+ACT.docAdd = (b) => {
+  const e = empById(b.dataset.emp);
+  openDlg(`<form class="dlg" id="dcF2" novalidate><h2>Upload a document for ${esc(fullName(e))}</h2><div class="form">
+    <label class="field">Type<select class="inp" name="cat">${DOC_CATEGORIES.map((c) => `<option>${esc(c)}</option>`).join('')}</select></label>
+    <label class="field">Date<input class="inp" type="date" name="date" value="${todayISO()}"></label>
+    <label class="field wide">Title<input class="inp" name="name" placeholder="e.g. Salary revision letter 2026"></label>
+    <label class="field wide">File<input class="inp" type="file" name="file" accept="image/*,application/pdf"></label></div>
+    <p class="fine">The employee can see and download it from their profile.</p><p class="err" id="dcE2"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Upload</button></div></form>`);
+  $('#dcF2').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = ev.target; const file = f.elements.file.files[0];
+    if (!file) { $('#dcE2').textContent = 'Choose the file.'; return; }
+    try {
+      $('#dcE2').textContent = 'Uploading…'; const up = await uploadFile(file);
+      (e.documents = e.documents || []).push({ id: uid(), category: f.elements.cat.value, name: f.elements.name.value.trim() || f.elements.cat.value, fileId: up.id, date: f.elements.date.value || todayISO(), by: me.id, at: Date.now() });
+      e.history.push({ date: f.elements.date.value || todayISO(), type: 'Document issued', note: `${f.elements.cat.value}: ${f.elements.name.value.trim() || file.name}`, by: me.id });
+      audit('Document uploaded', `${fullName(e)}: ${f.elements.cat.value}`, 'org', 'employee', e.id);
+      saveNow(); closeDlg(); toast('Uploaded'); route();
+    } catch (x) { $('#dcE2').textContent = x.message; }
+  };
+};
+ACT.docDel = async (b) => {
+  const e = empById(b.dataset.emp); const d = (e.documents || []).find((x) => x.id === b.dataset.id);
+  if (!(await confirmBox('Remove this document?', d.name, 'Remove'))) return;
+  e.documents = e.documents.filter((x) => x !== d); audit('Document removed', `${fullName(e)}: ${d.name}`, 'org', 'employee', e.id); saveNow(); route();
+};
+PROFILE_TABS.performance = (e, { mine }) => {
+  const cycles = S.cycles.filter((c) => c.companyId === e.companyId).sort((a, b) => (a.to < b.to ? 1 : -1));
+  const cur = curCycle(e.companyId);
+  const row = (c) => {
+    const goals = S.goals.filter((g) => g.cycleId === c.id && g.empId === e.id); const rv = S.reviews.find((x) => x.cycleId === c.id && x.empId === e.id) || {};
+    const self = goalScore(goals, 'self'), mgr = goalScore(goals, 'mgr');
+    const showMgr = c.stage === 'closed' || !mine;
+    return `<tr><td><b>${esc(c.name)}</b><div class="fine">${dmy(c.from)} to ${dmy(c.to)}</div></td><td>${esc(STAGES[c.stage] || c.stage)}</td><td class="r">${goals.length}</td>
+      <td class="c">${self ?? '—'}</td><td class="c">${showMgr ? mgr ?? '—' : 'At close'}</td><td>${showMgr && +rv.final ? `<b>${rv.final}</b> ${esc(RATING[rv.final])}` : '—'}</td>
+      <td class="r"><a class="btn sm" href="#/performance?c=${c.id}${mine ? '' : `&emp=${e.id}`}">Open</a></td></tr>`;
+  };
+  return `${mine && cur && cur.stage === 'self' ? `<div class="note">Self-appraisal is open for ${esc(cur.name)}. <a class="btn sm pri" href="#/performance?c=${cur.id}">Enter my appraisal</a></div>` : ''}
+    ${mine && cur && cur.stage === 'goals' ? `<div class="note">Goal setting is open for ${esc(cur.name)}. <a class="btn sm pri" href="#/performance?c=${cur.id}">Set my goals</a></div>` : ''}
+    <div class="card"><h2>Performance reviews and ratings</h2><p class="sub">Every review cycle with the self-appraisal, the manager’s rating and the final rating after calibration. Manager ratings are shown when the cycle closes.</p>
+    ${cycles.length ? `<div class="scroll"><table class="t"><thead><tr><th>Cycle</th><th>Stage</th><th class="r">Goals</th><th class="c">Self rating</th><th class="c">Manager rating</th><th>Final rating</th><th></th></tr></thead><tbody>${cycles.map(row).join('')}</tbody></table></div>` : '<div class="empty">No review cycles yet.</div>'}</div>`;
+};
+PROFILE_TABS.reimbursements = (e, { mine }) => {
+  const cs = S.expenseClaims.filter((c) => c.empId === e.id).sort((a, b) => (b.at || 0) - (a.at || 0));
+  const paid = cs.filter((c) => c.status === 'paid'); const open = cs.filter((c) => ['pending', 'approved'].includes(c.status));
+  const fy = (() => { const t = todayISO(); return +t.slice(5, 7) >= 4 ? +t.slice(0, 4) : +t.slice(0, 4) - 1; })();
+  const paidFy = paid.filter((c) => new Date(c.paidAt || 0) >= new Date(`${fy}-04-01`));
+  return `<div class="grid g3" style="margin-bottom:12px"><div class="kpi"><span>Paid this financial year</span><b>${inr0(paidFy.reduce((s, c) => s + claimTotal(c), 0))}</b><small>${paidFy.length} claim${paidFy.length === 1 ? '' : 's'}</small></div>
+    <div class="kpi"><span>Waiting for approval or payment</span><b>${inr0(open.reduce((s, c) => s + claimTotal(c), 0))}</b><small>${open.length} claim${open.length === 1 ? '' : 's'}</small></div>
+    <div class="kpi"><span>All claims</span><b>${cs.length}</b><small>${mine ? '<a href="#/expenses">New claim</a>' : ''}</small></div></div>
+    <div class="card"><h2>Reimbursements</h2><p class="sub">Expense claims and how each was paid: with salary (shown on the payslip as a reimbursement) or separately.</p>
+    ${cs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Claim</th><th>Submitted</th><th class="r">Amount</th><th>Status</th><th>Paid</th></tr></thead><tbody>${cs.map((c) => `<tr><td><a href="#/claim/${c.id}"><b>${esc(c.title || c.no)}</b></a><div class="fine">${esc(c.no)}</div></td>
+      <td class="fine">${c.submittedAt ? dmy(isoOf(new Date(c.submittedAt))) : '—'}</td><td class="r">${inr0(claimTotal(c))}</td><td>${pill(c.status)}</td>
+      <td class="fine">${c.status === 'paid' ? (c.payMonth ? `With ${monthName(c.payMonth)} salary` : `Separately${c.paidRef ? `, ${esc(c.paidRef)}` : ''}`) + (c.paidAt ? `, ${dmy(isoOf(new Date(c.paidAt)))}` : '') : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No expense claims yet.</div>'}</div>`;
+};
+
+
+/* =====================================================================
+   PeopleDesk 2.2
+   - Employees see their punches (device, web, corrected) and can edit the in and out times,
+     or ask for another shift on a day. Both go through the workflow engine; when approved,
+     the punches or the roster change.
+   - Medical insurance (mediclaim): policies with insurer, TPA and contact details kept by HR,
+     and each employee's membership with member numbers for them and covered family.
+   ===================================================================== */
+const shiftLabel = (id) => { if (id === 'WO') return 'Weekly off'; const s = shiftById(id); return s ? `${s.code} ${s.start}–${s.end}` : 'Default shift'; };
+function regAsked(r) {
+  if (r.type === 'shift') return `Shift: ${esc(shiftLabel(r.prevShift))} → <b>${esc(shiftLabel(r.shiftId))}</b>`;
+  const ch = (a, b) => (a && a !== b ? `${esc(a)} → <b>${esc(b || '—')}</b>` : `<b>${esc(b || '—')}</b>`);
+  return `In ${ch(r.prevIn, r.in)}, out ${ch(r.prevOut, r.out)}`;
+}
+function newReg(o) {
+  const r = { id: uid(), empId: me.id, companyId: me.companyId, at: Date.now(), status: 'pending', log: [], ...o };
+  r.steps = buildSteps(o.type === 'shift' ? 'shiftchange' : 'attendance', me, 0, me.id);
+  if (!r.steps.length) r.steps = buildSteps('_hr', me, 0, me.id);
+  logEntry(r, o.type === 'shift' ? 'Shift change requested' : 'Punch times edited', o.reason);
+  if (!r.steps.length) { r.status = 'approved'; logEntry(r, 'No approver in the workflow'); }
+  S.regs.push(r);
+  return r;
+}
+/* writes the approved change; only the line manager or HR may change punches and the roster */
+function applyReg(r) {
+  const e = empById(r.empId); if (!e || r.applied) return false;
+  if (!(isHR(e.companyId) || allReportees(me.id).includes(e.id))) return false;
+  if (r.type === 'shift') {
+    const m = S.roster[e.id] = S.roster[e.id] || {};
+    if (r.shiftId) m[r.date] = r.shiftId; else delete m[r.date];
+  } else setPunch(r.empId, r.date, r.in, r.out, 'corrected');
+  r.applied = true; logEntry(r, r.type === 'shift' ? 'Roster updated' : 'Punches updated');
+  return true;
+}
+let regApplyAt = 0;
+function applyApprovedRegs() {
+  if (Date.now() - regApplyAt < 30000) return; regApplyAt = Date.now();
+  let n = 0;
+  S.regs.filter((r) => r.steps && r.status === 'approved' && !r.applied).forEach((r) => { if (applyReg(r)) n++; });
+  if (n) setTimeout(saveNow, 0);
+}
+function punchesCard(emp, ym) {
+  const mine = emp.id === me.id; const t = todayISO();
+  const days = []; for (let d = `${ym}-01`; d.startsWith(ym); d = addDays(d, 1)) days.push(d);
+  const pend = (d, type) => S.regs.find((r) => r.empId === emp.id && r.date === d && r.status === 'pending' && (r.type || 'time') === type);
+  const canShift = shiftBased(emp.companyId);
+  const rows = days.filter((d) => d <= t || (canShift && (S.roster[emp.id] || {})[d])).reverse().map((d) => {
+    const s = dayStatus(emp, d); const p = s.punch; const pt = pend(d, 'time'), ps = pend(d, 'shift');
+    const rostered = (S.roster[emp.id] || {})[d];
+    return `<tr><td style="white-space:nowrap">${D(d).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</td>
+      <td>${s.shift && s.code !== 'WO' && !shiftFor(emp, d).off ? `${esc(s.shift.code)} ${esc(s.shift.start)}–${esc(s.shift.end)}` : 'Weekly off'}${rostered ? ' <span class="fine">rostered</span>' : ''}${ps ? ` <span class="badge warn">Change to ${esc(shiftLabel(ps.shiftId))} waiting</span>` : ''}</td>
+      <td>${p && p.in ? hm(p.in) : '—'}</td><td>${p && p.out ? hm(p.out) : '—'}</td><td class="fine">${p ? esc(p.source || '') : ''}</td>
+      <td class="r">${s.worked ? num(s.worked, 2) : ''}</td><td>${s.code ? `<span class="st ${s.code}">${esc(s.code)}</span>` : ''}${s.late > 0 ? ' <span class="st LT">Late</span>' : ''}${pt ? ` <span class="badge warn">Edit waiting: ${esc(pt.in)}–${esc(pt.out || '…')}</span>` : ''}</td>
+      <td class="r" style="white-space:nowrap">${mine && d <= t && !pt ? `<button class="btn sm" data-act="punchEdit" data-d="${d}">Edit times</button>` : ''} ${mine && canShift && !ps && d >= addDays(t, -31) ? `<button class="btn sm ghost" data-act="shiftReq" data-d="${d}">Change shift</button>` : ''}</td></tr>`;
+  });
+  return `<div class="card"><div class="hd"><div><h2>Punches</h2><p class="sub">Punch-in and punch-out times from the attendance device and the app. ${mine ? 'Edit a time, or ask for another shift on a day: the change goes for approval through the workflow and applies once approved.' : ''}</p></div></div>
+    ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Day</th><th>Shift</th><th>In</th><th>Out</th><th>From</th><th class="r">Hours</th><th>Status</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '<div class="empty">No days yet this month.</div>'}</div>`;
+}
+ACT.punchEdit = (b) => {
+  const iso = b.dataset.d; const p = punchOf(me.id, iso); const sf = shiftFor(me, iso);
+  const pin = p && p.in ? hm(p.in) : '', pout = p && p.out ? hm(p.out) : '';
+  openDlg(`<form class="dlg" id="peF" novalidate><h2>Edit punch times, ${D(iso).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
+    <table class="t"><tbody><tr><td class="mut">Recorded</td><td>In ${pin || '—'}, out ${pout || '—'} ${p ? `<span class="fine">(${esc(p.source || '')})</span>` : ''}</td></tr>
+      <tr><td class="mut">Shift</td><td>${sf.shift ? `${esc(sf.shift.name)} ${esc(sf.shift.start)}–${esc(sf.shift.end)}` : 'Weekly off'}</td></tr></tbody></table>
+    <div class="form"><label class="field">Correct time in<input type="time" class="inp" name="in" value="${pin || (sf.shift ? sf.shift.start : '09:30')}"></label>
+      <label class="field">Correct time out<input type="time" class="inp" name="out" value="${pout || (sf.shift ? sf.shift.end : '18:30')}"></label>
+      <label class="field wide">Reason<input class="inp" name="reason" placeholder="e.g. device did not record my punch-out"></label></div>
+    <p class="fine">The recorded times stay until the change is approved.</p><p class="err" id="peE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send for approval</button></div></form>`);
+  $('#peF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target)); const err = (m) => { $('#peE').textContent = m; };
+    if (!f.in) return err('Enter the time in.');
+    if (f.out && toMin(f.out) <= toMin(f.in) && !(sf.shift || {}).night) return err('Time out must be after time in.');
+    if (f.in === pin && (f.out || '') === pout) return err('The times are the same as recorded.');
+    if (f.reason.trim().length < 4) return err('Give a reason.');
+    const r = newReg({ type: 'time', date: iso, in: f.in, out: f.out, prevIn: pin, prevOut: pout, reason: f.reason.trim() });
+    saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Recorded' : `Sent to ${stepNow(r).label.toLowerCase()} for approval`); route();
+  };
+};
+ACT.shiftReq = (b) => {
+  const iso = b.dataset.d; const cur = (S.roster[me.id] || {})[iso] || '';
+  const sf = shiftFor(me, iso); const now = cur || (sf.shift ? sf.shift.id : '');
+  const opts = [...S.shifts.filter((x) => x.companyId === me.companyId).map((x) => [x.id, `${x.code} ${x.name} ${x.start}–${x.end}`]), ['WO', 'Weekly off']];
+  openDlg(`<form class="dlg" id="shF" novalidate><h2>Change shift, ${D(iso).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
+    <p class="fine" style="margin:0">Now: <b>${esc(sf.off ? 'Weekly off' : sf.shift ? `${sf.shift.code} ${sf.shift.start}–${sf.shift.end}` : '—')}</b>${cur ? ' (rostered)' : ' (default)'}</p>
+    <div class="form"><label class="field">Work instead<select class="inp" name="shift">${opts.filter(([v]) => v !== now).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select></label>
+      <label class="field wide">Reason<input class="inp" name="reason" placeholder="e.g. swapped with a colleague, training in the morning"></label></div>
+    <p class="err" id="shE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send for approval</button></div></form>`);
+  $('#shF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    if (f.reason.trim().length < 4) { $('#shE').textContent = 'Give a reason.'; return; }
+    const r = newReg({ type: 'shift', date: iso, shiftId: f.shift, prevShift: sf.off ? 'WO' : now, reason: f.reason.trim() });
+    saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Recorded' : `Sent to ${stepNow(r).label.toLowerCase()} for approval`); route();
+  };
+};
+
+/* ---------------------------------------------------------------- medical insurance (mediclaim) */
+const POLICY_TYPES = ['Group mediclaim', 'Group top-up', 'Group personal accident', 'Group term life', 'Individual mediclaim'];
+const policiesOf = (coId) => ((coById(coId) || {}).insurancePolicies || []);
+const policyById = (coId, id) => policiesOf(coId).find((p) => p.id === id);
+const fmtSI = (v) => (+v ? inr0(v) : '—');
+function contactRows(p) {
+  const row = (l, v, href) => (v ? `<tr><td class="mut" style="width:170px">${esc(l)}</td><td>${href ? `<a href="${href}" ${href.startsWith('http') ? 'target="_blank" rel="noopener"' : ''}>${esc(v)}</a>` : esc(v)}</td></tr>` : '');
+  return row('Insurer helpline', p.insurerPhone, `tel:${(p.insurerPhone || '').replace(/\s/g, '')}`) + row('Insurer e-mail', p.insurerEmail, `mailto:${p.insurerEmail}`)
+    + row(`TPA${p.tpa ? `: ${p.tpa}` : ''} helpline`, p.tpaPhone, `tel:${(p.tpaPhone || '').replace(/\s/g, '')}`) + row('TPA e-mail', p.tpaEmail, `mailto:${p.tpaEmail}`)
+    + row('Claims address', p.claimsAddress) + row('Website or app', p.website, /^https?:/.test(p.website || '') ? p.website : '')
+    + row('HR contact', [p.hrName, p.hrPhone, p.hrEmail].filter(Boolean).join(', '));
+}
+function mediclaimCard(e, { hr }) {
+  const list = e.mediclaim || [];
+  const t = todayISO();
+  const fam = (id) => (e.family || []).find((m) => m.id === id);
+  const body = list.map((m, i) => {
+    const p = policyById(e.companyId, m.policyId) || {};
+    const to = m.to || p.validTo; const live = !to || to >= t;
+    return `<div class="${i ? 'card' : ''}" style="${i ? 'margin-top:12px' : ''}">
+      <div class="hd"><div><h3 style="margin:0">${esc(p.name || 'Policy removed')} ${live ? '<span class="badge ok">Active</span>' : '<span class="badge bad">Expired</span>'}</h3>
+        <p class="sub">${esc([p.type, p.insurer].filter(Boolean).join(', '))}</p></div>${hr ? `<button class="btn sm" data-act="medEdit" data-emp="${e.id}" data-i="${i}">Edit</button>` : ''}</div>
+      <div class="grid g2"><table class="t"><tbody>
+        <tr><td class="mut" style="width:170px">Policy number</td><td><b>${esc(p.policyNo || '—')}</b></td></tr>
+        <tr><td class="mut">Your member ID</td><td><b>${esc(m.memberId || '—')}</b>${m.ecard ? ` <span class="fine">e-card ${esc(m.ecard)}</span>` : ''}</td></tr>
+        <tr><td class="mut">Sum insured</td><td>${fmtSI(m.sumInsured || p.sumInsured)}${m.floater ? ' <span class="fine">family floater</span>' : ''}</td></tr>
+        <tr><td class="mut">Cover</td><td>${dmy(m.from || p.validFrom)} to ${dmy(to)}</td></tr>
+        ${p.tpa ? `<tr><td class="mut">TPA</td><td>${esc(p.tpa)}</td></tr>` : ''}</tbody></table>
+        <table class="t"><tbody>${contactRows(p) || '<tr><td class="fine">No contact details yet.</td></tr>'}</tbody></table></div>
+      ${(m.members || []).length ? `<h3>Family members covered</h3><table class="t"><thead><tr><th>Name</th><th>Relationship</th><th>Date of birth</th><th>Member ID</th></tr></thead><tbody>${m.members.map((x) => { const f = fam(x.familyId) || {}; return `<tr><td>${esc(f.name || x.name || '')}</td><td>${esc(f.relation || x.relation || '')}</td><td>${dmy(f.dob)}</td><td><b>${esc(x.memberId || '—')}</b></td></tr>`; }).join('')}</tbody></table>` : ''}
+      ${p.notes ? `<p class="fine">${esc(p.notes)}</p>` : ''}</div>`;
+  }).join('');
+  return `<div class="card"><div class="hd"><div><h2>Medical insurance</h2><p class="sub">Mediclaim and other group insurance, with your member numbers and whom to call for a claim. Kept by HR.</p></div>${hr ? `<button class="btn ${list.length ? '' : 'pri'}" data-act="medEdit" data-emp="${e.id}">Add insurance</button>` : ''}</div>
+    ${body || `<div class="empty">${hr ? 'Not enrolled in any policy yet.' : 'No insurance details yet. HR adds them.'}</div>`}</div>`;
+}
+ACT.medEdit = (b) => {
+  const e = empById(b.dataset.emp); const i = b.dataset.i === undefined ? -1 : +b.dataset.i; const m0 = i >= 0 ? e.mediclaim[i] : null;
+  const pols = policiesOf(e.companyId);
+  if (!pols.length) { toast('Add the policy first under Medical insurance policies.'); go('#/insurance'); return; }
+  const m = m0 ? JSON.parse(JSON.stringify(m0)) : { policyId: pols[0].id, members: [] };
+  const famRows = (e.family || []).map((f) => { const x = (m.members || []).find((y) => y.familyId === f.id); return `<tr><td><label class="chk"><input type="checkbox" name="cov_${f.id}" ${x ? 'checked' : ''}> ${esc(f.name)}</label></td><td>${esc(f.relation)}</td><td><input class="inp" name="mid_${f.id}" value="${esc((x || {}).memberId || '')}" placeholder="Member ID"></td></tr>`; }).join('');
+  openDlg(`<form class="dlg" id="mdF" novalidate><h2>Medical insurance: ${esc(fullName(e))}</h2><div class="form">
+    <label class="field wide">Policy<select class="inp" name="policyId">${pols.map((p) => `<option value="${p.id}" ${p.id === m.policyId ? 'selected' : ''}>${esc(p.name)} (${esc(p.insurer || '')}, ${esc(p.policyNo || '')})</option>`).join('')}</select></label>
+    <label class="field">Member ID<input class="inp" name="memberId" value="${esc(m.memberId || '')}"></label><label class="field">E-card number<input class="inp" name="ecard" value="${esc(m.ecard || '')}"></label>
+    <label class="field">Sum insured (₹)<input class="inp" type="number" min="0" name="sumInsured" value="${esc(m.sumInsured || '')}" placeholder="From the policy"></label>
+    <label class="chk" style="align-self:end"><input type="checkbox" name="floater" ${m.floater ? 'checked' : ''}> Family floater</label>
+    <label class="field">Cover from<input class="inp" type="date" name="from" value="${esc(m.from || '')}"></label><label class="field">Cover to<input class="inp" type="date" name="to" value="${esc(m.to || '')}"></label></div>
+    <h3>Family members covered</h3>${famRows ? `<table class="t"><tbody>${famRows}</tbody></table>` : '<p class="fine">No family members on the Family tab yet. Add them there first.</p>'}
+    <p class="fine">Leave the dates empty to use the policy’s dates.</p><p class="err" id="mdE"></p>
+    <div class="btns">${m0 ? '<button type="button" class="btn danger" id="mdDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#mdF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target; const v = (k) => f.elements[k].value.trim();
+    if (!v('memberId')) { $('#mdE').textContent = 'Enter the member ID from the insurer or TPA.'; return; }
+    if (v('from') && v('to') && v('to') < v('from')) { $('#mdE').textContent = 'Cover ends before it starts.'; return; }
+    const rec = { policyId: v('policyId'), memberId: v('memberId'), ecard: v('ecard'), sumInsured: +v('sumInsured') || '', floater: f.elements.floater.checked, from: v('from'), to: v('to'),
+      members: (e.family || []).filter((x) => f.elements[`cov_${x.id}`] && f.elements[`cov_${x.id}`].checked).map((x) => ({ familyId: x.id, memberId: f.elements[`mid_${x.id}`].value.trim() })) };
+    e.mediclaim = e.mediclaim || [];
+    if (m0) e.mediclaim[i] = rec; else e.mediclaim.push(rec);
+    (e.history = e.history || []).push({ date: todayISO(), type: 'Insurance details changed', note: `${(policyById(e.companyId, rec.policyId) || {}).name}, member ${rec.memberId}`, by: me.id });
+    audit('Insurance details saved', `${fullName(e)}: ${(policyById(e.companyId, rec.policyId) || {}).name}`, 'org', 'employee', e.id);
+    saveNow(); closeDlg(); toast('Saved'); route();
+  };
+  if ($('#mdDel')) $('#mdDel').onclick = async () => { if (!(await confirmBox('Remove this insurance?', 'Only this employee’s enrolment is removed, not the policy.', 'Remove'))) return; e.mediclaim.splice(i, 1); saveNow(); route(); };
+};
+VIEWS.insurance = () => {
+  const co = company(); const pols = policiesOf(co.id); const t = todayISO();
+  const enrolled = (p) => coEmployees().filter((e) => (e.mediclaim || []).some((m) => m.policyId === p.id)).length;
+  return { title: 'Medical insurance policies', html: `<div class="card"><div class="hd"><div><h2>Insurance policies of ${esc(co.name)}</h2><p class="sub">Group mediclaim and other policies with the insurer, the TPA and everyone to contact for a claim. Employees see these details on their Personal tab with their own member numbers, which you enter on each profile.</p></div>
+      <button class="btn pri" data-act="insEdit">Add policy</button></div>
+    ${pols.length ? `<div class="scroll"><table class="t"><thead><tr><th>Policy</th><th>Insurer and TPA</th><th>Policy number</th><th>Valid</th><th class="r">Sum insured</th><th class="r">Enrolled</th><th></th></tr></thead><tbody>${pols.map((p) => `<tr>
+      <td><b>${esc(p.name)}</b><div class="fine">${esc(p.type || '')}</div></td><td>${esc(p.insurer || '')}${p.tpa ? `<div class="fine">TPA: ${esc(p.tpa)}</div>` : ''}</td><td>${esc(p.policyNo || '')}</td>
+      <td class="fine">${dmy(p.validFrom)} to ${dmy(p.validTo)} ${p.validTo && p.validTo < t ? '<span class="badge bad">Expired</span>' : p.validTo && p.validTo <= addDays(t, 30) ? '<span class="badge warn">Renew soon</span>' : ''}</td>
+      <td class="r">${fmtSI(p.sumInsured)}</td><td class="r">${enrolled(p)} of ${coEmployees().length}</td><td class="r"><button class="btn sm" data-act="insEdit" data-id="${p.id}">Edit</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No policies yet.</div>'}</div>
+    ${pols.map((p) => `<div class="card"><h2>${esc(p.name)}: contacts</h2><table class="t"><tbody>${contactRows(p) || '<tr><td class="fine">No contact details yet.</td></tr>'}</tbody></table></div>`).join('')}` };
+};
+ACT.insEdit = (b) => {
+  const co = company(); const p0 = b.dataset.id ? policiesOf(co.id).find((x) => x.id === b.dataset.id) : null;
+  const fields = [{ k: 'name', label: 'Name', req: true }, { k: 'type', label: 'Type', type: 'select', opts: POLICY_TYPES.map((x) => [x, x]) },
+    { k: 'insurer', label: 'Insurance company', req: true }, { k: 'policyNo', label: 'Policy number', req: true },
+    { k: 'validFrom', label: 'Valid from', type: 'date' }, { k: 'validTo', label: 'Valid to', type: 'date' },
+    { k: 'sumInsured', label: 'Sum insured (₹)', type: 'number', min: 0 }, { k: 'tpa', label: 'TPA (third-party administrator)' },
+    { k: 'insurerPhone', label: 'Insurer helpline' }, { k: 'insurerEmail', label: 'Insurer e-mail', type: 'email' },
+    { k: 'tpaPhone', label: 'TPA helpline' }, { k: 'tpaEmail', label: 'TPA e-mail', type: 'email' },
+    { k: 'claimsAddress', label: 'Claims address', type: 'textarea', wide: true }, { k: 'website', label: 'Website or app (https://…)' },
+    { k: 'hrName', label: 'HR contact for insurance' }, { k: 'hrPhone', label: 'HR contact phone' }, { k: 'hrEmail', label: 'HR contact e-mail', type: 'email' },
+    { k: 'notes', label: 'Notes for employees (e.g. network hospitals, cashless process)', type: 'textarea', wide: true }];
+  openDlg(`<form class="dlg" id="inF" novalidate><h2>${p0 ? 'Edit' : 'Add'} insurance policy</h2><div class="form">${fields.map((f) => fieldHtml(f, (p0 || { type: 'Group mediclaim' })[f.k])).join('')}</div><p class="err" id="inE"></p>
+    <div class="btns">${p0 ? '<button type="button" class="btn danger" id="inDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#inF').onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields);
+    const miss = fields.find((f) => f.req && !d[f.k]); if (miss) { $('#inE').textContent = `Enter the ${miss.label.toLowerCase()}.`; return; }
+    if (d.validFrom && d.validTo && d.validTo < d.validFrom) { $('#inE').textContent = 'Valid to is before valid from.'; return; }
+    if (d.website && !/^https?:\/\//.test(d.website)) d.website = 'https://' + d.website;
+    co.insurancePolicies = co.insurancePolicies || [];
+    if (p0) Object.assign(p0, d); else co.insurancePolicies.push({ id: uid(), ...d });
+    audit(`Insurance policy ${p0 ? 'changed' : 'added'}`, `${d.name}, ${d.insurer} ${d.policyNo}`, 'settings');
+    saveNow(); closeDlg(); toast('Saved'); route();
+  };
+  if ($('#inDel')) $('#inDel').onclick = async () => {
+    const n = coEmployees().filter((e) => (e.mediclaim || []).some((m) => m.policyId === p0.id)).length;
+    if (n) { $('#inE').textContent = `${n} employees are enrolled in this policy. Remove them first, or set a valid-to date instead.`; return; }
+    if (!(await confirmBox('Delete this policy?', p0.name, 'Delete'))) return;
+    co.insurancePolicies = co.insurancePolicies.filter((x) => x !== p0); saveNow(); route();
+  };
+};
+
 /* ---------------------------------------------------------------- server state and session (used by the React app) */
 function loadServerState(state, meId) {
   S = hydrate(state);
@@ -3422,5 +5099,5 @@ export {
   itemShown, itemOn, itemHref, companiesForMe, company, isHR, isSuper, isManager, pendingForMe,
   empById, nameOf, fullName, initials, coEmployees, leaveTypesFor, leaveBalance, ltById,
   shiftFor, punchOf, leaveOn, holidayOn, todayISO, addDays, D, ymAdd, monthName, yearsBetween,
-  num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin,
+  num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin, regAsked
 };

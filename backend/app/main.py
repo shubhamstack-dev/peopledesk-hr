@@ -21,25 +21,31 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import policy, repo
+from . import mailer, migrate, policy, repo
 from .collections import BY_NAME, SINGLETONS
-from .config import CORS_ORIGINS, FRONTEND_DIST
+from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
                        set_google_sub, set_pw_hash, start_session, verify_password)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("peopledesk")
 
-app = FastAPI(title="PeopleDesk HR API", version="1.0")
+app = FastAPI(title="PeopleDesk HR API", version="2.0")
+
+
+@app.on_event("startup")
+def _migrate():
+    migrate.run(repo.engine)
 if CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                        allow_methods=["GET", "POST"], allow_headers=["content-type", "x-peopledesk"])
@@ -332,7 +338,7 @@ def sync(body: SyncBody, me=Depends(current_user)):
         repo.roster_set(conn, [{"empId": e["empId"], "date": e["date"], "value": str(e["value"])} for e in body.rosterSet])
         repo.roster_del(conn, [{"empId": e["empId"], "date": e["date"]} for e in body.rosterDel])
         for a in body.audit[:200]:
-            repo.audit_add(conn, a.get("what", ""), a.get("detail", ""), me["id"], a.get("at"), a.get("id"))
+            repo.audit_add(conn, a.get("what", ""), a.get("detail", ""), me["id"], a.get("at"), a.get("id"), a.get("module"), a.get("refType"), a.get("refId"))
         repo.bump_rev(conn)
         return {"ok": True, "rev": repo.rev(conn)}
 
@@ -386,6 +392,133 @@ def wipe(resp: Response, me=Depends(current_user)):
     end_session(resp)
     log.warning("All data erased by %s", me.get("email"))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- files (expense receipts and similar)
+ALLOWED_MIME = ("image/", "application/pdf")
+
+
+@app.post("/api/files")
+async def upload_file(file: UploadFile = File(...), me=Depends(current_user)):
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"Files can be up to {MAX_UPLOAD_MB} MB.")
+    mime = file.content_type or "application/octet-stream"
+    if not mime.startswith(ALLOWED_MIME):
+        raise HTTPException(400, "Attach a photo or a PDF.")
+    fid = uuid.uuid4().hex
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", file.filename or "file")[-100:]
+    sub = os.path.join(UPLOAD_DIR, fid[:2])
+    os.makedirs(sub, exist_ok=True)
+    path = os.path.join(sub, f"{fid}_{safe}")
+    with open(path, "wb") as fh:
+        fh.write(data)
+    with repo.engine.begin() as conn:
+        conn.execute(text("INSERT INTO files (id, name, mime, size, path, company_id, owner_emp, created_at) VALUES (:i, :n, :m, :s, :p, :c, :o, :t)"),
+                     {"i": fid, "n": (file.filename or "file")[:255], "m": mime, "s": len(data), "p": os.path.relpath(path, UPLOAD_DIR), "c": me.get("companyId"), "o": me["id"], "t": int(time.time() * 1000)})
+    return {"id": fid, "name": file.filename, "size": len(data), "mime": mime}
+
+
+@app.get("/api/files/{fid}")
+def get_file(fid: str, me=Depends(current_user)):
+    with repo.engine.connect() as conn:
+        r = conn.execute(text("SELECT name, mime, path, company_id, owner_emp FROM files WHERE id=:i"), {"i": fid}).fetchone()
+        if not r:
+            raise HTTPException(404, "File not found")
+        allowed = r.owner_emp == me["id"] or me.get("role") == "super" or (me.get("role") == "hr" and r.company_id in {me.get("companyId"), *(me.get("hrCompanies") or [])})
+        if not allowed:
+            allowed = _file_visible(conn, fid, me)
+    if not allowed:
+        raise HTTPException(403, "You cannot open this file.")
+    root = os.path.realpath(UPLOAD_DIR)
+    p = os.path.realpath(os.path.join(root, r.path))
+    if not p.startswith(root + os.sep) or not os.path.isfile(p):
+        raise HTTPException(404, "File not found")
+    return FileResponse(p, media_type=r.mime, filename=r.name, content_disposition_type="inline")
+
+
+def _file_visible(conn, fid: str, me: dict) -> bool:
+    """Besides the uploader and HR: the employee for letters on their own record, the people taking part in a
+    claim or request, and for leave the employee, their reporting line and the workflow approvers."""
+    hit = lambda table, extra="": conn.execute(text(f"SELECT emp_id, data FROM {table} WHERE JSON_SEARCH(data, 'one', :f) IS NOT NULL {extra}"), {"f": fid}).fetchall()  # noqa: E731
+    if conn.execute(text("SELECT 1 FROM employees WHERE id=:i AND JSON_SEARCH(data, 'one', :f) IS NOT NULL"), {"i": me["id"], "f": fid}).fetchone():
+        return True
+    for table in ("expense_claims", "approval_requests"):
+        if any(me["id"] in (repo.loads(d).get("participants") or []) or emp == me["id"] for emp, d in hit(table)):
+            return True
+    rows = hit("leave_requests")
+    if rows:
+        ctx = policy.make_ctx(me, repo.employees_index(conn))
+        for emp, d in rows:
+            rec = repo.loads(d)
+            if emp == me["id"] or emp in ctx.line or any(me["id"] in (st or {}).get("approverIds", []) for st in rec.get("steps") or []):
+                return True
+    return False
+
+
+class NotifyBody(BaseModel):
+    requestId: str
+    event: str            # submitted | decided
+
+
+STAT_LABELS = {"pan": "PAN", "aadhaar": "Aadhaar", "uan": "UAN (PF)", "pfNo": "PF member ID", "esiNo": "ESI IP number", "esiDispensary": "ESI dispensary"}
+
+
+@app.post("/api/notify")
+def notify(body: NotifyBody, me=Depends(current_user)):
+    """E-mails about a statutory details request: to HR when an employee submits one, and to the employee
+    when HR decides. Only the requester can announce a submission and only HR a decision."""
+    with repo.engine.begin() as conn:
+        row = conn.execute(text("SELECT data FROM approval_requests WHERE id=:i"), {"i": body.requestId}).fetchone()
+        if not row:
+            raise HTTPException(404, "That request is not saved yet.")
+        r = repo.loads(row[0])
+        if r.get("kind") != "statutory":
+            raise HTTPException(400, "E-mail is sent only for statutory detail requests.")
+        emps = repo.employees_index(conn)
+        emp = emps.get(r.get("empId")) or {}
+        co = r.get("companyId")
+        name = f"{emp.get('firstName', '')} {emp.get('lastName', '')}".strip()
+        is_hr = me.get("role") == "super" or (me.get("role") == "hr" and co in {me.get("companyId"), *(me.get("hrCompanies") or [])})
+        if body.event == "submitted":
+            if r.get("by") != me["id"]:
+                raise HTTPException(403, "Only the person who raised the request can announce it.")
+            to = [e.get("email") for e in emps.values() if e.get("status") != "exited" and e.get("id") != me["id"] and (
+                e.get("role") == "super" or (e.get("role") == "hr" and co in {e.get("companyId"), *(e.get("hrCompanies") or [])}))]
+            mask = lambda k, v: ("XXXX XXXX " + str(v)[-4:]) if k == "aadhaar" and v else (v or "—")  # noqa: E731
+            lines = [f"- {STAT_LABELS.get(k, k)}: {mask(k, (r.get('old') or {}).get(k))} -> {mask(k, v)}" for k, v in (r.get("changes") or {}).items()]
+            subject = f"Approval needed: statutory details change for {name} ({r.get('no')})"
+            text_ = (f"{name} has asked to change their statutory details:\n\n" + "\n".join(lines) +
+                     f"\n\n{len(r.get('documents') or [])} supporting document(s) attached in PeopleDesk." +
+                     (f"\nNote: {r.get('reason')}" if r.get("reason") else "") +
+                     f"\n\nReview and approve: {APP_URL}/#/request/{r['id']}\n\nThe change applies only after HR approves it.")
+        elif body.event == "decided":
+            if not is_hr:
+                raise HTTPException(403, "Only HR can announce a decision.")
+            to = [emp.get("email")]
+            ok = r.get("status") == "applied"
+            note = next((st.get("note") for st in reversed(r.get("steps") or []) if st.get("decision")), "")
+            subject = f"Your statutory details change was {'approved' if ok else 'not approved'} ({r.get('no')})"
+            text_ = (f"Dear {emp.get('firstName', '')},\n\nHR has {'approved' if ok else 'not approved'} your request to change: "
+                     f"{', '.join(STAT_LABELS.get(k, k) for k in (r.get('changes') or {}))}." + (f"\n\nNote from HR: {note}" if note else "") +
+                     f"\n\nSee it in PeopleDesk: {APP_URL}/#/request/{r['id']}")
+        else:
+            raise HTTPException(400, "Unknown event.")
+        to = [t for t in to if t]
+        if not mailer.configured():
+            return {"sent": False, "reason": "e-mail is not set up on the server; HR sees it in Approvals"}
+        if not to:
+            return {"sent": False, "reason": "no e-mail address to send to"}
+        key = f"{r['id']}:{body.event}"
+        if conn.execute(text("SELECT 1 FROM audit_log WHERE what='E-mail sent' AND detail=:d"), {"d": key}).fetchone():
+            return {"sent": False, "reason": "e-mail was already sent"}
+        try:
+            mailer.send(to, subject, text_)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Mail failed: %s", e)
+            return {"sent": False, "reason": "the e-mail server refused the message; HR sees it in Approvals"}
+        repo.audit_add(conn, "E-mail sent", key, me["id"], module="approvals", ref_type="employee", ref_id=r.get("empId"))
+        return {"sent": True, "to": f"{len(to)} recipient{'s' if len(to) > 1 else ''}"}
 
 
 @app.get("/api/health")

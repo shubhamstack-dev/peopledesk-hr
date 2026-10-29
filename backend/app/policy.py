@@ -21,7 +21,12 @@ from . import repo
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
-           "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns"}
+           "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns",
+           "expenseCats", "perfTemplates", "onboardTemplates"}
+# Records shared by the people taking part in them (requester, approvers, department owners).
+# Each carries a `participants` list of employee ids; approval steps carry `approverIds`.
+PARTICIPANT = {"requests", "expenseClaims", "onboardings", "assets"}
+FINAL_STATUSES = {"approved", "applied", "paid", "done", "completed", "returned"}
 # Collections employees and managers change through everyday flows
 WORKFLOW = {"leaveReqs", "leaveAdj", "punches", "regs", "goals", "reviews", "feedback", "declarations",
             "otRecs", "exits", "reqs", "cands", "apps", "interviews"}
@@ -33,12 +38,17 @@ APPROVED = {"approved"}
 SENSITIVE_EMP = {"salaryHist": [], "salaryOverrides": {}, "pan": "", "aadhaar": "", "uan": "", "pfNo": "",
                  "esiNo": "", "esiRegDate": "", "esiDispensary": "", "bankName": "", "bankAcc": "", "ifsc": "",
                  "payMode": "", "vpfPct": "", "address": "", "personalEmail": "", "emergency": "", "marital": "",
-                 "blood": "", "gratuityFrom": "", "googleId": ""}
+                 "blood": "", "gratuityFrom": "", "googleId": "", "family": [], "documents": [], "addrCity": "", "addrState": "",
+                 "addrPin": "", "addrCountry": "", "emergencyName": "", "emergencyRelation": "", "emergencyPhone": "", "mediclaim": []}
 # Employee fields a person may not change on their own record
 PROTECTED_SELF = {"id", "role", "companyId", "hrCompanies", "status", "blocked", "empNo", "email", "managerId",
                   "salaryHist", "salaryOverrides", "doj", "exit", "stints", "gratuityFrom", "gradeId", "desigId",
                   "deptId", "locationId", "empType", "probationEnd", "attGroup", "otEligible", "shiftId", "source",
-                  "pfOn", "epsOn", "esiOn", "ptOn", "lwfOn", "patternId", "patternFrom"}
+                  "pfOn", "epsOn", "esiOn", "ptOn", "lwfOn", "patternId", "patternFrom",
+                  "matrixManagerIds", "reportingHist", "gradeHist", "pendingMoves", "variableHist",
+                  # statutory details change only through an approved request; letters are issued by HR
+                  "pan", "aadhaar", "uan", "pfNo", "esiNo", "esiRegDate", "esiDispensary", "vpfPct", "documents",
+                  "mediclaim"}
 # Employee fields a manager may change for someone in their reporting line (resignation flow)
 MANAGER_MAY = {"exit", "history", "status"}
 
@@ -109,6 +119,9 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     st["declarations"] = [x for x in st["declarations"] if sees_all(x.get("empId"))]
     st["leaveAdj"] = [x for x in st["leaveAdj"] if x.get("empId") == ctx.id or x.get("empId") in ctx.line or ctx.is_hr_for(emp_co.get(x.get("empId")))]
     st["audit"] = [a for a in st["audit"] if ctx.is_hr_for(emp_co.get(a.get("by")))] if ctx.is_hr else []
+    for coll in PARTICIPANT:
+        st[coll] = [x for x in st.get(coll, []) if ctx.is_hr_for(x.get("companyId") or emp_co.get(x.get("empId")))
+                    or ctx.id in (x.get("participants") or []) or x.get("empId") == ctx.id]
     s = st.get("settings") or {}
     st["settings"] = s if ctx.is_hr else {k: s.get(k) for k in ("googleClientId", "allowDemo", "allowPassword", "idleMin") if k in s}
     return st
@@ -150,6 +163,8 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
 
     if hr_ok:
         return new
+    if coll in PARTICIPANT:
+        return _participant(coll, new, old, ctx)
     if coll in HR_ONLY or coll not in WORKFLOW:
         raise Rejected("only HR can change this")
     own_co = ctx.me.get("companyId")
@@ -157,6 +172,12 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         raise Rejected("belongs to another company")
 
     subject = new.get("empId") or (old or {}).get("empId")
+    if coll in ("leaveReqs", "regs") and old and old.get("steps") and subject != ctx.id and subject not in ctx.line:
+        return _step_decision(new, old, ctx)
+    if coll in ("leaveReqs", "regs") and not old and any((x or {}).get("decision") for x in new.get("steps") or []):
+        raise Rejected("a new request cannot already be approved")
+    if coll == "punches" and subject == ctx.id:
+        _own_punch(new, old)
     if coll == "feedback":
         if not old and new.get("from") != ctx.id:
             raise Rejected("feedback can only be sent as yourself")
@@ -173,6 +194,93 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
             if not (coll == "goals" and no_manager):
                 raise Rejected("you cannot approve your own request")
     return new
+
+
+def _own_punch(new: dict, old: dict | None):
+    """Employees punch in and out for today, at the time they do it. Any other change to their punches
+    is an attendance correction, which goes for approval."""
+    import time as _t
+    from datetime import date as _d
+    from datetime import timedelta as _td
+    # today, or yesterday for a night shift punched out after midnight
+    if new.get("date") not in (_d.today().isoformat(), (_d.today() - _td(days=1)).isoformat()):
+        raise Rejected("punch times can only be changed through an attendance correction")
+    now = _t.time() * 1000
+    for k in ("in", "out"):
+        v, was = new.get(k), (old or {}).get(k)
+        if v != was and v is not None and abs(float(v) - now) > 15 * 60 * 1000:
+            raise Rejected("punch times can only be changed through an attendance correction")
+        if was is not None and v is None:
+            raise Rejected("punch times can only be changed through an attendance correction")
+
+
+def _step_decision(new: dict, old: dict, ctx: Ctx) -> dict:
+    """A workflow approver outside the reporting line (dotted-line manager, head of department, a named
+    person) may record their own step's decision on a leave request, and nothing else."""
+    steps_old, steps_new = old.get("steps") or [], new.get("steps") or []
+    if len(steps_old) != len(steps_new) or not any(ctx.id in (x or {}).get("approverIds", []) for x in steps_old):
+        raise Rejected("not in your reporting line")
+    allowed = {"steps", "status", "decidedBy", "decidedAt", "note", "log"}
+    for k in set(new) | set(old):
+        if k not in allowed and new.get(k) != old.get(k):
+            raise Rejected("an approver can only record a decision")
+    for o, n in zip(steps_old, steps_new):
+        if (n or {}).get("approverIds") != (o or {}).get("approverIds"):
+            raise Rejected("the approvers cannot be changed")
+        if (n or {}).get("decision") != (o or {}).get("decision") and (o.get("decision") or ctx.id not in (o.get("approverIds") or [])):
+            raise Rejected("this step is not yours to decide")
+    if new.get("status") == "approved" and not all((x or {}).get("decision") == "approved" for x in steps_new):
+        raise Rejected("every step must be approved first")
+    return new
+
+
+def _participant(coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
+    """Approval requests, expense claims, onboarding and assets for people who are not HR:
+    only those taking part may change them, an approval step can only be decided by its approver,
+    nobody approves their own request, and only HR finishes (applies, pays, completes) one."""
+    own_co = ctx.me.get("companyId")
+    if (new.get("companyId") or own_co) != own_co:
+        raise Rejected("belongs to another company")
+    if not old:
+        if ctx.id not in (new.get("participants") or []):
+            raise Rejected("you are not taking part in this")
+        subject = new.get("empId")
+        if coll != "assets" and subject and subject != ctx.id and subject not in ctx.line:
+            raise Rejected("not in your reporting line")
+        if any((s or {}).get("decision") for s in new.get("steps") or []) or new.get("status") in FINAL_STATUSES:
+            raise Rejected("a new request cannot already be approved")
+        return new
+    if ctx.id not in (old.get("participants") or []):
+        raise Rejected("you are not taking part in this")
+    merged = dict(new)
+    merged["participants"] = old.get("participants") or []        # the people involved are fixed when it starts
+    old_steps, new_steps = old.get("steps") or [], new.get("steps") or []
+    if len(new_steps) != len(old_steps) and old.get("status") not in (None, "draft"):
+        raise Rejected("the approval steps cannot be changed")
+    decided_now = []
+    for i, ns in enumerate(new_steps):
+        os_ = old_steps[i] if i < len(old_steps) else {}
+        if os_ and (ns.get("approverIds") or []) != (os_.get("approverIds") or []) and old.get("status") not in (None, "draft"):
+            raise Rejected("the approvers cannot be changed")
+        if ns.get("decision") != os_.get("decision"):
+            if os_.get("decision") or ctx.id not in (os_.get("approverIds") or []) or ctx.id == old.get("empId"):
+                raise Rejected("this step is not yours to decide")
+            decided_now.append(i)
+    if new.get("status") != old.get("status") and new.get("status") in FINAL_STATUSES:
+        all_ok = new_steps and all((x or {}).get("decision") == "approved" for x in new_steps)
+        if not (new.get("status") == "approved" and all_ok and decided_now) and coll not in ("onboardings", "assets"):
+            raise Rejected("only HR can finish this")
+        if coll == "onboardings" and new.get("status") == "completed":
+            raise Rejected("only HR can complete onboarding")
+    if coll == "onboardings":
+        old_tasks = {t.get("id"): t for t in old.get("tasks") or []}
+        for t in new.get("tasks") or []:
+            ot = old_tasks.get(t.get("id"))
+            if ot is None:
+                raise Rejected("only HR can add onboarding tasks")
+            if {k: v for k, v in t.items() if k != "log"} != {k: v for k, v in ot.items() if k != "log"} and ctx.id not in (ot.get("ownerIds") or []):
+                raise Rejected("that task belongs to another department")
+    return merged
 
 
 def _employee(new: dict, old: dict | None, ctx: Ctx, hr_ok: bool) -> dict:
@@ -212,6 +320,8 @@ def check_delete(conn, coll: str, old: dict, ctx: Ctx):
     if ctx.is_hr and (co is None or ctx.is_hr_for(co)):
         if coll == "employees" and old.get("role") == "super":
             raise Rejected("only the group administrator can remove a group administrator")
+        return
+    if coll in ("requests", "expenseClaims") and old.get("empId") == ctx.id and old.get("status") in ("draft", "withdrawn", None):
         return
     if coll in HR_ONLY or coll not in WORKFLOW or coll == "employees":
         raise Rejected("only HR can delete this")

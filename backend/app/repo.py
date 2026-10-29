@@ -51,9 +51,9 @@ def load_state(conn: Connection) -> dict:
         roster.setdefault(emp_id, {})[day.isoformat()] = value
     st["roster"] = roster
     st["audit"] = [
-        {"id": i, "at": at, "by": by, "what": what, "detail": detail}
-        for i, at, by, what, detail in conn.execute(
-            text("SELECT id, at, by_emp, what, detail FROM audit_log ORDER BY at DESC LIMIT :n"), {"n": AUDIT_KEEP})
+        {"id": i, "at": at, "by": by, "what": what, "detail": detail, "module": m, "refType": rt, "refId": ri}
+        for i, at, by, what, detail, m, rt, ri in conn.execute(
+            text("SELECT id, at, by_emp, what, detail, module, ref_type, ref_id FROM audit_log ORDER BY at DESC LIMIT :n"), {"n": AUDIT_KEEP})
     ]
     return st
 
@@ -132,10 +132,12 @@ def roster_del(conn: Connection, entries: list):
         conn.execute(text("DELETE FROM roster WHERE emp_id=:empId AND day=:date"), e)
 
 
-def audit_add(conn: Connection, what: str, detail: str = "", by: str | None = None, at: int | None = None, rid: str | None = None):
+def audit_add(conn: Connection, what: str, detail: str = "", by: str | None = None, at: int | None = None, rid: str | None = None,
+              module: str | None = None, ref_type: str | None = None, ref_id: str | None = None):
     conn.execute(
-        text("INSERT IGNORE INTO audit_log (id, at, by_emp, what, detail) VALUES (:i, :at, :by, :w, :d)"),
-        {"i": rid or uuid.uuid4().hex, "at": at or int(time.time() * 1000), "by": by, "w": (what or "")[:255], "d": (str(detail or ""))[:1000]},
+        text("INSERT IGNORE INTO audit_log (id, at, by_emp, what, detail, module, ref_type, ref_id) VALUES (:i, :at, :by, :w, :d, :m, :rt, :ri)"),
+        {"i": rid or uuid.uuid4().hex, "at": at or int(time.time() * 1000), "by": by, "w": (what or "")[:255], "d": (str(detail or ""))[:1000],
+         "m": (module or None) and str(module)[:32], "rt": (ref_type or None) and str(ref_type)[:32], "ri": (ref_id or None) and str(ref_id)[:64]},
     )
 
 
@@ -176,7 +178,7 @@ def import_state(conn: Connection, st: dict, by: str | None = None) -> dict:
     for chunk in _chunks(entries, 1000):
         roster_set(conn, chunk)
     for a in (st.get("audit") or [])[:AUDIT_KEEP]:
-        audit_add(conn, a.get("what", ""), a.get("detail", ""), a.get("by"), a.get("at"), a.get("id"))
+        audit_add(conn, a.get("what", ""), a.get("detail", ""), a.get("by"), a.get("at"), a.get("id"), a.get("module"), a.get("refType"), a.get("refId"))
     return secrets_found
 
 
