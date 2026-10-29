@@ -30,6 +30,8 @@ def _coll_ddl(c) -> str:
 
 FILES_DDL = f"""CREATE TABLE IF NOT EXISTS files (id VARCHAR(64) NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, mime VARCHAR(128) NULL,
   size BIGINT NULL, path VARCHAR(512) NOT NULL, company_id VARCHAR(64) NULL, owner_emp VARCHAR(64) NULL, created_at BIGINT NOT NULL) {TAIL}"""
+# Letter numbers for generated documents: one counter per document-type prefix, company and financial year
+COUNTERS_DDL = f"CREATE TABLE IF NOT EXISTS doc_counters (k VARCHAR(128) NOT NULL PRIMARY KEY, n INT NOT NULL DEFAULT 0) {TAIL}"
 AUDIT_COLS = {"module": "VARCHAR(32) NULL", "ref_type": "VARCHAR(32) NULL", "ref_id": "VARCHAR(64) NULL"}
 
 
@@ -39,6 +41,7 @@ def run(engine):
             for c in COLLS:
                 conn.execute(text(_coll_ddl(c)))
             conn.execute(text(FILES_DDL))
+            conn.execute(text(COUNTERS_DDL))
             have = {r[0] for r in conn.execute(text(
                 "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'audit_log'"))}
             for col, ddl in AUDIT_COLS.items():

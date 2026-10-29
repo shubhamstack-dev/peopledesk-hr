@@ -97,7 +97,7 @@ function blank() {
     cycles: [], goals: [], reviews: [], feedback: [], posts: [],
     payComps: [], payInputs: [], payRuns: [], declarations: [], audit: [], seq: {},
     exits: [], reqs: [], cands: [], apps: [], interviews: [], otRecs: [], shiftPatterns: [],
-    requests: [], expenseCats: [], expenseClaims: [], perfTemplates: [], onboardings: [], onboardTemplates: [], assets: [],
+    requests: [], expenseCats: [], expenseClaims: [], perfTemplates: [], onboardings: [], onboardTemplates: [], assets: [], docTypes: [], docTemplates: [],
   };
 }
 /* Storage: the MySQL database behind the Python API. Changes are sent as they happen (see sync.js). */
@@ -873,9 +873,11 @@ const MENU = [
     { page: 'expenses', tab: 'team', label: 'Claims to approve and pay', show: () => isHR() || isManager() || S.expenseClaims.some((c) => (c.participants || []).includes(me.id) && c.empId !== me.id) },
     { page: 'expcats', label: 'Expense categories and limits', show: HR },
   ] },
-  { grp: 'admin', label: 'Administration', items: [{ page: 'flows', label: 'Approval workflows', show: HR }, { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
+  { grp: 'admin', label: 'Administration', items: [{ page: 'flows', label: 'Approval workflows', show: HR },
+    { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
+    { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
-const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine' };
+const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates' };
 const itemShown = (it) => !it.show || it.show();
 const itemOn = (it) => (R.page === it.page && (!it.tab || (R.q.get('tab') || DEFAULT_TAB[it.page]) === it.tab)) || ({ exit: 'exits', req: 'reqs', app: 'reqs' }[R.page] === it.page);
 const itemHref = (it) => `#/${it.page}${it.tab ? '?tab=' + it.tab : ''}`;
@@ -888,8 +890,8 @@ const R = { page: 'home', arg: '', q: new URLSearchParams() };
 const go = (h) => { if (location.hash === h) route(); else location.hash = h; };
 
 /* Pages drawn by React components rather than by the HTML views below */
-const REACT_PAGES = new Set(['home', 'inbox', 'settings']);
-const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data' };
+const REACT_PAGES = new Set(['home', 'inbox', 'settings', 'doctemplates']);
+const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data', doctemplates: 'Document templates' };
 /* Works out the page for a location hash: sets R, runs the page's view, and names the menu item it belongs to */
 function resolvePage(hash) {
   const raw = String(hash || '').replace(/^#\/?/, '');
@@ -4603,8 +4605,8 @@ PROFILE_TABS.documents = (e, { hr }) => {
   const runs = S.payRuns.filter((r) => r.companyId === e.companyId && r.status === 'locked' && r.results && r.results[e.id]).sort((a, b) => (a.month < b.month ? 1 : -1));
   const revs = (e.salaryHist || []).slice().sort((a, b) => (a.effective < b.effective ? 1 : -1));
   const bonuses = S.payInputs.filter((i) => i.empId === e.id && ['1500', '1550'].includes(i.code)).sort((a, b) => (a.month < b.month ? 1 : -1));
-  return `<div class="card"><div class="hd"><div><h2>Letters and service documents</h2><p class="sub">Joining, salary revision, bonus, promotion and other letters issued by HR, and the proofs you submitted.</p></div>${hr ? `<button class="btn pri" data-act="docAdd" data-emp="${e.id}">Upload a document</button>` : ''}</div>
-    ${docs.length ? `<table class="t"><thead><tr><th>Date</th><th>Document</th><th>Type</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr><td>${dmy(d.date)}</td><td><a href="/api/files/${d.fileId}" target="_blank" rel="noopener"><b>${esc(d.name)}</b></a></td><td class="fine">${esc(d.category)}</td>
+  return `<div class="card"><div class="hd"><div><h2>Letters and service documents</h2><p class="sub">Joining, salary revision, bonus, promotion and other letters issued by HR, and the proofs you submitted.</p></div>${hr ? `<div class="tools"><button class="btn" data-act="docGen" data-emp="${e.id}">Create from a template</button><button class="btn pri" data-act="docAdd" data-emp="${e.id}">Upload a document</button></div>` : ''}</div>
+    ${docs.length ? `<table class="t"><thead><tr><th>Date</th><th>Document</th><th>Type</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr><td>${dmy(d.date)}</td><td><a href="/api/files/${d.fileId}" target="_blank" rel="noopener"><b>${esc(d.name)}</b></a>${d.templateId ? '<div class="fine">Made from a template</div>' : ''}</td><td class="fine">${esc(d.category)}</td>
       <td class="r">${hr ? `<button class="btn sm ghost" data-act="docDel" data-emp="${e.id}" data-id="${d.id}">Remove</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No letters uploaded yet.</div>'}</div>
   <div class="grid g2"><div class="card"><h2>Payslips</h2>${runs.length ? `<table class="t"><tbody>${runs.slice(0, 24).map((r) => `<tr><td>${monthName(r.month)}</td><td class="r">${inr0((r.results[e.id] || {}).net || 0)} net</td><td class="r">${e.id === me.id ? `<a class="btn sm" href="#/payslips">Open</a>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No payslips yet.</div>'}</div>
     <div class="card"><h2>Salary revisions and bonuses</h2>${revs.length || bonuses.length ? `<table class="t"><tbody>${revs.map((s) => `<tr><td>${dmy(s.effective)}</td><td>Salary: fixed CTC ${inr0(s.ctc)}${s.variable ? `, variable ${inr0(s.variable)}` : ''}</td><td class="fine">${esc(s.reason || '')}</td></tr>`).join('')}
@@ -4614,7 +4616,7 @@ PROFILE_TABS.documents = (e, { hr }) => {
 ACT.docAdd = (b) => {
   const e = empById(b.dataset.emp);
   openDlg(`<form class="dlg" id="dcF2" novalidate><h2>Upload a document for ${esc(fullName(e))}</h2><div class="form">
-    <label class="field">Type<select class="inp" name="cat">${DOC_CATEGORIES.map((c) => `<option>${esc(c)}</option>`).join('')}</select></label>
+    <label class="field">Type<select class="inp" name="cat">${docCategoriesFor(e).map((c) => `<option>${esc(c)}</option>`).join('')}</select></label>
     <label class="field">Date<input class="inp" type="date" name="date" value="${todayISO()}"></label>
     <label class="field wide">Title<input class="inp" name="name" placeholder="e.g. Salary revision letter 2026"></label>
     <label class="field wide">File<input class="inp" type="file" name="file" accept="image/*,application/pdf"></label></div>
@@ -4636,6 +4638,91 @@ ACT.docDel = async (b) => {
   const e = empById(b.dataset.emp); const d = (e.documents || []).find((x) => x.id === b.dataset.id);
   if (!(await confirmBox('Remove this document?', d.name, 'Remove'))) return;
   e.documents = e.documents.filter((x) => x !== d); audit('Document removed', `${fullName(e)}: ${d.name}`, 'org', 'employee', e.id); saveNow(); route();
+};
+/* ---------------------------------------------------------------- documents made from Word templates
+   HR keeps Word (.docx) templates with {{ placeholders }} under Administration › Document templates, each mapped
+   to a database field, fixed text or a question asked here. The server fills the template from MySQL
+   (backend/app/doctemplates.py), numbers it from its document type and keeps the file; it is then listed
+   in the employee's Letters and service documents, like an uploaded letter. */
+const docType = (id) => S.docTypes.find((t) => t.id === id);
+const docTypesFor = (coId) => S.docTypes.filter((t) => !t.companyId || t.companyId === coId).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+const docCategoriesFor = (e) => [...new Set([...docTypesFor(e.companyId).map((t) => t.name), ...DOC_CATEGORIES])];
+const docTemplatesFor = (e) => S.docTemplates.filter((t) => t.status !== 'inactive' && t.fileId && (!t.companyId || t.companyId === e.companyId))
+  .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+const docAsks = (t) => (t.placeholders || []).filter((ph) => ((t.mapping || {})[ph] || {}).source === 'ask');
+/* The salary breakup comes from the payroll rules here (pay components, PF, ESI), so it matches the payslip */
+function docComputed(e, iso) {
+  const sal = e && salaryAt(e, iso || todayISO()); if (!sal || !+sal.ctc) return {};
+  const st = structure(e, sal.ctc, (iso || todayISO()).slice(0, 7));
+  const rows = compsFor(e.companyId).filter((c) => c.kind === 'earning' && c.calc !== 'input' && +st.amounts[c.code] > 0)
+    .map((c) => ({ name: c.name, code: c.code, monthly: st.amounts[c.code], annual: r2(st.amounts[c.code] * 12) }));
+  return { salary_components: rows, gross_monthly: st.gross, employer_pf_monthly: st.employerPF };
+}
+async function docRequest(path, body) {
+  const r = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'x-peopledesk': '1', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (r.status === 401) { hooks.onSessionEnded(); throw new Error('Your session has ended.'); }
+  if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(typeof d.detail === 'string' ? d.detail : `The server returned ${r.status}`); }
+  return r;
+}
+function downloadBlob(name, blob) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+/* A filled copy marked DRAFT, downloaded straight away; nothing is numbered or kept. Returns the placeholders that came out empty. */
+async function docPreview(templateId, empId, date, values) {
+  await sync.flush();
+  const r = await docRequest('/api/doc-templates/preview', { templateId, empId, date, values, computed: docComputed(empById(empId), date) });
+  const m = (r.headers.get('content-disposition') || '').match(/filename\*=UTF-8''([^;]+)/);
+  downloadBlob(m ? decodeURIComponent(m[1]) : 'draft.docx', await r.blob());
+  return (r.headers.get('x-empty-placeholders') || '').split(',').filter(Boolean);
+}
+async function docGenerate(templateId, empId, date, values) {
+  await sync.flush();
+  const r = await docRequest('/api/doc-templates/generate', { templateId, empId, date, values, computed: docComputed(empById(empId), date) });
+  return r.json();
+}
+ACT.docGen = (b) => {
+  const e = empById(b.dataset.emp); const list = docTemplatesFor(e);
+  if (!list.length) { toast('There are no templates for this company yet. Add one under Administration › Document templates.'); return; }
+  const input = (ph, m) => {
+    const name = `ask_${esc(ph)}`, req = m.required ? ' required' : '', lab = `${esc(m.label || ph)}${m.required ? ' *' : ''}`;
+    if (m.type === 'long') return `<label class="field wide">${lab}<textarea class="inp" name="${name}"${req}>${esc(m.default || '')}</textarea></label>`;
+    const type = m.type === 'date' ? 'date' : m.type === 'number' || m.type === 'money' ? 'number' : 'text';
+    return `<label class="field">${lab}<input class="inp" type="${type}" name="${name}" value="${esc(m.default || '')}"${req}>${m.type === 'money' ? '<small>In rupees; written as ₹ 12,34,567</small>' : ''}</label>`;
+  };
+  openDlg(`<form class="dlg" id="dgF" novalidate><h2>Create a document for ${esc(fullName(e))}</h2><div class="form">
+    <label class="field">Template<select class="inp" name="tpl">${list.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label>
+    <label class="field">Date of the document<input class="inp" type="date" name="date" value="${todayISO()}"></label></div>
+    <p class="fine" id="dgNote"></p><div class="form" id="dgAsk"></div>
+    <p class="err" id="dgE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn" id="dgPrev">Download a draft</button><button class="btn pri">Create and add to profile</button></div></form>`, true);
+  const f = $('#dgF'); const cur = () => list.find((t) => t.id === f.elements.tpl.value);
+  const draw = () => {
+    const t = cur(), ty = docType(t.typeId);
+    $('#dgNote').textContent = [t.description, ty ? `Document type: ${ty.name}.${ty.prefix ? ` Numbered ${ty.prefix}/${(coById(e.companyId) || {}).code || ''}/year/number.` : ''}` : ''].filter(Boolean).join(' ');
+    $('#dgAsk').innerHTML = docAsks(t).map((ph) => input(ph, t.mapping[ph])).join('') || '<p class="fine" style="grid-column:1/-1">Everything in this template comes from the employee’s record.</p>';
+  };
+  f.elements.tpl.onchange = draw; draw();
+  const answers = () => Object.fromEntries(docAsks(cur()).map((ph) => [ph, f.elements[`ask_${ph}`].value]));
+  const err = (m) => { $('#dgE').textContent = m; };
+  $('#dgPrev').onclick = async () => {
+    err('Preparing the draft…');
+    try { const empty = await docPreview(cur().id, e.id, f.elements.date.value, answers()); err(empty.length ? `Draft downloaded. Empty in it: ${empty.join(', ')}.` : 'Draft downloaded. Check it, then create the document.'); }
+    catch (x) { err(x.message); }
+  };
+  f.onsubmit = async (ev) => {
+    ev.preventDefault(); const t = cur();
+    const miss = docAsks(t).filter((ph) => t.mapping[ph].required && !String(f.elements[`ask_${ph}`].value).trim());
+    if (miss.length) { err(`Fill in: ${miss.map((ph) => t.mapping[ph].label || ph).join(', ')}.`); return; }
+    const date = f.elements.date.value || todayISO();
+    try {
+      err('Creating the document…');
+      const d = await docGenerate(t.id, e.id, date, answers());
+      (e.documents = e.documents || []).push({ id: uid(), category: d.type || t.name, name: d.letterNo ? `${t.name} (${d.letterNo})` : t.name, fileId: d.fileId, date, by: me.id, at: Date.now(), templateId: t.id, letterNo: d.letterNo || '' });
+      (e.history = e.history || []).push({ date, type: 'Document issued', note: `${d.type || t.name}${d.letterNo ? ` ${d.letterNo}` : ''}`, by: me.id });
+      saveNow(); closeDlg(); toast(d.empty && d.empty.length ? `Created. Empty in the document: ${d.empty.join(', ')}` : 'Document created and added to the profile'); route();
+    } catch (x) { err(x.message); }
+  };
 };
 PROFILE_TABS.performance = (e, { mine }) => {
   const cycles = S.cycles.filter((c) => c.companyId === e.companyId).sort((a, b) => (a.to < b.to ? 1 : -1));
@@ -5103,5 +5190,6 @@ export {
   itemShown, itemOn, itemHref, companiesForMe, company, isHR, isSuper, isManager, pendingForMe,
   empById, nameOf, fullName, initials, coEmployees, leaveTypesFor, leaveBalance, ltById,
   shiftFor, punchOf, leaveOn, holidayOn, todayISO, addDays, D, ymAdd, monthName, yearsBetween,
-  num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin, regAsked
+  num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin, regAsked,
+  uid, coById, DOC_CATEGORIES, docTypesFor, docPreview, downloadBlob
 };

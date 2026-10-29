@@ -80,8 +80,8 @@ cuts.append((a, a, ""))
 a = find(r"^function route\(\) \{")
 b = block_end(find(r"^function renderShell\(", a))
 cuts.append((a, b, """/* Pages drawn by React components rather than by the HTML views below */
-const REACT_PAGES = new Set(['home', 'inbox', 'settings']);
-const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data' };
+const REACT_PAGES = new Set(['home', 'inbox', 'settings', 'doctemplates']);
+const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data', doctemplates: 'Document templates' };
 /* Works out the page for a location hash: sets R, runs the page's view, and names the menu item it belongs to */
 function resolvePage(hash) {
   const raw = String(hash || '').replace(/^#\\/?/, '');

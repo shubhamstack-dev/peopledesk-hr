@@ -9,6 +9,7 @@ import Setup from './pages/Setup.jsx';
 import Home from './pages/Home.jsx';
 import Approvals from './pages/Approvals.jsx';
 import Settings from './pages/Settings.jsx';
+import DocTemplates from './pages/DocTemplates.jsx';
 
 const SESSION_ENDED = 'Your session has ended. Sign in again.';
 
@@ -110,6 +111,7 @@ export default function App() {
   if (resolved.page === 'home') page = <Home />;
   else if (resolved.page === 'inbox') page = <Approvals />;
   else if (resolved.page === 'settings') page = <Settings onSignedOut={signOut} onWiped={() => { E.sync.stop(); E.clearSession(); toSignIn(); }} />;
+  else if (resolved.page === 'doctemplates') page = <DocTemplates key={hash} />;
   else page = <PageHost view={resolved.view} />;
 
   return (

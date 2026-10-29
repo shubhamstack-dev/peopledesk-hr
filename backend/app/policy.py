@@ -22,7 +22,7 @@ from . import repo
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
            "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns",
-           "expenseCats", "perfTemplates", "onboardTemplates"}
+           "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates"}
 # Records shared by the people taking part in them (requester, approvers, department owners).
 # Each carries a `participants` list of employee ids; approval steps carry `approverIds`.
 PARTICIPANT = {"requests", "expenseClaims", "onboardings", "assets"}
@@ -122,6 +122,8 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     for coll in PARTICIPANT:
         st[coll] = [x for x in st.get(coll, []) if ctx.is_hr_for(x.get("companyId") or emp_co.get(x.get("empId")))
                     or ctx.id in (x.get("participants") or []) or x.get("empId") == ctx.id]
+    if not ctx.is_hr:
+        st["docTemplates"] = []          # only HR makes documents; employees see the finished letters on their profile
     s = st.get("settings") or {}
     st["settings"] = s if ctx.is_hr else {k: s.get(k) for k in ("googleClientId", "allowDemo", "allowPassword", "idleMin") if k in s}
     return st

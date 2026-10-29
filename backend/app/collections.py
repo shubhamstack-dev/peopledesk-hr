@@ -66,6 +66,9 @@ COLLS = [
     Coll("onboardings", "onboardings", {"status": ("status", "str"), "doj": ("doj", "date")}),
     Coll("onboardTemplates", "onboarding_templates", {"dept": ("dept", "str")}),
     Coll("assets", "assets", {"asset_type": ("type", "str"), "tag": ("tag", "str"), "status": ("status", "str")}),
+    # v2.3: document types and Word templates filled from the database (see doctemplates.py)
+    Coll("docTypes", "document_types", {"name": ("name", "str"), "prefix": ("prefix", "str")}),
+    Coll("docTemplates", "document_templates", {"name": ("name", "str"), "type_id": ("typeId", "str"), "status": ("status", "str")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 
