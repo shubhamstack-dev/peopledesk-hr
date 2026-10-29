@@ -38,17 +38,13 @@ APPROVED = {"approved"}
 SENSITIVE_EMP = {"salaryHist": [], "salaryOverrides": {}, "pan": "", "aadhaar": "", "uan": "", "pfNo": "",
                  "esiNo": "", "esiRegDate": "", "esiDispensary": "", "bankName": "", "bankAcc": "", "ifsc": "",
                  "payMode": "", "vpfPct": "", "address": "", "personalEmail": "", "emergency": "", "marital": "",
-                 "blood": "", "gratuityFrom": "", "googleId": "", "family": [], "documents": [], "addrCity": "", "addrState": "",
-                 "addrPin": "", "addrCountry": "", "emergencyName": "", "emergencyRelation": "", "emergencyPhone": "", "mediclaim": []}
+                 "blood": "", "gratuityFrom": "", "googleId": ""}
 # Employee fields a person may not change on their own record
 PROTECTED_SELF = {"id", "role", "companyId", "hrCompanies", "status", "blocked", "empNo", "email", "managerId",
                   "salaryHist", "salaryOverrides", "doj", "exit", "stints", "gratuityFrom", "gradeId", "desigId",
                   "deptId", "locationId", "empType", "probationEnd", "attGroup", "otEligible", "shiftId", "source",
                   "pfOn", "epsOn", "esiOn", "ptOn", "lwfOn", "patternId", "patternFrom",
-                  "matrixManagerIds", "reportingHist", "gradeHist", "pendingMoves", "variableHist",
-                  # statutory details change only through an approved request; letters are issued by HR
-                  "pan", "aadhaar", "uan", "pfNo", "esiNo", "esiRegDate", "esiDispensary", "vpfPct", "documents",
-                  "mediclaim"}
+                  "matrixManagerIds", "reportingHist", "gradeHist", "pendingMoves", "variableHist"}
 # Employee fields a manager may change for someone in their reporting line (resignation flow)
 MANAGER_MAY = {"exit", "history", "status"}
 
@@ -172,12 +168,6 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         raise Rejected("belongs to another company")
 
     subject = new.get("empId") or (old or {}).get("empId")
-    if coll in ("leaveReqs", "regs") and old and old.get("steps") and subject != ctx.id and subject not in ctx.line:
-        return _step_decision(new, old, ctx)
-    if coll in ("leaveReqs", "regs") and not old and any((x or {}).get("decision") for x in new.get("steps") or []):
-        raise Rejected("a new request cannot already be approved")
-    if coll == "punches" and subject == ctx.id:
-        _own_punch(new, old)
     if coll == "feedback":
         if not old and new.get("from") != ctx.id:
             raise Rejected("feedback can only be sent as yourself")
@@ -193,44 +183,6 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
             no_manager = not ctx.emps.get(ctx.me.get("managerId"))
             if not (coll == "goals" and no_manager):
                 raise Rejected("you cannot approve your own request")
-    return new
-
-
-def _own_punch(new: dict, old: dict | None):
-    """Employees punch in and out for today, at the time they do it. Any other change to their punches
-    is an attendance correction, which goes for approval."""
-    import time as _t
-    from datetime import date as _d
-    from datetime import timedelta as _td
-    # today, or yesterday for a night shift punched out after midnight
-    if new.get("date") not in (_d.today().isoformat(), (_d.today() - _td(days=1)).isoformat()):
-        raise Rejected("punch times can only be changed through an attendance correction")
-    now = _t.time() * 1000
-    for k in ("in", "out"):
-        v, was = new.get(k), (old or {}).get(k)
-        if v != was and v is not None and abs(float(v) - now) > 15 * 60 * 1000:
-            raise Rejected("punch times can only be changed through an attendance correction")
-        if was is not None and v is None:
-            raise Rejected("punch times can only be changed through an attendance correction")
-
-
-def _step_decision(new: dict, old: dict, ctx: Ctx) -> dict:
-    """A workflow approver outside the reporting line (dotted-line manager, head of department, a named
-    person) may record their own step's decision on a leave request, and nothing else."""
-    steps_old, steps_new = old.get("steps") or [], new.get("steps") or []
-    if len(steps_old) != len(steps_new) or not any(ctx.id in (x or {}).get("approverIds", []) for x in steps_old):
-        raise Rejected("not in your reporting line")
-    allowed = {"steps", "status", "decidedBy", "decidedAt", "note", "log"}
-    for k in set(new) | set(old):
-        if k not in allowed and new.get(k) != old.get(k):
-            raise Rejected("an approver can only record a decision")
-    for o, n in zip(steps_old, steps_new):
-        if (n or {}).get("approverIds") != (o or {}).get("approverIds"):
-            raise Rejected("the approvers cannot be changed")
-        if (n or {}).get("decision") != (o or {}).get("decision") and (o.get("decision") or ctx.id not in (o.get("approverIds") or [])):
-            raise Rejected("this step is not yours to decide")
-    if new.get("status") == "approved" and not all((x or {}).get("decision") == "approved" for x in steps_new):
-        raise Rejected("every step must be approved first")
     return new
 
 

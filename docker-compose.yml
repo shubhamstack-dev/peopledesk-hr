@@ -48,14 +48,6 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       TZ: ${APP_TZ:-Asia/Kolkata}
       UPLOAD_DIR: /app/uploads
-      # E-mail to HR for approvals (optional; leave SMTP_HOST empty to turn it off)
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      SMTP_FROM: ${SMTP_FROM:-}
-      SMTP_TLS: ${SMTP_TLS:-starttls}
-      APP_URL: ${APP_URL:-}
     volumes:
       # Expense receipts and other uploads; kept when the container is rebuilt
       - pd_uploads:/app/uploads
