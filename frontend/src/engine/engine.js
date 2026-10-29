@@ -1103,10 +1103,12 @@ VIEWS.profile = () => {
   if (!e) return { title: 'Profile', html: '<div class="empty">That employee does not exist.</div>' };
   const mine = e.id === me.id, hr = isHR(e.companyId), mgr = allReportees(me.id).includes(e.id) || (e.matrixManagerIds || []).includes(me.id);
   if (!mine && !hr && !mgr) return { title: 'Profile', html: '<div class="empty">You cannot see this profile.</div>' };
-  const tab = R.q.get('tab') || 'job';
-  const tabs = [['job', 'Job'], ['reporting', 'Reporting'], ['career', 'Career'], ['personal', 'Personal'], ['family', 'Family'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'],
-    ['documents', 'Documents'], ['performance', 'Performance'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['history', 'History'], ['activity', 'Activity log']]
+  const tabs = [['personal', 'Personal'], ['family', 'Family'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'], ['documents', 'Documents'],
+    ['career', 'Career'], ['job', 'Job'], ['reporting', 'Reporting'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['performance', 'Performance'],
+    ['history', 'History'], ['activity', 'Activity log']]
     .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance'].includes(k)) && (k !== 'activity' || hr));
+  // Opens on the first tab this person may see (Personal for oneself and HR, Career for a manager)
+  const tab = tabs.some(([k]) => k === R.q.get('tab')) ? R.q.get('tab') : tabs[0][0];
   const base = `#/profile/${e.id}?tab=`;
   const ro = (fields) => `<div class="form">${fields.map((f) => { let v = e[f.k];
       if (f.type === 'select') { const o = (typeof f.opts === 'function' ? f.opts() : f.opts).find(([x]) => String(x) === String(v ?? '')); v = o ? o[1] : (f.k === 'managerId' ? nameOf(v) : ''); }
