@@ -470,12 +470,19 @@ function monthAttendance(emp, ym, upTo) {
   const co = coById(emp.companyId) || {};
   const days = daysInMonth(ym);
   const lastIso = upTo || `${ym}-${pad(days)}`;
-  const r = { P: 0, HD: 0, A: 0, L: 0, H: 0, WO: 0, lateMarks: 0, ot: 0, unpaidLeave: 0, na: 0, workedOff: 0 };
+  const r = { P: 0, HD: 0, A: 0, L: 0, H: 0, WO: 0, lateMarks: 0, ot: 0, unpaidLeave: 0, na: 0, future: 0, workedOff: 0 };
+  const tday = lastIso < todayISO() ? addDays(lastIso, 1) : todayISO();
   for (let i = 1; i <= days; i++) {
     const iso = `${ym}-${pad(i)}`;
     if (iso > lastIso) { r.na++; continue; }
-    const s = dayStatus(emp, iso, lastIso < todayISO() ? addDays(lastIso, 1) : todayISO());
-    if (!s.code) { r.na++; continue; }
+    const s = dayStatus(emp, iso, tday);
+    if (!s.code) {
+      // A working day still to come (payroll run before the month ends) is paid as present;
+      // recalculating after the month ends picks up any absence. Days before joining or after leaving are not paid.
+      const employed = !(emp.doj && iso < emp.doj) && !(emp.exit && emp.exit.lwd && iso > emp.exit.lwd);
+      if (employed && iso > tday) r.future++; else r.na++;
+      continue;
+    }
     r[s.code] = (r[s.code] || 0) + 1;
     if (s.late > 0 && (s.code === 'P' || s.code === 'HD')) r.lateMarks++;
     r.ot += s.ot || 0;
@@ -964,7 +971,7 @@ function buildSetupState(f) {
   S.group.name = f.group.trim();
   const co = newCompany({ name: f.coName.trim(), code: f.coCode.trim().toUpperCase(), state: f.state, domain: f.email.split('@')[1] });
   const [first, ...rest] = f.name.trim().split(/\s+/);
-  const emp = { id: uid(), companyId: co.id, empNo: nextNo('emp', co.code + '-'), firstName: first, lastName: rest.join(' '), email: f.email.trim().toLowerCase(), role: 'super', status: 'active',
+  const emp = { id: uid(), companyId: co.id, empNo: allocEmpNo(co), firstName: first, lastName: rest.join(' '), email: f.email.trim().toLowerCase(), role: 'super', status: 'active',
     doj: todayISO(), gender: '', shiftId: S.shifts.find((x) => x.companyId === co.id).id, salaryHist: [], history: [{ date: todayISO(), type: 'Hire', note: 'Group administrator' }], source: 'setup', attGroup: 'regular' };
   S.employees.push(emp);
   return { state: JSON.parse(JSON.stringify(S)), adminId: emp.id };
@@ -1207,13 +1214,22 @@ ACT.empNew = () => {
     if (S.employees.some((x) => (x.email || '').toLowerCase() === d.email.toLowerCase())) { $('#ne').textContent = 'An employee with this e-mail exists.'; return; }
     if (S.employees.some((x) => x.companyId === CO && x.empNo === d.empNo)) { $('#ne').textContent = 'That employee number is in use.'; return; }
     const ctc = +d.ctc || 0; delete d.ctc;
-    if (d.empNo === nextNoPreview()) nextNo('emp-' + CO, company().code + '-');
+    takeEmpNo(company(), d.empNo);
     const e = { id: uid(), companyId: CO, status: 'active', pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', ...d, email: d.email.toLowerCase(),
       probationEnd: d.empType === 'probation' ? addDays(d.doj, 180) : '', salaryHist: ctc ? [{ effective: d.doj, ctc, reason: 'On joining' }] : [], history: [{ date: d.doj, type: 'Hire', note: `Joined as ${(desig(d.desigId) || {}).name || 'employee'}`, by: me.id }], source: 'manual' };
     S.employees.push(e); recordReporting(e, e.doj || todayISO(), e.managerId || '', [], 'Joined'); recordGrade(e, e.doj || todayISO(), 'Joined'); audit('Employee hired', fullName(e), 'org', 'employee', e.id); saveNow(); closeDlg(); toast(`${fullName(e)} added`); offerEnrolment(e);
   };
 };
-function nextNoPreview() { const n = (S.seq['emp-' + CO] || 0) + 1; return `${company().code}-${String(n).padStart(5, '0')}`; }
+/* Next free employee number for a company: the counter plus one, skipping any number already in use */
+function nextEmpNo(co) {
+  const used = new Set(S.employees.filter((x) => x.companyId === co.id).map((x) => x.empNo));
+  let n = (S.seq['emp-' + co.id] || 0) + 1;
+  while (used.has(`${co.code}-${String(n).padStart(5, '0')}`)) n++;
+  return { n, no: `${co.code}-${String(n).padStart(5, '0')}` };
+}
+function allocEmpNo(co) { const x = nextEmpNo(co); S.seq['emp-' + co.id] = x.n; return x.no; }
+function takeEmpNo(co, no) { const x = nextEmpNo(co); if (no === x.no) S.seq['emp-' + co.id] = x.n; }
+function nextNoPreview() { return nextEmpNo(company()).no; }
 
 /* ---------------------------------------------------------------- personnel actions */
 ACT.empActions = (b) => {
@@ -2133,6 +2149,7 @@ function runView(id) {
   const t = totals(run); const res = Object.values(run.results).sort((a, b) => nameOf(a.empId).localeCompare(nameOf(b.empId)));
   const inputs = S.payInputs.filter((i) => i.companyId === CO && i.month === run.month);
   const locked = run.status === 'locked';
+  const early = !locked && `${run.month}-${pad(daysInMonth(run.month))}` > todayISO();
   const warn = res.filter((r) => !empById(r.empId).bankAcc && empById(r.empId).payMode !== 'cash').length;
   const noUan = res.filter((r) => r.pf.wage && !empById(r.empId).uan).length;
   return { title: `Payroll: ${monthName(run.month)}`, html: `
@@ -2140,18 +2157,21 @@ function runView(id) {
       <div class="kpi"><span>PF (all shares)</span><b>${inr0(t.pf)}</b><small>ceiling ${inr0(pfCeilingFor(run.month))} this month</small></div><div class="kpi"><span>TDS</span><b>${inr0(t.tds)}</b><small>ESI ${inr0(t.esi)}, PT ${inr0(t.pt)}</small></div></div>
     <div class="card"><div class="hd"><div><h2>${monthName(run.month)} <span class="badge ${locked ? 'ok' : 'warn'}">${locked ? 'Locked' : 'Draft'}</span></h2><p class="sub">Paid days come from the attendance register (loss of pay from absence, half days, unpaid leave and late-mark penalties). Select a row to see the full calculation.</p></div>
       <div class="tools"><a class="btn" href="#/payroll">All runs</a>${locked ? '<button class="btn" data-act="runUnlock">Unlock</button>' : `<button class="btn" data-act="runInputs" data-m="${run.month}">One-time inputs (${inputs.length})</button><button class="btn" data-act="runRecalc">Recalculate</button><button class="btn pri" data-act="runLock">Lock payroll</button>`}</div></div>
+      ${early ? `<div class="note warn">${monthName(run.month)} has not ended yet. Working days after today are paid as present. Recalculate after the month ends, so that absence and unpaid leave on those days are counted, before you lock.</div>` : ''}
       ${warn || noUan || run.skipped.length ? `<div class="note warn">${[warn && `${warn} employees have no bank account`, noUan && `${noUan} PF members have no UAN`, run.skipped.length && `${run.skipped.length} not paid: ${run.skipped.map((s) => `${nameOf(s.empId)} (${s.reason})`).join(', ')}`].filter(Boolean).join('. ')}.</div>` : ''}
       <div class="scroll"><table class="t"><thead><tr><th>Employee</th><th class="r">Paid days</th><th class="r">LOP</th><th class="r">Gross</th><th class="r">PF</th><th class="r">ESI</th><th class="r">PT</th><th class="r">TDS</th><th class="r">Other</th><th class="r">Net pay</th></tr></thead><tbody>
       ${res.map((r) => { const other = r.totalDed - r.pf.ee - r.pf.vpf - r.esi.ee - r.pt - r.tds - r.lwf.ee; return `<tr class="click" data-act="runEmp" data-run="${run.id}" data-emp="${r.empId}"><td><b>${esc(nameOf(r.empId))}</b> <span class="fine">${esc(empById(r.empId).empNo)}</span></td>
         <td class="r">${num(r.paidDays)}/${r.days}</td><td class="r">${r.lop ? num(r.lop) : ''}</td><td class="r">${inr(r.gross)}</td><td class="r">${inr0(r.pf.ee + r.pf.vpf)}</td><td class="r">${r.esi.ee ? inr0(r.esi.ee) : ''}</td><td class="r">${r.pt ? inr0(r.pt) : ''}</td><td class="r">${r.tds ? inr0(r.tds) : ''}</td><td class="r">${other > 0.5 ? inr0(other + r.lwf.ee) : r.lwf.ee ? inr0(r.lwf.ee) : ''}</td><td class="r"><b>${inr(r.net)}</b></td></tr>`; }).join('')}</tbody>
-      <tfoot><tr><td>Total</td><td></td><td></td><td class="r">${inr(t.gross)}</td><td></td><td></td><td class="r">${inr0(t.pt)}</td><td class="r">${inr0(t.tds)}</td><td></td><td class="r">${inr(t.net)}</td></tr></tfoot></table></div></div>
+      <tfoot>${(() => { const sum = (f) => res.reduce((a, r) => a + f(r), 0); const pfT = sum((r) => r.pf.ee + r.pf.vpf), esiT = sum((r) => r.esi.ee);
+        const othT = sum((r) => Math.max(0, r.totalDed - r.pf.ee - r.pf.vpf - r.esi.ee - r.pt - r.tds));
+        return `<tr><td>Total</td><td></td><td></td><td class="r">${inr(t.gross)}</td><td class="r">${inr0(pfT)}</td><td class="r">${inr0(esiT)}</td><td class="r">${inr0(t.pt)}</td><td class="r">${inr0(t.tds)}</td><td class="r">${othT > 0.5 ? inr0(othT) : ''}</td><td class="r">${inr(t.net)}</td></tr>`; })()}</tfoot></table></div></div>
     <div class="card"><h2>Reports and statutory files</h2><p class="sub">${locked ? '' : 'Lock the payroll before filing returns. '}Files follow the formats of the EPFO and ESIC portals; check them against the portal before uploading.</p>
       <div class="tools">${[['repRegister', 'Salary register'], ['repBank', 'Bank transfer file'], ['repECR', 'PF ECR file (EPFO)'], ['repESI', 'ESI contribution file'], ['repPT', 'Professional tax'], ['repLWF', 'Labour welfare fund'], ['repTDS', 'TDS (for Form 24Q)'], ['repSlips', 'Print all payslips']]
         .map(([a, l]) => `<button class="btn" data-act="${a}" data-id="${run.id}">${l}</button>`).join('')}</div></div>` };
 }
 const curRun = () => S.payRuns.find((r) => r.id === R.arg);
 ACT.runRecalc = () => { const r = curRun(); computeRun(r); saveNow(); toast('Payroll recalculated'); route(); };
-ACT.runLock = async () => { const r = curRun(); if (!(await confirmBox(`Lock ${monthName(r.month)} payroll?`, 'Payslips become visible to employees and the figures are used for year-to-date tax. You can unlock it if something must change.', 'Lock payroll'))) return;
+ACT.runLock = async () => { const r = curRun(); const notOver = `${r.month}-${pad(daysInMonth(r.month))}` > todayISO(); if (!(await confirmBox(`Lock ${monthName(r.month)} payroll?`, `${notOver ? `${monthName(r.month)} has not ended: days after today are paid as present. ` : ''}Payslips become visible to employees and the figures are used for year-to-date tax. You can unlock it if something must change.`, 'Lock payroll'))) return;
   computeRun(r); r.status = 'locked'; r.lockedAt = Date.now(); markOtPaid(r); audit('Payroll locked', `${company().code} ${r.month}`); saveNow(); toast('Payroll locked'); route(); };
 /* overtime paid in a locked run is not paid again; unlocking releases it */
 function markOtPaid(run) { Object.values(run.results).forEach((x) => (x.ot && x.ot.ids || []).forEach((id) => { const rc = S.otRecs.find((o) => o.id === id); if (rc) rc.paidMonth = run.month; })); }
@@ -2161,13 +2181,13 @@ ACT.runUnlock = async () => { const r = curRun(); const later = S.payRuns.find((
 ACT.runEmp = (b) => {
   const run = S.payRuns.find((x) => x.id === b.dataset.run), r = run.results[b.dataset.emp], e = empById(r.empId), a = r.att;
   openDlg(`<div class="dlg"><h2>${esc(fullName(e))}, ${monthName(run.month)}</h2>
-    <p class="fine" style="margin:0">Annual CTC ${inr0(r.ctc)}. Paid days ${num(r.paidDays)} of ${r.days}: absent ${a.A}, half days ${a.HD}, unpaid leave ${num(a.unpaidLeave)}, late marks ${a.lateMarks} (penalty ${num(a.latePenalty)})${a.na ? `, not employed ${a.na} days` : ''}. Overtime ${num(r.otHrs, 1)} h.</p>
+    <p class="fine" style="margin:0">Annual CTC ${inr0(r.ctc)}. Paid days ${num(r.paidDays)} of ${r.days}: absent ${a.A}, half days ${a.HD}, unpaid leave ${num(a.unpaidLeave)}, late marks ${a.lateMarks} (penalty ${num(a.latePenalty)})${a.na ? `, not employed ${a.na} days` : ''}${a.future ? `, ${a.future} days still to come paid as present` : ''}. Overtime ${num(r.otHrs, 1)} h.</p>
     <div class="grid g2"><table class="t"><thead><tr><th>Earning</th><th class="r">Full month</th><th class="r">Earned</th></tr></thead><tbody>${r.earnings.map((x) => `<tr><td>${esc(x.name)} <span class="fine mono">${esc(x.code)}</span></td><td class="r">${x.full ? inr(x.full) : ''}</td><td class="r">${inr(x.amount)}</td></tr>`).join('')}</tbody><tfoot><tr><td>Gross</td><td></td><td class="r">${inr(r.gross)}</td></tr></tfoot></table>
       <table class="t"><thead><tr><th>Deduction</th><th class="r">Amount</th></tr></thead><tbody>${r.deductions.map((x) => `<tr><td>${esc(x.name)} <span class="fine mono">${esc(x.code)}</span></td><td class="r">${inr(x.amount)}</td></tr>`).join('')}</tbody><tfoot><tr><td>Net pay</td><td class="r">${inr(r.net)}</td></tr></tfoot></table></div>
     <h3>How the statutory amounts were worked out</h3><table class="t"><tbody>
       <tr><td>Labour Code wages</td><td>Wages ${inr(r.wagesCode.wages)} of total ${inr(r.wagesCode.total)}; ${r.wagesCode.topUp > 0 ? `below 50%, so ${inr(r.wagesCode.topUp)} is added` : 'at least 50%'}. Wages used: <b>${inr(r.wagesCode.deemed)}</b></td></tr>
       <tr><td>Provident fund</td><td>${e.pfOn === false ? 'Not applicable' : `PF wages ${inr(r.pf.wage)}, contribution base ${inr(r.pf.base)} (ceiling ${inr0(pfCeilingFor(run.month))}). Employee 12% ${inr0(r.pf.ee)}${r.pf.vpf ? `, VPF ${inr0(r.pf.vpf)}` : ''}; employer EPS ${inr0(r.pf.eps)}, EPF ${inr0(r.pf.epf)}, EDLI ${inr0(r.pf.edli)}, admin ${inr0(r.pf.admin)}. NCP days ${r.pf.ncp}.`}</td></tr>
-      <tr><td>ESI</td><td>${r.esi.covered ? `${esc(r.esi.reason)}. ESI wages ${inr(r.esi.wage)}: employee ${S.stat.esiEE}% ${r.esi.exempt ? `nil (average daily wage up to ₹${S.stat.esiExemptDaily}, exempt)` : inr0(r.esi.ee)}, employer ${S.stat.esiER}% ${inr0(r.esi.er)}. Rounded up to the rupee.` : esc(r.esi.reason || 'Not covered')}.</td></tr>
+      <tr><td>ESI</td><td>${r.esi.covered ? `${esc(r.esi.reason)}. ESI wages ${inr(r.esi.wage)}: employee ${S.stat.esiEE}% ${r.esi.exempt ? `nil (average daily wage up to ₹${S.stat.esiExemptDaily}, exempt)` : inr0(r.esi.ee)}, employer ${S.stat.esiER}% ${inr0(r.esi.er)}. Rounded up to the rupee` : esc(r.esi.reason || 'Not covered')}.</td></tr>
       <tr><td>Overtime</td><td>${r.ot && r.ot.hrs ? `${num(r.ot.hrs, 1)} approved hours (${Object.entries(r.ot.byType).filter(([, h]) => h).map(([k, h]) => `${OT_TYPES[k].toLowerCase()} ${num(h, 1)} h at ${r.ot.rate[k]}×`).join(', ')}) × ordinary rate ${inr(r.ot.hourly)} an hour = <b>${inr(r.ot.amount)}</b>` : 'None paid this month'}${r.otDetected && r.otDetected !== (r.ot || {}).hrs ? `; ${num(r.otDetected, 1)} h worked in the month` : ''}. ${GROUPS[r.group || 'regular']} staff.</td></tr>
       ${r.shiftAllow && r.shiftAllow.amount ? `<tr><td>Shift allowance</td><td>${num(r.shiftAllow.days)} allowance shifts worked = <b>${inr(r.shiftAllow.amount)}</b></td></tr>` : ''}
       <tr><td>Professional tax</td><td>${r.pt ? `${inr0(r.pt)} on gross ${inr0(r.gross)} (${esc(STATES[(loc(e.locationId) || {}).state || company().state] || '')})` : 'None'}</td></tr>
@@ -2227,12 +2247,12 @@ function slipHtml(run, r) {
   const e = empById(r.empId), co = coById(run.companyId);
   const rowsE = r.earnings.map((x) => `<tr><td>${esc(x.name)}</td><td class="r">${inr(x.full || x.amount)}</td><td class="r">${inr(x.amount)}</td></tr>`).join('');
   const rowsD = r.deductions.map((x) => `<tr><td>${esc(x.name)}</td><td class="r">${inr(x.amount)}</td></tr>`).join('');
-  return `<div class="slip" style="page-break-after:always"><div style="display:flex;justify-content:space-between;gap:20px"><div><h2>${esc(co.legalName || co.name)}</h2><div class="fine">${esc(co.address || '')}</div></div><div style="text-align:right"><b>Payslip for ${monthName(run.month)}</b></div></div><hr>
+  return `<div class="slip" style="page-break-after:always"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/ankit-logo.png" alt="" style="height:44px;width:auto"><div><h2 style="margin:0">${esc(co.legalName || co.name)}</h2><div class="fine">${esc(co.address || '')}</div></div></div><div style="text-align:right"><b>Payslip for ${monthName(run.month)}</b></div></div><hr>
     <div class="cols"><table><tr><td>Name</td><td><b>${esc(fullName(e))}</b></td></tr><tr><td>Employee number</td><td>${esc(e.empNo)}</td></tr><tr><td>Designation</td><td>${esc((desig(e.desigId) || {}).name || '')}</td></tr><tr><td>Department</td><td>${esc((dept(e.deptId) || {}).name || '')}</td></tr><tr><td>Date of joining</td><td>${dmy(e.doj)}</td></tr></table>
       <table><tr><td>PAN</td><td>${esc(e.pan || '—')}</td></tr><tr><td>UAN</td><td>${esc(e.uan || '—')}</td></tr><tr><td>Bank account</td><td>${e.bankAcc ? '••••' + esc(String(e.bankAcc).slice(-4)) : '—'}</td></tr><tr><td>Paid days</td><td>${num(r.paidDays)} of ${r.days}</td></tr><tr><td>Loss of pay</td><td>${num(r.lop)} days</td></tr></table></div>
     <div class="cols"><table><tr><th>Earnings</th><th class="r">Rate</th><th class="r">Amount</th></tr>${rowsE}<tr><td><b>Gross earnings</b></td><td></td><td class="r"><b>${inr(r.gross)}</b></td></tr></table>
       <table><tr><th>Deductions</th><th class="r">Amount</th></tr>${rowsD}<tr><td><b>Total deductions</b></td><td class="r"><b>${inr(r.totalDed)}</b></td></tr></table></div>
-    <h2 style="margin-top:12px">Net pay ${inr(r.net)}</h2><p class="fine">Tax regime: ${r.tax.regime === 'old' ? 'old' : 'new'}. Projected taxable income ${inr0(r.tax.taxable)}, tax for the year ${inr0(r.tax.tax)}. Employer contributions: ${r.employer.map((x) => `${esc(x.name)} ${inr0(x.amount)}`).join(', ') || 'none'}. This is a computer-generated payslip.</p></div>`;
+    <h2 style="margin-top:12px;margin-bottom:2px">Net pay ${inr(r.net)}</h2><p style="margin:0 0 8px">${(() => { const w = inWords(r.net); return w.charAt(0).toUpperCase() + w.slice(1); })()} only</p><p class="fine">Tax regime: ${r.tax.regime === 'old' ? 'old' : 'new'}. Projected taxable income ${inr0(r.tax.taxable)}, tax for the year ${inr0(r.tax.tax)}. Employer contributions: ${r.employer.map((x) => `${esc(x.name)} ${inr0(x.amount)}`).join(', ') || 'none'}. This is a computer-generated payslip.</p></div>`;
 }
 ACT.slipPrint = (b) => { const run = S.payRuns.find((x) => x.id === b.dataset.run); printHtml('Payslip', slipHtml(run, run.results[b.dataset.emp])); };
 ACT.repSlips = (b) => { const run = S.payRuns.find((x) => x.id === b.dataset.id); printHtml(`Payslips ${run.month}`, Object.values(run.results).map((r) => slipHtml(run, r)).join('')); };
@@ -2697,7 +2717,7 @@ function rehireEmp(e, d, source) {
   e.stints = e.stints || [];
   e.stints.push({ empNo: e.empNo, companyId: e.companyId, doj: e.doj, lwd: (e.exit || {}).lwd, type: (e.exit || {}).type, desigId: e.desigId });
   const coId = d.companyId || e.companyId; const co = coById(coId);
-  if (!d.keepNo || coId !== e.companyId) e.empNo = nextNo('emp-' + coId, co.code + '-');
+  if (!d.keepNo || coId !== e.companyId) e.empNo = allocEmpNo(co);
   e.gratuityFrom = d.contService ? (e.gratuityFrom || e.stints[0].doj) : '';
   Object.assign(e, { companyId: coId, doj: d.doj, deptId: d.deptId, desigId: d.desigId, gradeId: d.gradeId, locationId: d.locationId, managerId: d.managerId, shiftId: d.shiftId || (S.shifts.find((s) => s.companyId === coId) || {}).id,
     status: 'active', blocked: false, exit: null, empType: +d.probationMonths ? 'probation' : 'permanent', probationEnd: +d.probationMonths ? addDays(d.doj, Math.round(+d.probationMonths * 30.4)) : '' });
@@ -3099,12 +3119,12 @@ ACT.offerJoin = () => {
   const [first, ...rest] = c.name.trim().split(/\s+/);
   const work = `${first}.${rest.join('') || 'x'}@${co.domain || 'example.com'}`.toLowerCase();
   openDlg(`<form class="dlg" id="jnf" novalidate><h2>Convert ${esc(c.name)} to an employee</h2><p class="fine" style="margin:0">Creates the employee record in ${esc(co.name)} with the approved offer. Create the Google Workspace account with the same work e-mail so they can sign in.</p>
-    <div class="form">${fieldHtml({ k: 'email', label: 'Work e-mail (Google)', type: 'email' }, work)}${fieldHtml({ k: 'doj', label: 'Date of joining', type: 'date' }, o.doj)}${fieldHtml({ k: 'empNo', label: 'Employee number' }, `${co.code}-${String((S.seq['emp-' + co.id] || 0) + 1).padStart(5, '0')}`)}</div>
+    <div class="form">${fieldHtml({ k: 'email', label: 'Work e-mail (Google)', type: 'email' }, work)}${fieldHtml({ k: 'doj', label: 'Date of joining', type: 'date' }, o.doj)}${fieldHtml({ k: 'empNo', label: 'Employee number' }, nextEmpNo(co).no)}</div>
     <p class="err" id="jne"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Create employee</button></div></form>`);
   $('#jnf').onsubmit = (ev) => { ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
     if (S.employees.some((x) => (x.email || '').toLowerCase() === f.email.toLowerCase())) { $('#jne').textContent = 'An employee has this e-mail.'; return; }
     if (S.employees.some((x) => x.companyId === co.id && x.empNo === f.empNo)) { $('#jne').textContent = 'That employee number is in use.'; return; }
-    if (f.empNo === `${co.code}-${String((S.seq['emp-' + co.id] || 0) + 1).padStart(5, '0')}`) nextNo('emp-' + co.id, co.code + '-');
+    takeEmpNo(co, f.empNo);
     const e = { id: uid(), companyId: co.id, empNo: f.empNo, firstName: first, lastName: rest.join(' '), email: f.email.toLowerCase(), personalEmail: c.email, phone: c.phone, gender: c.gender || '', role: 'employee', status: 'active', doj: f.doj,
       deptId: r.deptId, desigId: o.desigId, gradeId: o.gradeId, locationId: o.locationId, managerId: o.managerId, shiftId: (S.shifts.find((s) => s.companyId === co.id) || {}).id, empType: +o.probationMonths ? 'probation' : 'permanent',
       probationEnd: +o.probationMonths ? addDays(f.doj, Math.round(o.probationMonths * 30.4)) : '', pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new',
@@ -3229,7 +3249,7 @@ ACT.applyUsers = () => {
   const findOrMake = (coll, coId, name) => { if (!name) return ''; let x = S[coll].find((d) => d.companyId === coId && d.name.toLowerCase() === name.toLowerCase()); if (!x) { x = { id: uid(), companyId: coId, name, code: '' }; S[coll].push(x); } return x.id; };
   const touched = [];
   plan.add.forEach(({ u, co }) => {
-    const e = { id: uid(), companyId: co.id, empNo: u.empNo || nextNo('emp-' + co.id, co.code + '-'), firstName: u.firstName, lastName: u.lastName, email: u.email.toLowerCase(), role: 'employee', status: 'active', doj: t, empType: 'permanent',
+    const e = { id: uid(), companyId: co.id, empNo: u.empNo || allocEmpNo(co), firstName: u.firstName, lastName: u.lastName, email: u.email.toLowerCase(), role: 'employee', status: 'active', doj: t, empType: 'permanent',
       shiftId: (S.shifts.find((s) => s.companyId === co.id) || {}).id, pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', phone: u.phone, googleId: u.googleId, msId: u.msId, orgUnit: u.orgUnit,
       deptId: findOrMake('depts', co.id, u.department), desigId: findOrMake('desigs', co.id, u.title), salaryHist: [], history: [{ date: t, type: 'Hire', note: `Added from ${source}` }], source: tag, _mgr: u.manager };
     S.employees.push(e); touched.push(e);
