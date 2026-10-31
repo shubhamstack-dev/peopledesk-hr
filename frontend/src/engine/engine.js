@@ -865,6 +865,7 @@ const MENU = [
   { grp: 'pay', label: 'Payroll', items: [
     { page: 'payslips', label: 'My payslips and tax' },
     { page: 'payroll', label: 'Payroll runs', show: HR },
+    { page: 'form130', label: 'TDS certificates (Form 130 / 16)', show: HR },
     { page: 'esi', label: 'ESI', show: HR },
     { page: 'paysetup', tab: 'comps', label: 'Pay components', show: HR },
     { page: 'otpolicy', tab: 'pay', label: 'Overtime pay', show: HR },
@@ -2257,6 +2258,140 @@ function slipHtml(run, r) {
 ACT.slipPrint = (b) => { const run = S.payRuns.find((x) => x.id === b.dataset.run); printHtml('Payslip', slipHtml(run, run.results[b.dataset.emp])); };
 ACT.repSlips = (b) => { const run = S.payRuns.find((x) => x.id === b.dataset.id); printHtml(`Payslips ${run.month}`, Object.values(run.results).map((r) => slipHtml(run, r)).join('')); };
 
+/* ---------------------------------------------------------------- annual TDS certificate for salary
+   Form No. 130 (Income-tax Act, 2025 and Income-tax Rules, 2026) from tax year 2026-27; Form 16 for 2025-26 and earlier.
+   Part A (deductor and deductee, challans and quarterly deposits) has to be downloaded from TRACES: HR uploads those
+   PDFs here and each is matched to an employee by the PAN in its file name. The statement of salary and tax is
+   prepared from the locked payroll runs of the year. */
+const TDS_CERT_CAT = 'TDS certificate Part A (TRACES)';
+const certName = (fy) => (+String(fy).slice(0, 4) >= 2026 ? 'Form No. 130' : 'Form 16');
+const fyMonths = (fy) => Array.from({ length: 12 }, (_, i) => ymAdd(`${String(fy).slice(0, 4)}-04`, i));
+const PAN_RE = /[A-Z]{5}[0-9]{4}[A-Z]/;
+function taxYearOf(emp, fy) {
+  const months = fyMonths(fy);
+  const runs = S.payRuns.filter((r) => r.companyId === emp.companyId && r.status === 'locked' && months.includes(r.month) && r.results && r.results[emp.id])
+    .sort((a, b) => (a.month < b.month ? -1 : 1));
+  if (!runs.length) return null;
+  const res = runs.map((r) => r.results[emp.id]);
+  const earn = {}; let exempt = 0;
+  res.forEach((x) => (x.earnings || []).forEach((e) => { earn[e.name] = (earn[e.name] || 0) + e.amount; if (e.taxable === false) exempt += e.amount; }));
+  const sum = (f) => res.reduce((s, x) => s + (+f(x) || 0), 0);
+  const quarters = [0, 1, 2, 3].map((i) => { const ms = months.slice(i * 3, i * 3 + 3); const rr = runs.filter((r) => ms.includes(r.month));
+    return { q: `Q${i + 1}`, label: [`April–June`, `July–September`, `October–December`, `January–March`][i], paid: rr.reduce((s, r) => s + r.results[emp.id].gross, 0), tds: rr.reduce((s, r) => s + r.results[emp.id].tds, 0) }; });
+  const lastRun = runs[runs.length - 1];
+  const yStart = `${months[0]}-01`, yEnd = `${months[11]}-31`;
+  const lwd = emp.exit && emp.exit.lwd && emp.exit.lwd <= yEnd ? emp.exit.lwd : '';
+  const complete = lastRun.month === months[11] || (lwd && lwd.slice(0, 7) <= lastRun.month);
+  // months in the year when the employee was employed but no locked payroll exists (before PeopleDesk was used)
+  const firstM = (emp.doj && emp.doj > yStart ? emp.doj : yStart).slice(0, 7);
+  const missing = months.filter((m) => m >= firstM && m < lastRun.month && !runs.some((r) => r.month === m));
+  return { runs, earn, exempt, gross: sum((x) => x.gross), tds: sum((x) => x.tds), pt: sum((x) => x.pt), quarters,
+    tax: res[res.length - 1].tax || {}, complete, missing, from: emp.doj && emp.doj > yStart ? emp.doj : yStart, to: lwd || yEnd, lastMonth: lastRun.month };
+}
+const tdsPartA = (emp, fy) => (emp.documents || []).filter((d) => d.category === TDS_CERT_CAT && d.fy === fy);
+function tdsYears(coId, empId) {
+  const s = new Set(S.payRuns.filter((r) => r.companyId === coId && r.status === 'locked' && (!empId || (r.results && r.results[empId]))).map((r) => fyLabel(r.month)));
+  return [...s].sort().reverse();
+}
+function tdsCertHtml(emp, fy) {
+  const y = taxYearOf(emp, fy); if (!y) return '<p>No locked payroll for this year.</p>';
+  const co = coById(emp.companyId) || {}; const name = certName(fy); const sg = co.tdsSigner || {}; const rc = (co.tdsReceipts || {})[fy] || {};
+  const t = y.tax; const regime = t.regime === 'old' ? 'Old regime' : 'New regime';
+  const taxableSalary = y.gross - y.exempt;
+  const balance = Math.round((t.tax || 0) - y.tds);
+  const row = (l, v, b) => `<tr><td>${b ? `<b>${l}</b>` : l}</td><td class="r">${b ? `<b>${v}</b>` : v}</td></tr>`;
+  return `<div style="page-break-after:always">
+    <div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/ankit-logo.png" alt="" style="height:44px;width:auto"><div><h2 style="margin:0">${esc(co.legalName || co.name || '')}</h2><div class="fine">${esc(co.address || '')}</div></div></div>
+      <div style="text-align:right"><b>${name}: statement of salary and tax deducted</b><div class="fine">Tax year ${esc(fy)} (1 April ${fy.slice(0, 4)} to 31 March ${+fy.slice(0, 4) + 1})</div></div></div><hr>
+    ${y.missing.length ? `<p style="background:#FFF4D6;padding:8px 10px;border-radius:6px">No payroll from this system for ${y.missing.map(monthName).join(', ')}. Salary for those months, and tax already deducted on it, is not included here.</p>` : ''}
+    ${y.complete ? '' : `<p style="background:#FFF4D6;padding:8px 10px;border-radius:6px"><b>Provisional.</b> Payroll is locked up to ${monthName(y.lastMonth)}; the tax shown is projected for the full year. Issue the final certificate after March is locked.</p>`}
+    <div class="cols"><table><tr><th colspan="2">Employer (deductor)</th></tr>${row('Name', esc(co.legalName || co.name || ''))}${row('TAN', esc(co.tan || '—'))}${row('PAN', esc(co.pan || '—'))}</table>
+      <table><tr><th colspan="2">Employee</th></tr>${row('Name', esc(fullName(emp)))}${row('PAN', esc(emp.pan || '—'))}${row('Employee number', esc(emp.empNo || ''))}${row('Designation', esc((desig(emp.desigId) || {}).name || '—'))}${row('Period with the employer', `${dmy(y.from)} to ${dmy(y.to)}`)}</table></div>
+    <h3>Summary of salary paid and tax deducted</h3>
+    <table><tr><th>Quarter</th><th>Period</th><th class="r">Salary paid or credited</th><th class="r">Tax deducted</th><th>Receipt number of the quarterly TDS statement</th></tr>
+      ${y.quarters.map((q) => `<tr><td>${q.q}</td><td>${q.label}</td><td class="r">${inr(q.paid)}</td><td class="r">${inr(q.tds)}</td><td>${esc(rc[q.q] || '')}</td></tr>`).join('')}
+      <tr><td colspan="2"><b>Total</b></td><td class="r"><b>${inr(y.gross)}</b></td><td class="r"><b>${inr(y.tds)}</b></td><td></td></tr></table>
+    <h3>Details of salary and tax (${regime})</h3>
+    <div class="cols"><table><tr><th>Salary paid</th><th class="r">Amount</th></tr>${Object.entries(y.earn).map(([n, v]) => row(esc(n), inr(v))).join('')}${row('Gross salary', inr(y.gross), true)}</table>
+      <table><tr><th>Computation</th><th class="r">Amount</th></tr>
+        ${row('Salary paid in locked months', inr(y.gross))}
+        ${row('Less: exempt allowances', inr(y.exempt))}
+        ${row(y.complete ? 'Taxable salary for the year' : 'Taxable salary for the year (paid so far, plus the rest of the year projected)', inr(t.grossAnnual || taxableSalary), true)}
+        ${t.hraEx ? row('Less: house rent allowance exemption', inr(t.hraEx)) : ''}
+        ${row('Less: standard deduction and other deductions claimed', inr(Math.max(0, (t.deductions || 0) - (t.hraEx || 0))))}
+        ${row(y.complete ? 'Total taxable income' : 'Total taxable income (projected for the year)', inr(t.taxable || 0), true)}
+        ${row('Tax on total income, after rebate, with surcharge and cess', inr(t.tax || 0), true)}
+        ${row('Tax deducted by this employer', inr(y.tds))}
+        ${(t.ytdTds || 0) > y.tds ? row('Tax deducted, including previous employer', inr(t.ytdTds)) : ''}
+        ${row(balance >= 0 ? (y.complete ? 'Tax still payable' : 'Tax still to be deducted this year') : 'Tax deducted in excess', inr(Math.abs(balance)), true)}</table></div>
+    <p class="fine">Professional tax deducted in the year: ${inr0(y.pt)}. Amounts are from the locked payroll of ${esc(co.legalName || co.name || '')}. Part A of ${name}, with the challans and the deposit of tax, is generated from TRACES and issued with this statement.</p>
+    <h3>Verification</h3>
+    <p>I, <b>${esc(sg.name || '______________________')}</b>, working in the capacity of <b>${esc(sg.desig || '______________________')}</b>, certify that the information given above is true, complete and correct and is based on the books of account, documents, TDS statements and other available records.</p>
+    <div style="display:flex;justify-content:space-between;margin-top:36px"><div>Place: ${esc(sg.place || '__________')}<br>Date: ${dmy(todayISO())}</div><div style="text-align:center">______________________<br>Signature of the person responsible for deduction of tax<br><span class="fine">${esc(sg.name || '')}${sg.desig ? `, ${esc(sg.desig)}` : ''}</span></div></div></div>`;
+}
+ACT.tcPrint = (b) => { const e = empById(b.dataset.emp); if (!e) return; printHtml(`${certName(b.dataset.fy)} ${e.empNo} ${b.dataset.fy}`, tdsCertHtml(e, b.dataset.fy)); };
+ACT.tcPrintAll = (b) => { const fy = b.dataset.fy; const list = S.employees.filter((e) => e.companyId === CO && taxYearOf(e, fy));
+  if (!list.length) { toast('No locked payroll for this year.'); return; } printHtml(`${certName(fy)} ${company().code} ${fy}`, list.map((e) => tdsCertHtml(e, fy)).join('')); };
+ACT.tcFy = (el) => go(`#/form130?fy=${el.value}`);
+async function attachPartA(e, fy, file) {
+  const up = await uploadFile(file);
+  e.documents = (e.documents || []).filter((d) => !(d.category === TDS_CERT_CAT && d.fy === fy));
+  e.documents.push({ id: uid(), fileId: up.id, name: `${certName(fy)} Part A ${fy}.pdf`, category: TDS_CERT_CAT, fy, date: todayISO(), by: me.id });
+  audit('TDS certificate', `${certName(fy)} Part A ${fy} for ${fullName(e)} (${e.empNo})`, 'payroll', 'employee', e.id);
+}
+ACT.tcUpOne = async (el) => {
+  const f = el.files[0]; el.value = ''; if (!f) return; const e = empById(el.dataset.emp); const fy = el.dataset.fy;
+  if (!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)) { toast('Upload the PDF from TRACES.'); return; }
+  const pan = (f.name.toUpperCase().match(PAN_RE) || [])[0];
+  if (pan && e.pan && pan !== String(e.pan).toUpperCase() && !(await confirmBox('PAN does not match', `The file name has PAN ${pan}, but ${fullName(e)} has PAN ${e.pan}. Attach it anyway?`, 'Attach'))) return;
+  try { await attachPartA(e, fy, f); saveNow(); toast('Part A attached'); route(); } catch (x) { toast(x.message); }
+};
+ACT.tcUpMany = async (el) => {
+  const files = [...el.files]; el.value = ''; const fy = el.dataset.fy; if (!files.length) return;
+  const byPan = new Map(S.employees.filter((e) => e.companyId === CO && e.pan).map((e) => [String(e.pan).toUpperCase(), e]));
+  let ok = 0; const missed = [];
+  for (const f of files) {
+    const pan = (f.name.toUpperCase().match(PAN_RE) || [])[0]; const e = pan && byPan.get(pan);
+    if (!e || !/\.pdf$/i.test(f.name)) { missed.push(f.name); continue; }
+    try { await attachPartA(e, fy, f); ok++; } catch (x) { missed.push(`${f.name} (${x.message})`); }
+  }
+  if (ok) saveNow();
+  route();
+  if (missed.length) openDlg(`<div class="dlg"><h2>${ok} attached, ${missed.length} not matched</h2><p class="fine">Each file name must contain the employee's PAN, as TRACES names them, and the PAN must be on the employee's Statutory tab. Attach the others one by one.</p><ul>${missed.map((m) => `<li>${esc(m)}</li>`).join('')}</ul><div class="btns"><button class="btn pri" data-act="close">Close</button></div></div>`);
+  else toast(`${ok} Part A files attached`);
+};
+VIEWS.form130 = () => {
+  if (!isHR()) return { title: 'TDS certificates', html: '<div class="empty">Only HR can open this page.</div>' };
+  const co = company(); const years = tdsYears(CO); const fy = years.includes(R.q.get('fy')) ? R.q.get('fy') : years[0];
+  if (!fy) return { title: 'TDS certificates (Form 130 / Form 16)', html: '<div class="card"><h2>TDS certificates</h2><div class="empty">Lock a month of payroll first. Certificates are made from locked payroll.</div></div>' };
+  const name = certName(fy); const sg = co.tdsSigner || {}; const rc = (co.tdsReceipts || {})[fy] || {};
+  const list = S.employees.filter((e) => e.companyId === CO).map((e) => ({ e, y: taxYearOf(e, fy) })).filter((x) => x.y).sort((a, b) => fullName(a.e).localeCompare(fullName(b.e)));
+  const noPan = list.filter((x) => !x.e.pan).length, withA = list.filter((x) => tdsPartA(x.e, fy).length).length;
+  const provisional = list.some((x) => !x.y.complete);
+  return { title: `TDS certificates: ${name}`, html: `<div class="card"><div class="hd"><div><h2>${name} for tax year ${esc(fy)}</h2>
+      <p class="sub">${name} is the annual certificate of tax deducted from salary${name === 'Form No. 130' ? ', which replaces Form 16 from tax year 2026-27 under the Income-tax Act, 2025' : ''}. Part A comes from TRACES: download it there after filing the quarterly TDS statements, then upload the PDFs here. The statement of salary and tax is made from locked payroll. Employees see both under My payslips and tax. Issue by 15 June after the year ends.</p></div>
+      <div class="tools"><select class="inp" data-ch="tcFy">${years.map((y) => `<option ${y === fy ? 'selected' : ''}>${y}</option>`).join('')}</select>
+        <label class="btn">Upload Part A PDFs from TRACES<input type="file" accept="application/pdf,.pdf" multiple hidden data-ch="tcUpMany" data-fy="${fy}"></label>
+        <button class="btn pri" data-act="tcPrintAll" data-fy="${fy}">Print all statements</button></div></div>
+      ${provisional ? `<div class="note warn">The year is not complete: statements are marked provisional until March ${+fy.slice(0, 4) + 1} payroll is locked.</div>` : ''}
+      ${noPan ? `<div class="note warn">${noPan} employee${noPan > 1 ? 's have' : ' has'} no PAN. Add it on the Statutory tab; Part A files are matched by PAN.</div>` : ''}
+      ${co.tan ? '' : '<div class="note warn">The company has no TAN. Add it under Companies.</div>'}
+      <div class="grid g4"><div class="kpi"><span>Employees</span><b>${list.length}</b><small>paid in ${esc(fy)}</small></div><div class="kpi"><span>Part A uploaded</span><b>${withA} of ${list.length}</b><small>from TRACES</small></div>
+        <div class="kpi"><span>Salary paid</span><b>${inr0(list.reduce((s, x) => s + x.y.gross, 0))}</b><small>locked months</small></div><div class="kpi"><span>Tax deducted</span><b>${inr0(list.reduce((s, x) => s + x.y.tds, 0))}</b><small>locked months</small></div></div>
+      <div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>PAN</th><th>Period</th><th class="r">Salary paid</th><th class="r">Tax deducted</th><th>Part A</th><th></th></tr></thead><tbody>
+        ${list.map(({ e, y }) => { const a = tdsPartA(e, fy)[0]; return `<tr><td><b>${esc(fullName(e))}</b> <span class="fine">${esc(e.empNo)}</span></td><td class="mono">${esc(e.pan || '—')}</td><td class="fine">${dmy(y.from)} – ${dmy(y.to)}${y.complete ? '' : ' (provisional)'}</td>
+          <td class="r">${inr0(y.gross)}</td><td class="r">${inr0(y.tds)}</td><td>${a ? `<a href="/api/files/${a.fileId}" target="_blank" rel="noopener">📎 Part A</a>` : '<span class="fine">Not uploaded</span>'}</td>
+          <td class="r" style="white-space:nowrap"><button class="btn sm" data-act="tcPrint" data-emp="${e.id}" data-fy="${fy}">Statement</button> <label class="btn sm">${a ? 'Replace' : 'Upload'} Part A<input type="file" accept="application/pdf,.pdf" hidden data-ch="tcUpOne" data-emp="${e.id}" data-fy="${fy}"></label></td></tr>`; }).join('')}</tbody></table></div></div>
+    <form class="card" id="tcf"><h2>Signatory and quarterly statements</h2><p class="sub">Printed on every statement for ${esc(co.legalName || co.name)}. The receipt numbers are the acknowledgements of the quarterly TDS statements for ${esc(fy)}.</p>
+      <div class="form">${fieldHtml({ k: 'sName', label: 'Person responsible for deduction of tax' }, sg.name)}${fieldHtml({ k: 'sDesig', label: 'Designation' }, sg.desig)}${fieldHtml({ k: 'sPlace', label: 'Place' }, sg.place)}
+        ${['Q1', 'Q2', 'Q3', 'Q4'].map((q) => fieldHtml({ k: q, label: `${q} receipt number` }, rc[q])).join('')}</div>
+      <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save</button></div></form>`,
+    after: () => { $('#tcf').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target.elements;
+      co.tdsSigner = { name: f.sName.value.trim(), desig: f.sDesig.value.trim(), place: f.sPlace.value.trim() };
+      co.tdsReceipts = { ...(co.tdsReceipts || {}), [fy]: Object.fromEntries(['Q1', 'Q2', 'Q3', 'Q4'].map((q) => [q, f[q].value.trim()])) };
+      audit('TDS certificate settings', `${co.code} ${fy}`); saveNow(); toast('Saved'); route(); }; } };
+};
+
 /* ---------------------------------------------------------------- self-service: payslips, declarations, tax */
 VIEWS.payslips = () => {
   const runs = S.payRuns.filter((r) => r.companyId === me.companyId && r.status === 'locked' && r.results[me.id]).sort((a, b) => (a.month < b.month ? 1 : -1));
@@ -2281,6 +2416,11 @@ VIEWS.payslips = () => {
         <div class="grid g3"><div class="kpi"><span>IP number</span><b style="font-size:18px">${esc(me.esiNo || 'Not yet issued')}</b><small>${me.esiNo ? 'download your e-Pehchan card from the ESIC portal' : 'ask HR'}</small></div>
         <div class="kpi"><span>Dispensary</span><b style="font-size:18px">${esc(me.esiDispensary || '—')}</b><small>for treatment</small></div>
         <div class="kpi"><span>Your share last month</span><b style="font-size:18px">${inr0(last.esi.ee)}</b><small>employer paid ${inr0(last.esi.er)}</small></div></div></div>`; })()}
+    ${(() => { const ys = tdsYears(me.companyId, me.id); if (!ys.length) return '';
+      return `<div class="card"><h2>TDS certificates</h2><p class="sub">Your annual certificate of tax deducted from salary (Form No. 130 from tax year 2026-27, Form 16 before). Part A is issued from TRACES after the year ends; the statement of salary and tax comes from payroll.</p>
+        <table class="t"><thead><tr><th>Tax year</th><th>Certificate</th><th>Part A</th><th></th></tr></thead><tbody>${ys.map((fy) => { const a = tdsPartA(me, fy)[0]; const y = taxYearOf(me, fy);
+          return `<tr><td>${esc(fy)}</td><td>${certName(fy)}${y && !y.complete ? ' <span class="badge warn">Provisional</span>' : ''}</td><td>${a ? `<a href="/api/files/${a.fileId}" target="_blank" rel="noopener">📎 Download</a>` : '<span class="fine">Not issued yet</span>'}</td>
+            <td class="r"><button class="btn sm" data-act="tcPrint" data-emp="${me.id}" data-fy="${fy}">Statement</button></td></tr>`; }).join('')}</tbody></table></div>`; })()}
     <p class="fine">Slabs and limits for ${esc(S.stat.tax.fy)} from Payroll setup. From 1 April 2026 the Income Tax Act 2025 applies; section numbers differ from the familiar 80C and 87A labels used here.</p>` };
 };
 ACT.declEdit = () => {
