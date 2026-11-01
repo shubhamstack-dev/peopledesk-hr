@@ -462,7 +462,8 @@ def get_file(fid: str, me=Depends(current_user)):
     p = os.path.realpath(os.path.join(root, r.path))
     if not p.startswith(root + os.sep) or not os.path.isfile(p):
         raise HTTPException(404, "File not found")
-    return FileResponse(p, media_type=r.mime, filename=r.name, content_disposition_type="inline")
+    # private, no-store: on a shared computer the next person signing in must not get the file from the browser cache
+    return FileResponse(p, media_type=r.mime, filename=r.name, content_disposition_type="inline", headers={"Cache-Control": "private, no-store"})
 
 
 def _file_visible(conn, fid: str, me: dict) -> bool:
