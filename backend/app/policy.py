@@ -17,7 +17,7 @@ cannot approve their own requests, change their access, salary or job record.
 """
 from dataclasses import dataclass, field
 
-from . import comp, repo
+from . import comp, repo, training
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
@@ -25,13 +25,16 @@ HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "l
            "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles"}
 # Compensation planning: budgets and recommendations follow their own rules (comp.py)
 COMP = {"compBudgets", "compRecs"}
+# Training: trainings are HR's, but internal trainers add content and mark completion; enrolments and feedback
+# follow their own rules (training.py)
+TRAIN = {"trainings", "trainingEnrols", "trainingFeedback"}
 # Records shared by the people taking part in them (requester, approvers, department owners).
 # Each carries a `participants` list of employee ids; approval steps carry `approverIds`.
 PARTICIPANT = {"requests", "expenseClaims", "onboardings", "assets"}
 FINAL_STATUSES = {"approved", "applied", "paid", "done", "completed", "returned"}
 # Collections employees and managers change through everyday flows
 WORKFLOW = {"leaveReqs", "leaveAdj", "punches", "regs", "goals", "reviews", "feedback", "declarations",
-            "otRecs", "exits", "reqs", "cands", "apps", "interviews"}
+            "otRecs", "exits", "reqs", "cands", "apps", "interviews", "trainingNeeds"}
 # Requests where the person concerned may not approve their own
 SELF_APPROVAL = {"leaveReqs", "regs", "otRecs", "leaveAdj", "goals"}
 APPROVED = {"approved"}
@@ -125,6 +128,7 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
         st[coll] = [x for x in st.get(coll, []) if ctx.is_hr_for(x.get("companyId") or emp_co.get(x.get("empId")))
                     or ctx.id in (x.get("participants") or []) or x.get("empId") == ctx.id]
     comp.visible(st, ctx)
+    training.visible(st, ctx)
     if not ctx.is_hr:
         st["docTemplates"] = []          # only HR makes documents; employees see the finished letters on their profile
     s = st.get("settings") or {}
@@ -170,6 +174,8 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         return new
     if coll in COMP:
         return _comp(conn, coll, new, old, ctx)
+    if coll in TRAIN:
+        return _train(conn, coll, new, old, ctx)
     if coll in PARTICIPANT:
         return _participant(coll, new, old, ctx)
     if coll in HR_ONLY or coll not in WORKFLOW:
@@ -226,6 +232,21 @@ def _comp(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
             return comp.check_pool(new, old, ctx.id, ctx.line, ctx.emps, cycle, pools)
         return comp.check_rec(new, old, ctx.id, ctx.emps, cycle, pools)
     except comp.Problem as e:
+        raise Rejected(str(e)) from None
+
+
+def _train(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
+    """Trainings, enrolments and feedback changed by someone who is not HR for the company."""
+    try:
+        if coll == "trainings":
+            return training.check_training(new, old, ctx.id)
+        tid = (old or new).get("trainingId")
+        tr = (repo.get_records(conn, "trainings", [tid]) or {}).get(tid) if tid else None
+        enrols = repo.records_where(conn, "trainingEnrols", "training_id", tid) if tid else []
+        if coll == "trainingEnrols":
+            return training.check_enrol(new, old, ctx.id, ctx.line, tr, enrols, ctx.emps)
+        return training.check_feedback(new, old, ctx.id, tr, enrols, repo.records_where(conn, "trainingFeedback", "training_id", tid) if tid else [])
+    except training.Problem as e:
         raise Rejected(str(e)) from None
 
 

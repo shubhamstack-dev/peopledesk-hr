@@ -707,6 +707,72 @@ CREATE TABLE IF NOT EXISTS comp_recommendations (
   KEY ix_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- state.trainings
+CREATE TABLE IF NOT EXISTS trainings (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  title      VARCHAR(255) NULL,
+  status     VARCHAR(255) NULL,
+  start_date DATE NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_title (title),
+  KEY ix_status (status),
+  KEY ix_start_date (start_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- state.trainingEnrols
+CREATE TABLE IF NOT EXISTS training_enrolments (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  training_id VARCHAR(255) NULL,
+  status     VARCHAR(255) NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_training_id (training_id),
+  KEY ix_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- state.trainingFeedback
+CREATE TABLE IF NOT EXISTS training_feedback (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  training_id VARCHAR(255) NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_training_id (training_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- state.trainingNeeds
+CREATE TABLE IF NOT EXISTS training_needs (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  status     VARCHAR(255) NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Shift roster: one row per employee per day (shift id, or WO for a rostered weekly off)
 CREATE TABLE IF NOT EXISTS roster (
   emp_id     VARCHAR(64)  NOT NULL,

@@ -12,7 +12,7 @@ All features of the original are kept: personnel, recruitment, leave, time and s
 
 ## Version 2
 
-Reporting structure with dotted lines, moving people on the organisation chart, approval workflows, shifts or time management per company, goal templates, fixed and variable pay, leave carry forward and encashment, expense claims, employee enrolment with department checklists and assets, promotions and progression, and activity logs. **Upgrade steps and how to use each feature: [docs/VERSION-2.md](docs/VERSION-2.md).** Version 2.1 adds employee self-service: see [docs/VERSION-2-1.md](docs/VERSION-2-1.md). Version 2.2 adds punch-time edits and shift changes through the workflow engine, and medical insurance: see [docs/VERSION-2-2.md](docs/VERSION-2-2.md). Version 2.3 adds document types and Word templates filled from the database: see [docs/VERSION-2-3.md](docs/VERSION-2-3.md). Version 2.4 adds PF, ESI and professional tax registers, PF and ESI exits for leavers, and salary revision planning with budgets handed down the reporting line and approval by every manager above: see [docs/VERSION-2-4.md](docs/VERSION-2-4.md). The database upgrades itself when the API starts.
+Reporting structure with dotted lines, moving people on the organisation chart, approval workflows, shifts or time management per company, goal templates, fixed and variable pay, leave carry forward and encashment, expense claims, employee enrolment with department checklists and assets, promotions and progression, and activity logs. **Upgrade steps and how to use each feature: [docs/VERSION-2.md](docs/VERSION-2.md).** Version 2.1 adds employee self-service: see [docs/VERSION-2-1.md](docs/VERSION-2-1.md). Version 2.2 adds punch-time edits and shift changes through the workflow engine, and medical insurance: see [docs/VERSION-2-2.md](docs/VERSION-2-2.md). Version 2.3 adds document types and Word templates filled from the database: see [docs/VERSION-2-3.md](docs/VERSION-2-3.md). Version 2.4 adds PF, ESI and professional tax registers, PF and ESI exits for leavers, and salary revision planning with budgets handed down the reporting line and approval by every manager above: see [docs/VERSION-2-4.md](docs/VERSION-2-4.md). Version 2.5 adds training and development: internal and external trainings, enrolment with manager approval, attendance, questionnaires before and after, feedback, managers' ratings, training content for attendees and instructor reports with areas to improve: see [docs/VERSION-2-5.md](docs/VERSION-2-5.md). The database upgrades itself when the API starts.
 
 ## 1. Database
 
@@ -74,7 +74,7 @@ React (browser)                    Python API                         MySQL
 ───────────────                    ──────────                         ─────
 Sign-in, setup, menu,      ─────►  /api/auth/*  bcrypt, Google        auth_credentials
 Home, Approvals, Settings          verification, http-only cookie
-Feature screens + rules    ◄─────  /api/state   filtered per person   40 tables, one per kind
+Feature screens + rules    ◄─────  /api/state   filtered per person   44 tables, one per kind
 (engine.js)                ─────►  /api/sync    permission checks,    of record (JSON + indexed
   changes diffed per record        all-or-nothing                     columns), roster, audit_log
 ```

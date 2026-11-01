@@ -99,6 +99,7 @@ function blank() {
     exits: [], reqs: [], cands: [], apps: [], interviews: [], otRecs: [], shiftPatterns: [],
     requests: [], expenseCats: [], expenseClaims: [], perfTemplates: [], onboardings: [], onboardTemplates: [], assets: [], docTypes: [], docTemplates: [],
     compCycles: [], compBudgets: [], compRecs: [],
+    trainings: [], trainingEnrols: [], trainingFeedback: [], trainingNeeds: [],
   };
 }
 /* Storage: the MySQL database behind the Python API. Changes are sent as they happen (see sync.js). */
@@ -881,6 +882,14 @@ const MENU = [
     { page: 'varpay', label: 'Variable pay', show: HR },
     { page: 'sap', label: 'SAP HR export', show: HR },
   ] },
+  { grp: 'learn', label: 'Training and development', items: [
+    { page: 'training', tab: 'mine', label: 'My training' },
+    { page: 'training', tab: 'calendar', label: 'Training calendar' },
+    { page: 'training', tab: 'team', label: 'Team training', show: MGR },
+    { page: 'training', tab: 'needs', label: 'Development needs' },
+    { page: 'training', tab: 'admin', label: 'Plan and manage trainings', show: HR },
+    { page: 'training', tab: 'trainers', label: 'Instructor reports', show: () => isHR() || S.trainings.some((t) => trIsTrainer(t)) },
+  ] },
   { grp: 'comp', label: 'Compensation', items: [
     { page: 'compplan', label: 'Salary revision planning', show: () => isHR() || S.compBudgets.length > 0 },
   ] },
@@ -893,9 +902,9 @@ const MENU = [
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
     { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
-const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf' };
+const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf', training: 'mine' };
 const itemShown = (it) => !it.show || it.show();
-const itemOn = (it) => (R.page === it.page && (!it.tab || (R.q.get('tab') || DEFAULT_TAB[it.page]) === it.tab)) || ({ exit: 'exits', req: 'reqs', app: 'reqs' }[R.page] === it.page);
+const itemOn = (it) => (R.page === it.page && (!it.tab || (R.q.get('tab') || DEFAULT_TAB[it.page]) === it.tab)) || ({ exit: 'exits', req: 'reqs', app: 'reqs', course: 'training' }[R.page] === it.page && (!it.tab || it.tab === (R.page === 'course' ? 'calendar' : it.tab)));
 const itemHref = (it) => `#/${it.page}${it.tab ? '?tab=' + it.tab : ''}`;
 const allItems = () => MENU.flatMap((m) => (m.items ? m.items.map((it) => ({ ...it, group: m })) : [{ ...m, group: null }]));
 /* A page may be opened when any menu item for it is visible to this person; pages without a menu item (profile/123, payroll/run) check inside */
@@ -919,7 +928,7 @@ function resolvePage(hash) {
   if (!REACT_PAGES.has(R.page)) {
     try { view = VIEWS[R.page](); } catch (e) { console.error(e); view = { title: 'Something went wrong', html: `<div class="note bad">This page could not be shown: ${esc(e.message)}</div>` }; }
   }
-  const PARENT = { exit: 'exits', req: 'reqs', app: 'reqs', payroll: 'payroll' };
+  const PARENT = { exit: 'exits', req: 'reqs', app: 'reqs', payroll: 'payroll', course: 'training' };
   const cur = allItems().find(itemOn) || allItems().find((it) => it.page === R.page) || allItems().find((it) => it.page === PARENT[R.page]);
   const title = cur && cur.tab && itemOn(cur) ? cur.label : (view && view.title) || REACT_TITLES[R.page] || (cur && cur.label) || '';
   return { page: R.page, arg: R.arg, view, title, group: cur && cur.group };
@@ -1122,9 +1131,9 @@ VIEWS.profile = () => {
   const mine = e.id === me.id, hr = isHR(e.companyId), mgr = allReportees(me.id).includes(e.id) || (e.matrixManagerIds || []).includes(me.id);
   if (!mine && !hr && !mgr) return { title: 'Profile', html: '<div class="empty">You cannot see this profile.</div>' };
   const tabs = [['personal', 'Personal'], ['family', 'Family'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'], ['documents', 'Documents'],
-    ['career', 'Career'], ['job', 'Job'], ['reporting', 'Reporting'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['performance', 'Performance'],
+    ['career', 'Career'], ['job', 'Job'], ['reporting', 'Reporting'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['performance', 'Performance'], ['training', 'Training'],
     ['history', 'History'], ['activity', 'Activity log']]
-    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance'].includes(k)) && (k !== 'activity' || hr));
+    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance', 'training'].includes(k)) && (k !== 'activity' || hr));
   // Opens on the first tab this person may see (Personal for oneself and HR, Career for a manager)
   const tab = tabs.some(([k]) => k === R.q.get('tab')) ? R.q.get('tab') : tabs[0][0];
   const base = `#/profile/${e.id}?tab=`;
@@ -4536,12 +4545,13 @@ function extPending() {
     .forEach((a) => out.push({ kind: 'asset', r: { empId: a.empId }, what: `Collect ${a.type.toLowerCase()} ${a.tag} before they leave`, link: '#/assets' }));
   statPending().forEach((x) => out.push(x));
   cpPending().forEach((x) => out.push(x));
+  trPending().forEach((x) => out.push(x));
   return out;
 }
 function extEnsureSchema() {
   S.employees.forEach((e) => { if (e.emergency && !e.emergencyName && !e.emergencyRelation) e.emergencyName = e.emergency; });
   S.companies.forEach((co) => { if (!co.timeMode) co.timeMode = 'shift'; });
-  ['requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets', 'docTypes', 'docTemplates', 'compCycles', 'compBudgets', 'compRecs'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+  ['requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets', 'docTypes', 'docTemplates', 'compCycles', 'compBudgets', 'compRecs', 'trainings', 'trainingEnrols', 'trainingFeedback', 'trainingNeeds'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
 }
 
 
@@ -6000,6 +6010,570 @@ function cpPending() {
   return out;
 }
 
+
+/* =====================================================================
+   PeopleDesk 2.5: training and development
+   HR plans internal trainings (run by employees) and external ones (an outside trainer or provider).
+   Employees ask for a place and their manager approves, or managers and HR enrol people, often from the
+   development needs raised for them. The trainer marks attendance. Participants answer a questionnaire
+   before and after (scored on the server), give feedback, and reach the training content once they have
+   attended. Managers rate how well the training worked for their people. Every trainer gets a report:
+   ratings against the company's average and the areas to improve. The server's rules are in training.py.
+   ===================================================================== */
+const TR_STATUS = { draft: ['Draft', ''], scheduled: ['Scheduled', 'info'], completed: ['Completed', 'ok'], cancelled: ['Cancelled', 'bad'] };
+const EN_STATUS = { requested: ['Waiting for manager', 'warn'], approved: ['Enrolled', 'info'], rejected: ['Not approved', 'bad'], withdrawn: ['Withdrawn', ''], attended: ['Attended', 'ok'], absent: ['Absent', 'bad'] };
+const TR_CATS = ['Technical', 'Functional', 'Leadership and management', 'Soft skills', 'Compliance and safety', 'Induction', 'Product', 'Sales and customer', 'Other'];
+const TR_MODES = { classroom: 'Classroom', virtual: 'Virtual (online, live)', onjob: 'On the job', elearning: 'E-learning (self-paced)', provider: 'At the provider’s venue' };
+const FB_DEFAULT = [['relevance', 'Relevance to my work'], ['content', 'Content and structure'], ['knowledge', 'Trainer’s knowledge of the subject'], ['delivery', 'Clarity of explanation'],
+  ['engagement', 'Engagement and interaction'], ['pace', 'Pace and use of time'], ['materials', 'Quality of materials'], ['logistics', 'Venue, platform and arrangements'], ['overall', 'Overall']];
+const MGR_QS = [['applied', 'Applies what was learnt at work'], ['improved', 'Improvement seen in their work'], ['worth', 'Worth the time spent']];
+const NEED_PRI = { high: ['High', 'bad'], medium: ['Medium', 'warn'], low: ['Low', ''] };
+const NEED_ST = { open: ['Open', 'warn'], planned: ['Training planned', 'info'], done: ['Done', 'ok'], dropped: ['Dropped', ''] };
+const trById = (id) => S.trainings.find((t) => t.id === id);
+const trEnrols = (t) => S.trainingEnrols.filter((x) => x.trainingId === t.id);
+const trLive = (x) => ['requested', 'approved', 'attended', 'absent'].includes(x.status);
+const trEnrolOf = (t, empId) => trEnrols(t).find((x) => x.empId === empId && trLive(x));
+const trIsTrainer = (t, id) => !!t && !!me && t.kind === 'internal' && (t.trainerIds || []).includes(id || me.id);
+const trManage = (t) => isHR(t.companyId) || trIsTrainer(t);
+const trTrainer = (t) => (t.kind === 'internal' ? (t.trainerIds || []).map(nameOf).join(', ') || 'Not chosen' : [(t.trainer || {}).name, (t.trainer || {}).org].filter(Boolean).join(', ') || 'Not chosen');
+const trWhen = (t) => `${dmy(t.start)}${t.end && t.end !== t.start ? ` to ${dmy(t.end)}` : ''}${t.startTime ? `, ${t.startTime}${t.endTime ? `–${t.endTime}` : ''}` : ''}`;
+const trStarted = (t) => !!t.start && t.start <= todayISO();
+const trEnded = (t) => (t.end || t.start || '9999-12-31') <= todayISO();
+const trTaken = (t) => trEnrols(t).filter((x) => ['approved', 'attended'].includes(x.status)).length;
+const trFbQs = (t) => (t.fbQs && t.fbQs.length ? t.fbQs : FB_DEFAULT);
+const trFeedback = (t) => S.trainingFeedback.filter((f) => f.trainingId === t.id);
+const trMyFb = (t) => S.trainingFeedback.find((f) => f.trainingId === t.id && f.empId === me.id);
+const trHours = (t) => { if (+t.hours) return +t.hours; if (!t.startTime || !t.endTime) return 0; const days = t.end ? Math.round((D(t.end) - D(t.start)) / 86400000) + 1 : 1; return Math.max(0, (toMin(t.endTime) - toMin(t.startTime)) / 60) * days; };
+const trKeyOf = (t) => (t.kind === 'internal' ? (t.trainerIds || []).map((i) => 'emp:' + i) : [`ext:${String((t.trainer || {}).email || (t.trainer || {}).name || '').trim().toLowerCase()}`]);
+const trKeyName = (k) => (k.startsWith('emp:') ? nameOf(k.slice(4)) : ((S.trainings.find((t) => trKeyOf(t).includes(k)) || {}).trainer || {}).name || k.slice(4));
+const trQuizOn = (t, ph) => !!(t.quiz && t.quiz[ph] && (t.quiz.questions || []).length);
+const avgOf = (arr) => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null);
+const stars = (v) => (v == null ? '—' : `<b>${num(v, 1)}</b> <span class="fine">/ 5</span>`);
+const trBadge = (map, k) => { const [l, c] = map[k] || [k, '']; return `<span class="badge ${c}">${esc(l)}</span>`; };
+const trCan = (t) => t.status === 'scheduled' && !trStarted(t) && (!t.closeBy || t.closeBy >= todayISO());
+function trApproverOK(x) {
+  const t = trById(x.trainingId); const e = empById(x.empId); if (!t || !e || x.status !== 'requested' || e.id === me.id) return false;
+  return e.managerId === me.id || (isHR(t.companyId) && (!e.managerId || !empById(e.managerId) || !active(empById(e.managerId))));
+}
+const trMgrDue = (t, x) => x.status === 'attended' && t.status === 'completed' && !x.mgrReview && x.empId !== me.id && allReportees(me.id).includes(x.empId) && todayISO() >= addDays(t.end || t.start, +t.mgrReviewDays || 30);
+const trFbDue = (t, x) => x.empId === me.id && x.status === 'attended' && (t.status === 'completed' || trEnded(t)) && !trMyFb(t);
+const trPreDue = (t, x) => x.empId === me.id && ['requested', 'approved'].includes(x.status) && trQuizOn(t, 'pre') && !(x.quiz || {}).pre && !trEnded(t);
+const trPostDue = (t, x) => x.empId === me.id && x.status === 'attended' && trQuizOn(t, 'post') && !(x.quiz || {}).post;
+
+/* ---------------------------------------------------------------- Approvals inbox */
+function trPending() {
+  if (!me) return [];
+  const out = [];
+  S.trainingEnrols.forEach((x) => {
+    const t = trById(x.trainingId); if (!t || t.status === 'cancelled') return;
+    const link = '#/course/' + t.id;
+    if (trApproverOK(x) && t.status === 'scheduled') out.push({ kind: 'train', r: { empId: x.empId }, what: `Training request: ${t.title}, ${trWhen(t)}`, link });
+    if (trMgrDue(t, x) && (empById(x.empId) || {}).managerId === me.id) out.push({ kind: 'train', r: { empId: x.empId }, what: `Rate how the training worked: ${t.title}`, link });
+    if (trPreDue(t, x)) out.push({ kind: 'train', r: { empId: me.id }, what: `Answer the questionnaire before ${t.title}`, link });
+    if (trPostDue(t, x)) out.push({ kind: 'train', r: { empId: me.id }, what: `Answer the questionnaire after ${t.title}`, link });
+    if (trFbDue(t, x)) out.push({ kind: 'train', r: { empId: me.id }, what: `Give feedback on ${t.title}`, link });
+  });
+  S.trainings.filter((t) => t.status === 'scheduled' && trEnded(t) && trManage(t)).forEach((t) => out.push({ kind: 'train', r: { empId: null, cand: t.title }, what: 'Training over: mark attendance and complete it', link: '#/course/' + t.id }));
+  return out;
+}
+
+/* ---------------------------------------------------------------- pages */
+VIEWS.training = () => {
+  const tab = R.q.get('tab') || 'mine';
+  const body = { calendar: trCalendarHtml, team: trTeamHtml, needs: trNeedsHtml, admin: trAdminHtml, trainers: trTrainersHtml }[tab] || trMineHtml;
+  const title = { mine: 'My training', calendar: 'Training calendar', team: 'Team training', needs: 'Development needs', admin: 'Plan and manage trainings', trainers: 'Instructor reports' }[tab] || 'Training';
+  return { title, html: body() };
+};
+const trRow = (t, extra = '') => `<tr class="click" data-act="trOpen" data-id="${t.id}"><td><b>${esc(t.title)}</b><div class="fine">${esc(t.no || '')} ${esc(t.category || '')}${t.mandatory ? ' <span class="badge warn">Mandatory</span>' : ''}</div></td>
+  <td>${t.kind === 'internal' ? 'Internal' : 'External'}<div class="fine">${esc(TR_MODES[t.mode] || '')}</div></td><td>${trWhen(t)}${trHours(t) ? `<div class="fine">${num(trHours(t), 1)} h</div>` : ''}</td><td>${esc(trTrainer(t))}</td>${extra}</tr>`;
+ACT.trOpen = (b) => go('#/course/' + b.dataset.id);
+
+function trMineHtml() {
+  const mine = S.trainingEnrols.filter((x) => x.empId === me.id).map((x) => ({ x, t: trById(x.trainingId) })).filter((y) => y.t && y.t.status !== 'cancelled');
+  const fy = fyStart(todayISO().slice(0, 7)) + '-01';
+  const done = mine.filter(({ x, t }) => x.status === 'attended').sort((a, b) => (a.t.start < b.t.start ? 1 : -1));
+  const hoursFy = sumBy(done.filter(({ t }) => t.start >= fy), ({ x, t }) => +x.hours || trHours(t));
+  const upcoming = mine.filter(({ x, t }) => ['requested', 'approved'].includes(x.status) && !trEnded(t)).sort((a, b) => (a.t.start < b.t.start ? -1 : 1));
+  const todo = trPending().filter((p) => p.r.empId === me.id && p.kind === 'train');
+  const needs = S.trainingNeeds.filter((n) => n.empId === me.id && ['open', 'planned'].includes(n.status));
+  const open = S.trainings.filter((t) => t.companyId === me.companyId && trCan(t) && !trEnrolOf(t, me.id)).length;
+  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Training hours this year</span><b>${num(hoursFy, 1)}</b><small>financial year ${fyLabel(todayISO().slice(0, 7))}</small></div>
+      <div class="kpi"><span>Trainings attended</span><b>${done.length}</b><small>in all</small></div><div class="kpi"><span>Coming up</span><b>${upcoming.length}</b><small>${upcoming.filter(({ x }) => x.status === 'requested').length} waiting for your manager</small></div>
+      <div class="kpi"><span>Open for enrolment</span><b>${open}</b><small><a href="#/training?tab=calendar">See the calendar</a></small></div></div>
+    ${todo.length ? `<div class="card"><h2>To do</h2><table class="t"><tbody>${todo.map((p) => `<tr><td>${esc(p.what)}</td><td class="r"><a class="btn sm pri" href="${p.link}">Open</a></td></tr>`).join('')}</tbody></table></div>` : ''}
+    <div class="card"><h2>Coming up</h2>${upcoming.length ? `<div class="scroll"><table class="t"><thead><tr><th>Training</th><th>Type</th><th>When</th><th>Trainer</th><th>Status</th></tr></thead><tbody>${upcoming.map(({ x, t }) => trRow(t, `<td>${trBadge(EN_STATUS, x.status)}</td>`)).join('')}</tbody></table></div>` : '<div class="empty">Nothing planned. <a href="#/training?tab=calendar">Find a training</a>.</div>'}</div>
+    <div class="card"><h2>Trainings attended</h2><p class="sub">Open one for its content, your questionnaire results and your certificate.</p>${done.length ? `<div class="scroll"><table class="t"><thead><tr><th>Training</th><th>Type</th><th>When</th><th>Trainer</th><th>Results</th></tr></thead><tbody>${done.map(({ x, t }) => trRow(t, `<td class="fine">${(x.quiz || {}).post ? `Score ${x.quiz.post.pct}%${x.quiz.post.passed ? ', passed' : ''}` : ''}${trMyFb(t) ? '' : ' <span class="badge warn">Feedback due</span>'}</td>`)).join('')}</tbody></table></div>` : '<div class="empty">None yet.</div>'}</div>
+    ${needs.length ? `<div class="card"><h2>My development needs</h2><table class="t"><tbody>${needs.map((n) => `<tr><td><b>${esc(n.topic)}</b><div class="fine">${esc(n.category || '')}${n.note ? `. ${esc(n.note)}` : ''}</div></td><td>${trBadge(NEED_PRI, n.priority)}</td><td>${trBadge(NEED_ST, n.status)}${n.trainingId && trById(n.trainingId) ? ` <a href="#/course/${n.trainingId}">${esc(trById(n.trainingId).title)}</a>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+}
+function trCalendarHtml() {
+  const cat = R.q.get('cat') || ''; const past = R.q.get('past') === '1';
+  const coId = isHR() ? CO : me.companyId;
+  const list = S.trainings.filter((t) => t.companyId === coId && (isHR() ? t.status !== 'cancelled' : t.status === 'scheduled' || t.status === 'completed') && (!cat || t.category === cat) && (past ? trEnded(t) : !trEnded(t)))
+    .sort((a, b) => (past ? (a.start < b.start ? 1 : -1) : (a.start < b.start ? -1 : 1)));
+  return `<div class="card"><div class="hd"><div><h2>${past ? 'Past trainings' : 'Upcoming trainings'}</h2><p class="sub">Open a training to ask for a place${isManager() ? ' or enrol people in your team' : ''}. Your manager approves requests.</p></div>
+      <div class="tools"><select class="inp" data-ch="trCat"><option value="">All categories</option>${TR_CATS.map((c) => `<option ${c === cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+        <a class="btn" href="#/training?tab=calendar${past ? '' : '&past=1'}${cat ? `&cat=${encodeURIComponent(cat)}` : ''}">${past ? 'Upcoming' : 'Past'}</a></div></div>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Training</th><th>Type</th><th>When</th><th>Trainer</th><th class="r">Places</th><th>You</th></tr></thead><tbody>
+      ${list.map((t) => { const x = trEnrolOf(t, me.id); return trRow(t, `<td class="r">${trTaken(t)}${+t.capacity ? ` / ${t.capacity}` : ''}</td><td>${x ? trBadge(EN_STATUS, x.status) : trCan(t) ? '<span class="badge">Open</span>' : ''}${isHR() ? ` ${trBadge(TR_STATUS, t.status)}` : ''}</td>`); }).join('')}</tbody></table></div>` : '<div class="empty">No trainings here.</div>'}</div>`;
+}
+ACT.trCat = (el) => go(`#/training?tab=calendar${el.value ? `&cat=${encodeURIComponent(el.value)}` : ''}`);
+function trTeamHtml() {
+  const team = new Set(isHR() && !isManager() ? coEmployees().map((e) => e.id) : allReportees(me.id));
+  const xs = S.trainingEnrols.filter((x) => team.has(x.empId) && x.empId !== me.id).map((x) => ({ x, t: trById(x.trainingId), e: empById(x.empId) })).filter((y) => y.t && y.e && y.t.status !== 'cancelled');
+  const reqs = xs.filter(({ x }) => trApproverOK(x));
+  const due = xs.filter(({ x, t }) => trMgrDue(t, x));
+  const fy = fyStart(todayISO().slice(0, 7)) + '-01';
+  const people = [...team].map(empById).filter((e) => e && active(e) && e.id !== me.id).map((e) => { const att = xs.filter(({ x, t }) => x.empId === e.id && x.status === 'attended' && t.start >= fy);
+    return { e, n: att.length, h: sumBy(att, ({ x, t }) => +x.hours || trHours(t)), next: xs.filter(({ x, t }) => x.empId === e.id && ['approved', 'requested'].includes(x.status) && !trEnded(t)).length, needs: S.trainingNeeds.filter((n) => n.empId === e.id && n.status === 'open').length }; })
+    .sort((a, b) => fullName(a.e).localeCompare(fullName(b.e)));
+  return `${reqs.length ? `<div class="card"><h2>Requests to approve</h2><div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Training</th><th>When</th><th>Reason</th><th></th></tr></thead><tbody>
+      ${reqs.map(({ x, t, e }) => `<tr><td><b>${esc(fullName(e))}</b></td><td><a href="#/course/${t.id}">${esc(t.title)}</a></td><td>${trWhen(t)}</td><td>${esc(x.note || '')}</td>
+        <td class="r" style="white-space:nowrap"><button class="btn sm danger" data-act="trDecide" data-id="${x.id}" data-ok="0">Decline</button> <button class="btn sm ok" data-act="trDecide" data-id="${x.id}" data-ok="1">Approve</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+    ${due.length ? `<div class="card"><h2>How did the training work?</h2><p class="sub">Some time after a training, rate whether your team member uses what they learnt. The ratings go to HR and the trainer.</p><table class="t"><tbody>
+      ${due.map(({ x, t, e }) => `<tr><td><b>${esc(fullName(e))}</b></td><td>${esc(t.title)}<div class="fine">${trWhen(t)}</div></td><td class="r"><button class="btn sm pri" data-act="trMgrRate" data-id="${x.id}">Rate</button></td></tr>`).join('')}</tbody></table></div>` : ''}
+    <div class="card"><div class="hd"><div><h2>Your team</h2><p class="sub">Training this financial year. To enrol someone, open a training in the calendar.</p></div><div class="tools"><a class="btn" href="#/training?tab=needs">Development needs</a><a class="btn pri" href="#/training?tab=calendar">Training calendar</a></div></div>
+      ${people.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th class="r">Attended</th><th class="r">Hours</th><th class="r">Coming up</th><th class="r">Open needs</th><th></th></tr></thead><tbody>
+        ${people.map((p) => `<tr><td><b>${esc(fullName(p.e))}</b><div class="fine">${esc((desig(p.e.desigId) || {}).name || '')}</div></td><td class="r">${p.n}</td><td class="r">${num(p.h, 1)}</td><td class="r">${p.next}</td><td class="r">${p.needs || ''}</td><td class="r"><a class="btn sm" href="#/profile/${p.e.id}?tab=training">Training record</a></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nobody reports to you.</div>'}</div>
+    <div class="card"><h2>Team enrolments</h2>${xs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Training</th><th>When</th><th>Status</th><th>Questionnaire</th></tr></thead><tbody>
+      ${xs.sort((a, b) => (a.t.start < b.t.start ? 1 : -1)).slice(0, 100).map(({ x, t, e }) => `<tr class="click" data-act="trOpen" data-id="${t.id}"><td>${esc(fullName(e))}</td><td>${esc(t.title)}</td><td>${trWhen(t)}</td><td>${trBadge(EN_STATUS, x.status)}</td><td class="fine">${(x.quiz || {}).pre ? `before ${x.quiz.pre.pct}%` : ''}${(x.quiz || {}).post ? ` after ${x.quiz.post.pct}%` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No enrolments yet.</div>'}</div>`;
+}
+ACT.trDecide = async (b) => {
+  const x = S.trainingEnrols.find((y) => y.id === b.dataset.id); if (!x || !trApproverOK(x)) return; const t = trById(x.trainingId); const ok = b.dataset.ok === '1';
+  let note = '';
+  if (!ok) { note = await askText('Decline this training request?', 'Reason (the employee sees it)', 'Decline'); if (note === null) return; }
+  else if (+t.capacity && trTaken(t) >= +t.capacity && !(await confirmBox('The training is full', `${trTaken(t)} of ${t.capacity} places are taken. Approve anyway?`, 'Approve'))) return;
+  Object.assign(x, { status: ok ? 'approved' : 'rejected', decidedBy: me.id, decidedAt: Date.now(), note: ok ? x.note : note }); logEntry(x, ok ? 'Approved' : 'Declined', note);
+  saveNow(); toast(ok ? 'Approved' : 'Declined'); route();
+};
+
+/* ---- development needs */
+function trNeedsHtml() {
+  const vis = S.trainingNeeds.filter((n) => (isHR(n.companyId) && n.companyId === CO) || n.empId === me.id || allReportees(me.id).includes(n.empId));
+  const st = R.q.get('st') || 'open';
+  const list = vis.filter((n) => st === 'all' || n.status === st).sort((a, b) => (['high', 'medium', 'low'].indexOf(a.priority) - ['high', 'medium', 'low'].indexOf(b.priority)) || ((a.targetDate || '9') < (b.targetDate || '9') ? -1 : 1));
+  const groups = {}; vis.filter((n) => n.status === 'open').forEach((n) => { const k = `${n.category || 'Other'}|${n.topic.trim().toLowerCase()}`; (groups[k] = groups[k] || { cat: n.category || 'Other', topic: n.topic, n: 0, high: 0 }); groups[k].n++; if (n.priority === 'high') groups[k].high++; });
+  const top = Object.values(groups).sort((a, b) => b.n - a.n || b.high - a.high);
+  return `${isHR() && top.length ? `<div class="card"><h2>Open needs by topic</h2><p class="sub">What to plan next. <b>Plan a training</b> starts one with the topic; then add the people who need it.</p><table class="t"><thead><tr><th>Topic</th><th>Category</th><th class="r">People</th><th class="r">High priority</th><th></th></tr></thead><tbody>
+      ${top.slice(0, 15).map((g) => `<tr><td><b>${esc(g.topic)}</b></td><td>${esc(g.cat)}</td><td class="r">${g.n}</td><td class="r">${g.high || ''}</td><td class="r"><button class="btn sm" data-act="trNew" data-title="${esc(g.topic)}" data-cat="${esc(g.cat)}">Plan a training</button></td></tr>`).join('')}</tbody></table></div>` : ''}
+    <div class="card"><div class="hd"><div><h2>Development needs</h2><p class="sub">Skills or knowledge someone should build, raised by them, their manager or HR, for example from a performance review. When they are enrolled in a training for it, the need shows as planned; once they attend, as done.</p></div>
+      <div class="tools"><select class="inp" data-ch="trNeedSt">${Object.entries({ open: 'Open', planned: 'Training planned', done: 'Done', all: 'All' }).map(([k, l]) => `<option value="${k}" ${k === st ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn pri" data-act="trNeedAdd">Add a need</button></div></div>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Need</th><th>Priority</th><th>By</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map((n) => { const s = trNeedStatus(n); const t = n.trainingId && trById(n.trainingId); return `<tr><td><b>${esc(nameOf(n.empId))}</b></td><td><b>${esc(n.topic)}</b><div class="fine">${esc(n.category || '')}${n.note ? `. ${esc(n.note)}` : ''}${n.targetDate ? `. By ${dmy(n.targetDate)}` : ''}</div></td>
+        <td>${trBadge(NEED_PRI, n.priority)}</td><td class="fine">${esc(nameOf(n.by))}</td><td>${trBadge(NEED_ST, s)}${t ? `<div class="fine"><a href="#/course/${t.id}">${esc(t.title)}</a></div>` : ''}</td>
+        <td class="r" style="white-space:nowrap">${s === 'open' ? `<a class="btn sm" href="#/training?tab=calendar&cat=${encodeURIComponent(n.category || '')}">Find a training</a> <button class="btn sm ghost" data-act="trNeedSet" data-id="${n.id}" data-s="dropped">Drop</button>` : ''}${s === 'planned' ? `<button class="btn sm ghost" data-act="trNeedSet" data-id="${n.id}" data-s="done">Mark done</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No needs here.</div>'}</div>`;
+}
+function trNeedStatus(n) {
+  if (n.status === 'planned' && n.trainingId) { const t = trById(n.trainingId); const x = t && trEnrolOf(t, n.empId); if (x && x.status === 'attended') return 'done'; }
+  return n.status;
+}
+ACT.trNeedSt = (el) => go('#/training?tab=needs&st=' + el.value);
+ACT.trNeedAdd = (b) => {
+  const pool = isHR() ? coEmployees() : [me, ...allReportees(me.id).map(empById)].filter((e) => e && active(e));
+  const fields = [{ k: 'empId', label: 'Employee', type: 'select', opts: pool.map((e) => [e.id, `${fullName(e)} (${e.empNo})`]), req: true }, { k: 'topic', label: 'What to learn', req: true, help: 'For example Kubernetes, negotiation, people management' },
+    { k: 'category', label: 'Category', type: 'select', opts: TR_CATS.map((c) => [c, c]) }, { k: 'priority', label: 'Priority', type: 'select', opts: Object.entries(NEED_PRI).map(([k, [l]]) => [k, l]) },
+    { k: 'targetDate', label: 'Needed by', type: 'date' }, { k: 'note', label: 'Why', type: 'textarea', wide: true }];
+  openDlg(`<form class="dlg" id="tnF" novalidate><h2>Add a development need</h2><div class="form">${fields.map((f) => fieldHtml(f, { empId: b.dataset.emp || (isManager() || isHR() ? '' : me.id), priority: 'medium', category: 'Technical' }[f.k])).join('')}</div><p class="err" id="tnE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`, true);
+  $('#tnF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); if (!d.empId || !d.topic) { $('#tnE').textContent = 'Choose the employee and say what to learn.'; return; }
+    const e = empById(d.empId); S.trainingNeeds.push({ id: uid(), companyId: e.companyId, ...d, status: 'open', by: me.id, at: Date.now(), source: d.empId === me.id ? 'self' : isHR() ? 'hr' : 'manager' });
+    saveNow(); closeDlg(); toast('Need added'); route(); };
+};
+ACT.trNeedSet = (b) => { const n = S.trainingNeeds.find((x) => x.id === b.dataset.id); if (!n) return; n.status = b.dataset.s; n.closedBy = me.id; n.closedAt = Date.now(); saveNow(); route(); };
+
+/* ---- HR: all trainings */
+function trAdminHtml() {
+  const st = R.q.get('st') || 'active';
+  const all = S.trainings.filter((t) => t.companyId === CO);
+  const list = all.filter((t) => (st === 'active' ? ['draft', 'scheduled'].includes(t.status) : st === 'all' || t.status === st)).sort((a, b) => (a.start < b.start ? (st === 'active' ? -1 : 1) : (st === 'active' ? 1 : -1)));
+  const fy = fyStart(todayISO().slice(0, 7)) + '-01';
+  const doneFy = all.filter((t) => t.status === 'completed' && t.start >= fy);
+  const att = (t) => trEnrols(t).filter((x) => x.status === 'attended');
+  const hours = sumBy(doneFy, (t) => sumBy(att(t), (x) => +x.hours || trHours(t)));
+  const fb = doneFy.flatMap((t) => trFeedback(t).map((f) => (f.ratings || {}).overall).filter(Boolean));
+  const people = new Set(doneFy.flatMap((t) => att(t).map((x) => x.empId)));
+  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Trainings held this year</span><b>${doneFy.length}</b><small>${doneFy.filter((t) => t.kind === 'internal').length} internal, ${doneFy.filter((t) => t.kind !== 'internal').length} external</small></div>
+      <div class="kpi"><span>Training hours</span><b>${num(hours, 0)}</b><small>${people.size} people, ${coEmployees().length ? num(hours / coEmployees().length, 1) : 0} h per employee</small></div>
+      <div class="kpi"><span>Cost this year</span><b>${inr0(sumBy(doneFy, (t) => t.cost))}</b><small>${people.size ? `${inr0(sumBy(doneFy, (t) => t.cost) / people.size)} per person trained` : ''}</small></div>
+      <div class="kpi"><span>Overall rating</span><b>${fb.length ? num(avgOf(fb), 2) : '—'}</b><small>of 5, from ${fb.length} responses</small></div></div>
+    <div class="card"><div class="hd"><div><h2>Trainings in ${esc(company().name)}</h2><p class="sub">Plan a training as a draft, publish it to open enrolment, enrol people or let them ask; after it, mark attendance and complete it. Participants then give feedback and managers rate how it worked.</p></div>
+      <div class="tools"><select class="inp" data-ch="trAdminSt">${Object.entries({ active: 'Planned and scheduled', completed: 'Completed', cancelled: 'Cancelled', all: 'All' }).map(([k, l]) => `<option value="${k}" ${k === st ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <button class="btn" data-act="trExcelAll">Excel</button><button class="btn pri" data-act="trNew">New training</button></div></div>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Training</th><th>Type</th><th>When</th><th>Trainer</th><th class="r">Enrolled</th><th class="r">Rating</th><th>Status</th></tr></thead><tbody>
+      ${list.map((t) => { const r = avgOf(trFeedback(t).map((f) => (f.ratings || {}).overall).filter(Boolean)); const pend = trEnrols(t).filter((x) => x.status === 'requested').length;
+        return trRow(t, `<td class="r">${trTaken(t)}${+t.capacity ? ` / ${t.capacity}` : ''}${pend ? `<div class="fine">${pend} asking</div>` : ''}</td><td class="r">${r ? num(r, 1) : ''}</td><td>${trBadge(TR_STATUS, t.status)}${t.status === 'scheduled' && trEnded(t) ? ' <span class="badge warn">Mark attendance</span>' : ''}</td>`); }).join('')}</tbody></table></div>` : '<div class="empty">No trainings here. Start one with New training.</div>'}</div>`;
+}
+ACT.trAdminSt = (el) => go('#/training?tab=admin&st=' + el.value);
+const TR_FIELDS = (co) => [{ k: 'title', label: 'Title', req: true, wide: true }, { k: 'category', label: 'Category', type: 'select', opts: TR_CATS.map((c) => [c, c]) },
+  { k: 'kind', label: 'Internal or external', type: 'select', opts: [['internal', 'Internal: run by our employees'], ['external', 'External: an outside trainer or provider']] }, { k: 'mode', label: 'How', type: 'select', opts: Object.entries(TR_MODES) },
+  { k: 'start', label: 'Starts', type: 'date', req: true }, { k: 'end', label: 'Ends', type: 'date' }, { k: 'startTime', label: 'From', type: 'time' }, { k: 'endTime', label: 'To', type: 'time' },
+  { k: 'hours', label: 'Training hours in all', type: 'number', min: 0, step: 0.5, help: 'Leave empty to work it out from the dates and times' }, { k: 'capacity', label: 'Places (empty for no limit)', type: 'number', min: 0 },
+  { k: 'venue', label: 'Venue' }, { k: 'link', label: 'Meeting or course link' }, { k: 'closeBy', label: 'Enrolment closes', type: 'date' }, { k: 'cost', label: 'Total cost (₹)', type: 'number', min: 0 },
+  { k: 'extName', label: 'External trainer’s name' }, { k: 'extOrg', label: 'Training provider' }, { k: 'extEmail', label: 'Trainer’s e-mail', type: 'email', help: 'For the trainer’s feedback report' }, { k: 'extPhone', label: 'Trainer’s phone' },
+  { k: 'mgrReviewDays', label: 'Ask managers to rate it after (days)', type: 'number', min: 0 }, { k: 'mandatory', label: 'Mandatory', type: 'check' },
+  { k: 'audience', label: 'Who should attend', wide: true }, { k: 'objectives', label: 'Objectives: what participants will be able to do', type: 'textarea', wide: true }, { k: 'description', label: 'Description and agenda', type: 'textarea', wide: true }];
+function trEditDialog(t, pre = {}) {
+  const fields = TR_FIELDS(); const tr = (t && t.trainer) || {};
+  const v = t ? { ...t, extName: tr.name, extOrg: tr.org, extEmail: tr.email, extPhone: tr.phone } : { kind: 'internal', mode: 'classroom', category: 'Technical', start: addDays(todayISO(), 14), startTime: '10:00', endTime: '17:00', mgrReviewDays: 30, closeBy: addDays(todayISO(), 10), ...pre };
+  const people = coEmployees().filter((e) => e.status !== 'exited').map((e) => [e.id, `${fullName(e)}, ${(desig(e.desigId) || {}).name || ''}`]);
+  openDlg(`<form class="dlg" id="trF" novalidate><h2>${t ? 'Edit training' : 'New training'}</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}
+    <label class="field wide">Internal trainers (for internal trainings)${checkList('trainerIds', people, (t && t.trainerIds) || [])}<small>They see the participants, mark attendance, add content and get their feedback report.</small></label></div>
+    <p class="err" id="trE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${t ? 'Save' : 'Create as draft'}</button></div></form>`, true);
+  $('#trF').onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields); const ids = checked(ev.target, 'trainerIds');
+    const bad = !d.title ? 'Enter the title.' : !d.start ? 'Enter the start date.' : d.end && d.end < d.start ? 'The end is before the start.' : d.kind === 'internal' && !ids.length ? 'Choose the internal trainer.' : d.kind === 'external' && !d.extName && !d.extOrg ? 'Enter the external trainer or provider.' : '';
+    if (bad) { $('#trE').textContent = bad; return; }
+    const rec = { title: d.title, category: d.category, kind: d.kind, mode: d.mode, start: d.start, end: d.end || d.start, startTime: d.startTime, endTime: d.endTime, hours: d.hours === '' ? '' : +d.hours, capacity: d.capacity === '' ? '' : +d.capacity,
+      venue: d.venue, link: d.link, closeBy: d.closeBy, cost: +d.cost || 0, mgrReviewDays: d.mgrReviewDays === '' ? 30 : +d.mgrReviewDays, mandatory: d.mandatory, audience: d.audience, objectives: d.objectives, description: d.description,
+      trainerIds: d.kind === 'internal' ? ids : [], trainer: d.kind === 'external' ? { name: d.extName, org: d.extOrg, email: d.extEmail, phone: d.extPhone } : null };
+    if (t) { Object.assign(t, rec); logEntry(t, 'Details changed'); saveNow(); closeDlg(); route(); return; }
+    const nt = { id: uid(), no: nextNo('trn', 'TRN-'), companyId: CO, status: 'draft', materials: [], quiz: { pre: false, post: true, pass: 60, questions: [] }, fbQs: FB_DEFAULT.map((x) => [...x]), log: [], createdBy: me.id, createdAt: Date.now(), ...rec };
+    logEntry(nt, 'Planned'); S.trainings.push(nt); audit('Training planned', nt.title, 'training'); saveNow(); closeDlg(); go('#/course/' + nt.id);
+  };
+}
+ACT.trNew = (b) => trEditDialog(null, b && b.dataset && b.dataset.title ? { title: b.dataset.title, category: b.dataset.cat } : {});
+ACT.trExcelAll = () => {
+  const all = S.trainings.filter((t) => t.companyId === CO);
+  writeBook(`Trainings_${company().code}.xlsx`, {
+    Trainings: all.map((t) => { const en = trEnrols(t); return { Number: t.no, Title: t.title, Category: t.category, Type: t.kind, Mode: TR_MODES[t.mode] || '', Start: t.start, End: t.end, Hours: trHours(t), Trainer: trTrainer(t), Status: t.status,
+      Enrolled: en.filter((x) => ['approved', 'attended', 'absent'].includes(x.status)).length, Attended: en.filter((x) => x.status === 'attended').length, Cost: +t.cost || 0, 'Overall rating': num(avgOf(trFeedback(t).map((f) => (f.ratings || {}).overall).filter(Boolean)) || 0, 2) }; }),
+    Participants: all.flatMap((t) => trEnrols(t).map((x) => { const e = empById(x.empId) || {}; const mr = x.mgrReview ? avgOf(Object.values(x.mgrReview.ratings || {})) : null;
+      return { Training: t.title, Start: t.start, 'Employee number': e.empNo, Employee: fullName(e), Department: (dept(e.deptId) || {}).name || '', Status: x.status, Hours: x.status === 'attended' ? +x.hours || trHours(t) : 0,
+        'Before %': (x.quiz || {}).pre ? x.quiz.pre.pct : '', 'After %': (x.quiz || {}).post ? x.quiz.post.pct : '', 'Manager rating': mr ? num(mr, 1) : '' }; })),
+  });
+};
+
+/* ---------------------------------------------------------------- one training */
+VIEWS.course = () => {
+  const t = trById(R.arg); if (!t) return { title: 'Training', html: '<div class="empty">That training does not exist or is not open to you.</div>' };
+  const hr = isHR(t.companyId), trainer = trIsTrainer(t), manage = hr || trainer;
+  const x = trEnrolOf(t, me.id) || trEnrols(t).filter((y) => y.empId === me.id).pop();
+  const team = new Set(allReportees(me.id));
+  const sec = (title, body, tools = '') => `<div class="card"><div class="hd"><h2>${title}</h2>${tools ? `<div class="tools">${tools}</div>` : ''}</div>${body}</div>`;
+  const taken = trTaken(t);
+  let html = `<div class="card"><div class="hd"><div><h2>${esc(t.title)} ${trBadge(TR_STATUS, t.status)}${t.mandatory ? ' <span class="badge warn">Mandatory</span>' : ''}</h2>
+      <p class="sub">${esc(t.no || '')} · ${esc(t.category || '')} · ${t.kind === 'internal' ? 'Internal' : 'External'} · ${esc(TR_MODES[t.mode] || '')}</p></div>
+      <div class="tools"><a class="btn" href="#/training?tab=${hr ? 'admin' : 'calendar'}">All trainings</a>${hr ? `<button class="btn" data-act="trEdit">Edit</button>${t.status === 'draft' ? '<button class="btn" data-act="trDelete">Delete</button><button class="btn pri" data-act="trSet" data-s="scheduled">Publish</button>' : ''}${['draft', 'scheduled'].includes(t.status) ? '<button class="btn" data-act="trSet" data-s="cancelled">Cancel training</button>' : ''}${t.status === 'cancelled' ? '<button class="btn" data-act="trSet" data-s="draft">Restore</button>' : ''}` : ''}
+        ${manage && t.status === 'scheduled' && trStarted(t) ? '<button class="btn pri" data-act="trComplete">Mark completed</button>' : ''}${manage && t.status === 'completed' ? '<button class="btn" data-act="trExcel">Excel</button>' : ''}</div></div>
+    <div class="grid g2"><table class="t"><tbody><tr><td>When</td><td><b>${trWhen(t)}</b>${trHours(t) ? `, ${num(trHours(t), 1)} hours` : ''}</td></tr><tr><td>Trainer</td><td>${esc(trTrainer(t))}${hr && t.trainer && t.trainer.email ? `<div class="fine">${esc(t.trainer.email)} ${esc(t.trainer.phone || '')}</div>` : ''}</td></tr>
+      ${t.venue ? `<tr><td>Venue</td><td>${esc(t.venue)}</td></tr>` : ''}${t.link && (manage || (x && ['approved', 'attended'].includes(x.status))) ? `<tr><td>Link</td><td><a href="${esc(t.link)}" target="_blank" rel="noopener noreferrer">${esc(t.link)}</a></td></tr>` : ''}
+      <tr><td>Places</td><td>${taken}${+t.capacity ? ` of ${t.capacity} taken` : ' enrolled'}${t.closeBy && t.status === 'scheduled' ? `. Enrolment closes ${dmy(t.closeBy)}` : ''}</td></tr>${hr ? `<tr><td>Cost</td><td>${inr0(t.cost)}${taken ? `, ${inr0((+t.cost || 0) / taken)} a person` : ''}</td></tr>` : ''}</tbody></table>
+      <div>${t.audience ? `<p><b>Who should attend:</b> ${esc(t.audience)}</p>` : ''}${t.objectives ? `<p style="white-space:pre-wrap"><b>Objectives</b><br>${esc(t.objectives)}</p>` : ''}${t.description ? `<p style="white-space:pre-wrap" class="mut">${esc(t.description)}</p>` : ''}</div></div></div>`;
+  // my part
+  if (x || trCan(t)) {
+    const st = x ? x.status : '';
+    const tools = [!x && trCan(t) ? '<button class="btn pri" data-act="trAsk">Ask for a place</button>' : '', x && ['requested', 'approved'].includes(st) && !trStarted(t) ? '<button class="btn" data-act="trWithdraw">Withdraw</button>' : '',
+      x && trPreDue(t, x) ? '<button class="btn pri" data-act="trQuiz" data-ph="pre">Answer the questionnaire before the training</button>' : '', x && trPostDue(t, x) ? '<button class="btn pri" data-act="trQuiz" data-ph="post">Answer the questionnaire</button>' : '',
+      x && trFbDue(t, x) ? '<button class="btn pri" data-act="trFb">Give feedback</button>' : '', x && st === 'attended' && t.status === 'completed' ? '<button class="btn" data-act="trCert">Certificate</button>' : ''].join('');
+    html += sec('You', x ? `<p>${trBadge(EN_STATUS, st)} ${st === 'requested' ? `Waiting for ${esc(nameOf((empById(me.id) || {}).managerId) || 'HR')} to approve.` : st === 'approved' ? 'You have a place.' : st === 'rejected' ? `Not approved${x.note ? `: ${esc(x.note)}` : ''}.` : st === 'attended' ? `You attended${+x.hours ? `, ${num(x.hours, 1)} hours` : ''}.` : ''}</p>
+      ${(x.quiz || {}).pre || (x.quiz || {}).post ? `<p>${(x.quiz || {}).pre ? `Questionnaire before: <b>${x.quiz.pre.score} of ${x.quiz.pre.total}</b> (${x.quiz.pre.pct}%). ` : ''}${(x.quiz || {}).post ? `After: <b>${x.quiz.post.score} of ${x.quiz.post.total}</b> (${x.quiz.post.pct}%)${x.quiz.post.passed ? ', passed' : `, below the pass mark of ${(t.quiz || {}).pass || 0}%`}.` : ''}</p>` : ''}
+      ${trMyFb(t) ? '<p class="fine">Thank you for your feedback.</p>' : ''}` : `<p class="mut">${t.mandatory ? 'This training is mandatory. ' : ''}Ask for a place; your manager approves it.</p>`, tools);
+  }
+  // participants
+  const seeAll = manage; const mineTeam = trEnrols(t).filter((y) => team.has(y.empId));
+  const rows = (seeAll ? trEnrols(t) : mineTeam).filter((y) => y.empId !== me.id || seeAll).sort((a, b) => nameOf(a.empId).localeCompare(nameOf(b.empId)));
+  if (seeAll || isManager()) {
+    const canAdd = t.status === 'scheduled' && (hr || isManager());
+    const fbBy = new Set(trFeedback(t).map((f) => f.empId));
+    html += sec(seeAll ? 'Participants' : 'Your team in this training', rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Status</th>${manage && trStarted(t) ? '<th>Attendance</th>' : ''}<th class="r">Before</th><th class="r">After</th>${hr ? '<th>Feedback</th>' : ''}<th>Manager rating</th><th></th></tr></thead><tbody>
+      ${rows.map((y) => { const e = empById(y.empId) || {}; const mr = y.mgrReview ? avgOf(Object.values(y.mgrReview.ratings || {})) : null; const canAtt = manage && trStarted(t) && ['approved', 'attended', 'absent'].includes(y.status) && t.status !== 'cancelled' && y.empId !== me.id;
+        return `<tr><td><b>${esc(fullName(e))}</b><div class="fine">${esc((dept(e.deptId) || {}).name || '')}${y.by && y.by !== y.empId ? `, enrolled by ${esc(nameOf(y.by))}` : ''}</div></td><td>${trBadge(EN_STATUS, y.status)}${y.note && y.status === 'requested' ? `<div class="fine">${esc(y.note)}</div>` : ''}</td>
+          ${manage && trStarted(t) ? `<td>${canAtt ? `<select class="inp" style="padding:3px" data-ch="trAtt" data-id="${y.id}"><option value="approved" ${y.status === 'approved' ? 'selected' : ''}>Not marked</option><option value="attended" ${y.status === 'attended' ? 'selected' : ''}>Attended</option><option value="absent" ${y.status === 'absent' ? 'selected' : ''}>Absent</option></select>` : ''}</td>` : ''}
+          <td class="r">${(y.quiz || {}).pre ? `${y.quiz.pre.pct}%` : ''}</td><td class="r">${(y.quiz || {}).post ? `${y.quiz.post.pct}%` : ''}</td>${hr ? `<td>${fbBy.has(y.empId) ? '✓' : ''}</td>` : ''}<td>${mr ? num(mr, 1) : trMgrDue(t, y) ? `<button class="btn sm pri" data-act="trMgrRate" data-id="${y.id}">Rate</button>` : ''}</td>
+          <td class="r" style="white-space:nowrap">${trApproverOK(y) ? `<button class="btn sm danger" data-act="trDecide" data-id="${y.id}" data-ok="0">Decline</button> <button class="btn sm ok" data-act="trDecide" data-id="${y.id}" data-ok="1">Approve</button>` : ''}${(hr || team.has(y.empId)) && ['requested', 'approved'].includes(y.status) && !trStarted(t) && y.empId !== me.id ? ` <button class="btn sm ghost" data-act="trRemove" data-id="${y.id}">Remove</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="mut">Nobody yet.</p>',
+      canAdd ? `<button class="btn pri" data-act="trAdd">${hr ? 'Add participants' : 'Enrol team members'}</button>` : '');
+  }
+  // content
+  const mats = t.materials || [];
+  if (manage || (x && x.status === 'attended')) {
+    html += sec('Training content', `${mats.length ? `<table class="t"><tbody>${mats.map((m) => `<tr><td>${m.kind === 'link' ? '🔗' : '📄'} <a href="${m.kind === 'link' ? esc(m.url) : `/api/files/${m.fileId}`}" target="_blank" rel="noopener noreferrer"><b>${esc(m.name)}</b></a>${m.note ? `<div class="fine">${esc(m.note)}</div>` : ''}</td><td class="fine">${m.size ? `${num(m.size / 1048576, 1)} MB, ` : ''}${dmy(isoOf(new Date(m.at)))}</td>${manage ? `<td class="r"><button class="btn sm ghost" data-act="trMatDel" data-id="${m.id}">Remove</button></td>` : ''}</tr>`).join('')}</tbody></table>` : '<p class="mut">No content yet.</p>'}
+      ${manage ? '<p class="fine">Slides, documents, spreadsheets, PDFs, pictures, audio, video or zip files. Only the trainers, HR and people who attended can open them.</p>' : ''}`,
+    manage ? '<label class="btn">Upload files<input type="file" multiple hidden data-ch="trUpload"></label><button class="btn" data-act="trLink">Add a link</button>' : '');
+  } else if (x && ['requested', 'approved'].includes(x.status) && (t.materialsCount || 0)) html += sec('Training content', `<p class="mut">${t.materialsCount} item${t.materialsCount > 1 ? 's' : ''} open once you have attended.</p>`);
+  // questionnaire and feedback form
+  if (manage) {
+    const q = t.quiz || {}; const answered = trEnrols(t).some((y) => (y.quiz || {}).pre || (y.quiz || {}).post);
+    html += sec('Questionnaire', `<p class="sub">Multiple-choice questions to test what participants know before the training and what they learnt after it. Answers are marked on the server; participants never see the correct answers.${answered ? ' <b>People have answered already: changing questions makes results harder to compare.</b>' : ''}</p>
+      <div class="tools" style="justify-content:flex-start;margin-bottom:8px"><label class="chk"><input type="checkbox" data-ch="trQset" data-k="pre" ${q.pre ? 'checked' : ''}> Before the training</label><label class="chk"><input type="checkbox" data-ch="trQset" data-k="post" ${q.post ? 'checked' : ''}> After the training</label>
+        <label class="fine">Pass mark <input class="inp" style="width:70px" type="number" min="0" max="100" value="${+q.pass || 0}" data-ch="trQset" data-k="pass">%</label></div>
+      ${(q.questions || []).length ? `<table class="t"><tbody>${q.questions.map((qq, i) => `<tr><td style="width:30px">${i + 1}.</td><td><b>${esc(qq.text)}</b><div class="fine">${(qq.options || []).map((o, j) => (j === +qq.correct ? `<b>✓ ${esc(o)}</b>` : esc(o))).join(' · ')}</div></td><td class="r" style="white-space:nowrap"><button class="btn sm ghost" data-act="trQEdit" data-i="${i}">Edit</button><button class="btn sm ghost" data-act="trQDel" data-i="${i}">Remove</button></td></tr>`).join('')}</tbody></table>` : '<p class="mut">No questions yet.</p>'}`,
+    '<button class="btn" data-act="trQEdit" data-i="-1">Add a question</button>');
+    if (hr) {
+      const fbN = trFeedback(t).length;
+      html += sec('Feedback form', `<p class="sub">Participants rate each of these from 1 (poor) to 5 (excellent), then say what they liked and what the trainer should improve. Feedback is anonymous to the trainer.${fbN ? ` ${fbN} people have answered, so the form is fixed.` : ''}</p>
+        <table class="t"><tbody>${trFbQs(t).map(([k, l]) => `<tr><td>${esc(l)}</td><td class="r">${!fbN && k !== 'overall' ? `<button class="btn sm ghost" data-act="trFbQDel" data-k="${esc(k)}">Remove</button>` : ''}</td></tr>`).join('')}</tbody></table>`, fbN ? '' : '<button class="btn" data-act="trFbQAdd">Add a question</button>');
+    }
+  }
+  // results
+  if (manage && (t.status === 'completed' || trFeedback(t).length)) html += sec('Results', trResultsHtml(t), `${trKeyOf(t).map((k) => `<button class="btn" data-act="trReport" data-k="${esc(k)}">Report for ${esc(trKeyName(k))}</button>`).join('')}`);
+  if (hr && (t.log || []).length) html += sec('Activity', `<table class="t"><tbody>${t.log.slice().reverse().slice(0, 25).map((l) => `<tr><td style="width:150px">${dt(l.at)}</td><td>${esc(l.what)}${l.note ? `: ${esc(l.note)}` : ''}</td><td class="fine">${esc(nameOf(l.by))}</td></tr>`).join('')}</tbody></table>`);
+  return { title: t.title, html };
+};
+const curTr = () => trById(R.arg);
+ACT.trEdit = () => trEditDialog(curTr());
+ACT.trDelete = async () => { const t = curTr(); if (trEnrols(t).length) { toast('People are enrolled. Cancel it instead.'); return; } if (!(await confirmBox('Delete this draft?', t.title, 'Delete'))) return; S.trainings = S.trainings.filter((y) => y !== t); saveNow(); go('#/training?tab=admin'); };
+ACT.trSet = async (b) => {
+  const t = curTr(); const s = b.dataset.s;
+  if (s === 'cancelled' && !(await confirmBox('Cancel this training?', `${trTaken(t)} people are enrolled; they see it as cancelled.`, 'Cancel training'))) return;
+  if (s === 'scheduled' && t.kind === 'internal' && !(t.trainerIds || []).length) { toast('Choose the trainer first.'); return; }
+  t.status = s; logEntry(t, { scheduled: 'Published for enrolment', cancelled: 'Cancelled', draft: 'Restored as draft' }[s]); audit(`Training ${s}`, t.title, 'training'); saveNow(); route();
+};
+ACT.trComplete = async () => {
+  const t = curTr(); const open = trEnrols(t).filter((y) => y.status === 'approved');
+  if (!(await confirmBox('Mark the training completed?', `${trEnrols(t).filter((y) => y.status === 'attended').length} attended.${open.length ? ` ${open.length} not marked: they are recorded as absent.` : ''} Participants are asked for feedback${trQuizOn(t, 'post') ? ' and the questionnaire' : ''}, and their content opens. Managers are asked to rate it after ${+t.mgrReviewDays || 30} days.`, 'Complete'))) return;
+  open.forEach((y) => { y.status = 'absent'; logEntry(y, 'Absent'); });
+  Object.assign(t, { status: 'completed', completedAt: Date.now(), completedBy: me.id }); logEntry(t, 'Completed'); audit('Training completed', t.title, 'training');
+  // development needs met by attending (only those the person completing may change)
+  S.trainingNeeds.filter((n) => n.trainingId === t.id && n.status === 'planned' && (isHR(n.companyId) || allReportees(me.id).includes(n.empId))).forEach((n) => { const y = trEnrolOf(t, n.empId); if (y && y.status === 'attended') n.status = 'done'; });
+  saveNow(); route();
+};
+ACT.trAsk = async () => {
+  const t = curTr(); const note = await askText(`Ask for a place in ${t.title}`, 'Why this training would help you', 'Ask', false); if (note === null) return;
+  const y = { id: uid(), trainingId: t.id, companyId: t.companyId, empId: me.id, status: 'requested', by: me.id, at: Date.now(), note, log: [] }; logEntry(y, 'Asked for a place', note);
+  S.trainingEnrols.push(y); saveNow(); toast(`Sent to ${nameOf(me.managerId) !== '—' ? nameOf(me.managerId) : 'HR'} to approve`); route();
+};
+ACT.trWithdraw = async () => { const t = curTr(); const y = trEnrolOf(t, me.id); if (!y) return; if (!(await confirmBox('Withdraw?', 'You lose your place.', 'Withdraw'))) return;
+  Object.assign(y, { status: 'withdrawn', decidedBy: me.id, decidedAt: Date.now() }); logEntry(y, 'Withdrawn'); saveNow(); route(); };
+ACT.trRemove = async (b) => { const y = S.trainingEnrols.find((z) => z.id === b.dataset.id); if (!y) return; if (!(await confirmBox(`Remove ${nameOf(y.empId)}?`, 'Their place is freed.', 'Remove'))) return;
+  Object.assign(y, { status: 'withdrawn', decidedBy: me.id, decidedAt: Date.now() }); logEntry(y, 'Removed'); saveNow(); route(); };
+ACT.trAdd = () => {
+  const t = curTr(); const hr = isHR(t.companyId);
+  const pool = (hr ? coEmployees(t.companyId) : allReportees(me.id).map(empById)).filter((e) => e && e.status === 'active' && !trEnrolOf(t, e.id) && !trIsTrainer(t, e.id));
+  if (!pool.length) { toast('Everyone you can enrol is already in it.'); return; }
+  const needOf = (e) => S.trainingNeeds.find((n) => n.empId === e.id && n.status === 'open' && (n.category === t.category || t.title.toLowerCase().includes(String(n.topic).toLowerCase()) || String(n.topic).toLowerCase().includes(t.title.toLowerCase())));
+  const list = pool.map((e) => ({ e, n: needOf(e) })).sort((a, b) => (!!b.n - !!a.n) || fullName(a.e).localeCompare(fullName(b.e)));
+  const left = +t.capacity ? +t.capacity - trTaken(t) : null;
+  openDlg(`<form class="dlg" id="taF"><h2>${hr ? 'Add participants' : 'Enrol team members'}</h2><p class="fine" style="margin:0">They are enrolled straight away and see it in My training.${left != null ? ` ${left} place${left === 1 ? '' : 's'} left.` : ''} People with a matching development need are first and ticked.</p>
+    <div class="scroll" style="max-height:380px"><table class="t"><tbody>${list.map(({ e, n }) => `<tr><td><input type="checkbox" name="e" value="${e.id}" ${n ? 'checked' : ''}></td><td><b>${esc(fullName(e))}</b><div class="fine">${esc((desig(e.desigId) || {}).name || '')}, ${esc((dept(e.deptId) || {}).name || '')}</div></td><td>${n ? `<span class="badge info">Need: ${esc(n.topic)}</span>` : ''}</td></tr>`).join('')}</tbody></table></div>
+    <p class="err" id="taE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Enrol</button></div></form>`, true);
+  $('#taF').onsubmit = (ev) => {
+    ev.preventDefault(); const ids = [...ev.target.querySelectorAll('[name=e]:checked')].map((i) => i.value);
+    if (!ids.length) { $('#taE').textContent = 'Tick at least one person.'; return; }
+    if (left != null && ids.length > left && !ev.target.dataset.over) { ev.target.dataset.over = '1'; $('#taE').textContent = `That is ${ids.length - left} more than the places left. Press Enrol again to enrol them anyway.`; return; }
+    ids.forEach((id) => { const n = list.find((l) => l.e.id === id).n;
+      const y = { id: uid(), trainingId: t.id, companyId: t.companyId, empId: id, status: 'approved', by: me.id, at: Date.now(), needId: n ? n.id : '', log: [] }; logEntry(y, `Enrolled by ${fullName(me)}`); S.trainingEnrols.push(y);
+      if (n) Object.assign(n, { status: 'planned', trainingId: t.id }); });
+    if (hr) logEntry(t, `${ids.length} enrolled by ${fullName(me)}`);     // only HR writes the training itself
+    saveNow(); closeDlg(); toast(`${ids.length} enrolled`); route();
+  };
+};
+ACT.trAtt = (el) => { const y = S.trainingEnrols.find((z) => z.id === el.dataset.id); const t = curTr(); if (!y || !trManage(t)) return; y.status = el.value; y.hours = el.value === 'attended' ? trHours(t) : 0; logEntry(y, EN_STATUS[el.value][0]); saveNow(); };
+
+/* ---- content */
+ACT.trUpload = async (el) => {
+  const t = curTr(); const files = [...el.files]; if (!files.length) return; let ok = 0;
+  for (const f of files) {
+    toast(`Uploading ${f.name}…`);
+    try {
+      const fd = new FormData(); fd.append('trainingId', t.id); fd.append('file', f);
+      await saveAndWait();
+      const r = await fetch('/api/training/upload', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'x-peopledesk': '1' } });
+      const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'The file could not be uploaded.');
+      (t.materials = t.materials || []).push({ id: uid(), kind: 'file', name: d.name, fileId: d.id, size: d.size, mime: d.mime, at: Date.now(), by: me.id }); ok++;
+    } catch (e) { toast(`${f.name}: ${e.message}`); }
+  }
+  if (ok) { logEntry(t, `${ok} file${ok > 1 ? 's' : ''} added`); saveNow(); toast(`${ok} added`); route(); }
+};
+ACT.trLink = () => {
+  const t = curTr(); const fields = [{ k: 'name', label: 'Title', req: true }, { k: 'url', label: 'Link (https://…)', req: true, wide: true, help: 'For example a recording, a course page or a shared folder' }, { k: 'note', label: 'Note', wide: true }];
+  openDlg(`<form class="dlg" id="tlF" novalidate><h2>Add a link</h2><div class="form">${fields.map((f) => fieldHtml(f, '')).join('')}</div><p class="err" id="tlE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`, true);
+  $('#tlF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); if (!d.name || !/^https?:\/\//i.test(d.url)) { $('#tlE').textContent = 'Enter a title and a link starting with https://'; return; }
+    (t.materials = t.materials || []).push({ id: uid(), kind: 'link', name: d.name, url: d.url, note: d.note, at: Date.now(), by: me.id }); logEntry(t, `Link added: ${d.name}`); saveNow(); closeDlg(); route(); };
+};
+ACT.trMatDel = async (b) => { const t = curTr(); const m = (t.materials || []).find((y) => y.id === b.dataset.id); if (!m || !(await confirmBox('Remove this?', m.name, 'Remove'))) return; t.materials = t.materials.filter((y) => y !== m); logEntry(t, `Removed ${m.name}`); saveNow(); route(); };
+
+/* ---- questionnaire */
+ACT.trQset = (el) => { const t = curTr(); t.quiz = t.quiz || { questions: [] }; const k = el.dataset.k; t.quiz[k] = k === 'pass' ? Math.max(0, Math.min(100, Math.round(parseNum(el.value)))) : el.checked; saveNow(); };
+ACT.trQEdit = (b) => {
+  const t = curTr(); t.quiz = t.quiz || { pre: false, post: true, pass: 60, questions: [] }; const i = +b.dataset.i; const q = i >= 0 ? t.quiz.questions[i] : { text: '', options: ['', '', '', ''], correct: 0 };
+  openDlg(`<form class="dlg" id="tqF" novalidate><h2>${i >= 0 ? 'Edit question' : 'Add a question'}</h2><label class="field">Question<textarea class="inp" name="text">${esc(q.text)}</textarea></label>
+    ${[0, 1, 2, 3, 4].map((j) => `<label class="field" style="display:flex;gap:8px;align-items:center"><input type="radio" name="correct" value="${j}" ${+q.correct === j ? 'checked' : ''} title="Correct answer"><input class="inp" name="o${j}" placeholder="Option ${j + 1}${j > 1 ? ' (optional)' : ''}" value="${esc((q.options || [])[j] || '')}"></label>`).join('')}
+    <p class="fine">Choose the correct answer with the round button.</p><p class="err" id="tqE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#tqF').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target.elements; const raw = [0, 1, 2, 3, 4].map((j) => f['o' + j].value.trim()); const c = +(ev.target.querySelector('[name=correct]:checked') || { value: 0 }).value;
+    const opts = raw.filter(Boolean); if (!f.text.value.trim() || opts.length < 2) { $('#tqE').textContent = 'Write the question and at least two options.'; return; }
+    if (!raw[c]) { $('#tqE').textContent = 'The correct answer is an empty option.'; return; }
+    const nq = { id: q.id || uid(), text: f.text.value.trim(), options: opts, correct: opts.indexOf(raw[c]) };
+    if (i >= 0) t.quiz.questions[i] = nq; else t.quiz.questions.push(nq); logEntry(t, 'Questionnaire changed'); saveNow(); closeDlg(); route(); };
+};
+ACT.trQDel = (b) => { const t = curTr(); t.quiz.questions.splice(+b.dataset.i, 1); saveNow(); route(); };
+ACT.trQuiz = (b) => {
+  const t = curTr(); const ph = b.dataset.ph; const y = trEnrolOf(t, me.id); if (!y) return; const qs = (t.quiz || {}).questions || [];
+  openDlg(`<form class="dlg" id="tzF" novalidate><h2>${esc(t.title)}: questionnaire ${ph === 'pre' ? 'before the training' : 'after the training'}</h2><p class="fine" style="margin:0">${qs.length} questions. You can answer once. ${ph === 'pre' ? 'It shows what you know already, so the trainer can focus on the rest; it does not count against you.' : `The pass mark is ${(t.quiz || {}).pass || 0}%.`}</p>
+    ${qs.map((q, i) => `<fieldset style="border:1px solid var(--rule);border-radius:9px;padding:10px;margin:10px 0"><legend><b>${i + 1}. ${esc(q.text)}</b></legend>${q.options.map((o, j) => `<label style="display:block;padding:3px 0"><input type="radio" name="q_${q.id}" value="${j}"> ${esc(o)}</label>`).join('')}</fieldset>`).join('')}
+    <p class="err" id="tzE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Submit answers</button></div></form>`, true);
+  $('#tzF').onsubmit = async (ev) => {
+    ev.preventDefault(); const answers = {}; qs.forEach((q) => { const c = ev.target.querySelector(`[name="q_${q.id}"]:checked`); if (c) answers[q.id] = +c.value; });
+    if (Object.keys(answers).length < qs.length && !ev.target.dataset.part) { ev.target.dataset.part = '1'; $('#tzE').textContent = `${qs.length - Object.keys(answers).length} questions are not answered. Press Submit again to send anyway.`; return; }
+    try {
+      $('#tzE').textContent = 'Marking…'; await saveAndWait();
+      const r = await fetch('/api/training/score', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-peopledesk': '1' }, body: JSON.stringify({ trainingId: t.id, phase: ph, answers }) });
+      const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'The answers could not be marked.');
+      y.quiz = { ...(y.quiz || {}), [ph]: { answers, ...d, at: Date.now() } }; logEntry(y, `Questionnaire ${ph === 'pre' ? 'before' : 'after'}: ${d.pct}%`);
+      saveNow(); closeDlg(); toast(`You scored ${d.score} of ${d.total} (${d.pct}%)${ph === 'post' ? (d.passed ? '. Passed.' : '. Below the pass mark.') : ''}`); route();
+    } catch (e) { $('#tzE').textContent = e.message; }
+  };
+};
+
+/* ---- feedback */
+ACT.trFbQAdd = async () => { const t = curTr(); const l = await askText('Add a feedback question', 'Rated from 1 to 5, for example “Practical examples”', 'Add'); if (l === null) return;
+  t.fbQs = trFbQs(t).slice(); t.fbQs.splice(t.fbQs.length - 1, 0, ['q' + uid().slice(0, 6), l]); saveNow(); route(); };
+ACT.trFbQDel = (b) => { const t = curTr(); t.fbQs = trFbQs(t).filter(([k]) => k !== b.dataset.k); saveNow(); route(); };
+ACT.trFb = () => {
+  const t = curTr(); const qs = trFbQs(t);
+  const sel = (k) => `<select class="inp" name="r_${esc(k)}" style="width:140px"><option value="">Choose</option>${[5, 4, 3, 2, 1].map((n) => `<option value="${n}">${n} ${['', 'Poor', 'Fair', 'Good', 'Very good', 'Excellent'][n]}</option>`).join('')}</select>`;
+  openDlg(`<form class="dlg" id="tfF" novalidate><h2>Feedback: ${esc(t.title)}</h2><p class="fine" style="margin:0">The trainer sees your feedback without your name. HR sees it with your name.</p>
+    <table class="t"><tbody>${qs.map(([k, l]) => `<tr><td>${esc(l)}</td><td class="r">${sel(k)}</td></tr>`).join('')}</tbody></table>
+    <label class="field">What did you like most?<textarea class="inp" name="liked"></textarea></label><label class="field">What should the trainer improve?<textarea class="inp" name="improve"></textarea></label>
+    <label class="field">Would you recommend this training to a colleague?<select class="inp" name="recommend"><option>Yes</option><option>Maybe</option><option>No</option></select></label>
+    <p class="err" id="tfE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send feedback</button></div></form>`, true);
+  $('#tfF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target.elements; const ratings = {}; for (const [k] of qs) { const v = +f['r_' + k].value; if (!v) { $('#tfE').textContent = 'Rate every line.'; return; } ratings[k] = v; }
+    S.trainingFeedback.push({ id: uid(), trainingId: t.id, companyId: t.companyId, empId: me.id, ratings, liked: f.liked.value.trim(), improve: f.improve.value.trim(), recommend: f.recommend.value, at: Date.now() });
+    saveNow(); closeDlg(); toast('Thank you for your feedback'); route();
+  };
+};
+ACT.trMgrRate = (b) => {
+  const y = S.trainingEnrols.find((z) => z.id === b.dataset.id); const t = y && trById(y.trainingId); if (!y || !t) return;
+  const sel = (k) => `<select class="inp" name="r_${k}" style="width:150px"><option value="">Choose</option>${[5, 4, 3, 2, 1].map((n) => `<option value="${n}">${n} ${['', 'Not at all', 'A little', 'Somewhat', 'Clearly', 'Very much'][n]}</option>`).join('')}</select>`;
+  openDlg(`<form class="dlg" id="tmF" novalidate><h2>${esc(nameOf(y.empId))}: ${esc(t.title)}</h2><p class="fine" style="margin:0">Attended ${trWhen(t)}. Rate what you have seen since. HR and the trainer see the ratings; ${esc((empById(y.empId) || {}).firstName || 'the employee')} does not.</p>
+    <table class="t"><tbody>${MGR_QS.map(([k, l]) => `<tr><td>${esc(l)}</td><td class="r">${sel(k)}</td></tr>`).join('')}</tbody></table><label class="field">Comment<textarea class="inp" name="c"></textarea></label>
+    <p class="err" id="tmE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#tmF').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target.elements; const ratings = {}; for (const [k] of MGR_QS) { const v = +f['r_' + k].value; if (!v) { $('#tmE').textContent = 'Rate every line.'; return; } ratings[k] = v; }
+    y.mgrReview = { ratings, comment: f.c.value.trim(), by: me.id, at: Date.now() }; logEntry(y, 'Rated by manager'); saveNow(); closeDlg(); toast('Saved'); route(); };
+};
+ACT.trCert = () => {
+  const t = curTr(); const co = coById(t.companyId); const y = trEnrolOf(t, me.id);
+  printHtml('Certificate', `<div style="border:6px double #0E2A24;padding:50px;text-align:center;margin-top:40px"><h2>${esc(co.legalName || co.name)}</h2><h1 style="margin:30px 0 10px;font-size:32px">Certificate of participation</h1>
+    <p style="font-size:16px">This is to certify that</p><h1 style="margin:10px 0">${esc(fullName(me))}</h1><p style="font-size:16px">attended <b>${esc(t.title)}</b><br>${trWhen(t)}${trHours(t) ? `, ${num(+y.hours || trHours(t), 1)} hours` : ''}</p>
+    ${(y.quiz || {}).post && y.quiz.post.passed ? `<p>and passed the assessment with ${y.quiz.post.pct}%</p>` : ''}<p class="fine">Trainer: ${esc(trTrainer(t))}. ${esc(t.no || '')}</p><br><br><p>Authorised signatory</p></div>`);
+};
+ACT.trExcel = () => {
+  const t = curTr(); const qs = trFbQs(t);
+  writeBook(`Training_${(t.no || t.title).replace(/\W+/g, '_')}.xlsx`, {
+    Participants: trEnrols(t).map((y) => { const e = empById(y.empId) || {}; const mr = y.mgrReview ? avgOf(Object.values(y.mgrReview.ratings || {})) : null; return { 'Employee number': e.empNo, Employee: fullName(e), Department: (dept(e.deptId) || {}).name || '', Status: y.status, Hours: y.status === 'attended' ? +y.hours || trHours(t) : 0, 'Before %': (y.quiz || {}).pre ? y.quiz.pre.pct : '', 'After %': (y.quiz || {}).post ? y.quiz.post.pct : '', 'Manager rating': mr ? num(mr, 1) : '', 'Manager comment': (y.mgrReview || {}).comment || '' }; }),
+    Feedback: trFeedback(t).map((f) => ({ ...(isHR(t.companyId) && f.empId ? { Employee: nameOf(f.empId) } : {}), ...Object.fromEntries(qs.map(([k, l]) => [l, (f.ratings || {})[k] || ''])), Liked: f.liked || '', Improve: f.improve || '', Recommend: f.recommend || '' })),
+  });
+};
+
+/* ---------------------------------------------------------------- results and instructor reports */
+function trResultsHtml(t) {
+  const en = trEnrols(t); const att = en.filter((y) => y.status === 'attended'); const marked = en.filter((y) => ['attended', 'absent'].includes(y.status));
+  const fb = trFeedback(t); const qs = trFbQs(t);
+  const pre = att.map((y) => (y.quiz || {}).pre).filter(Boolean), post = att.map((y) => (y.quiz || {}).post).filter(Boolean);
+  const mr = att.map((y) => y.mgrReview).filter(Boolean);
+  const bar = (v) => `<div class="bar" style="width:140px;display:inline-block;vertical-align:middle"><i style="width:${(v || 0) * 20}%;${v && v < 3.5 ? 'background:var(--warn)' : ''}"></i></div>`;
+  return `<div class="grid g4" style="margin-bottom:12px"><div class="kpi"><span>Attendance</span><b>${marked.length ? Math.round(att.length * 100 / marked.length) : 0}%</b><small>${att.length} of ${marked.length}</small></div>
+      <div class="kpi"><span>Overall rating</span><b>${fb.length ? num(avgOf(fb.map((f) => (f.ratings || {}).overall).filter(Boolean)) || 0, 2) : '—'}</b><small>${fb.length} of ${att.length} gave feedback; ${fb.filter((f) => f.recommend === 'Yes').length} would recommend</small></div>
+      <div class="kpi"><span>Questionnaire</span><b>${post.length ? `${Math.round(avgOf(post.map((p) => p.pct)))}%` : '—'}</b><small>${pre.length ? `before ${Math.round(avgOf(pre.map((p) => p.pct)))}%, ` : ''}${post.length ? `${post.filter((p) => p.passed).length} of ${post.length} passed` : 'after the training'}</small></div>
+      <div class="kpi"><span>Managers’ rating</span><b>${mr.length ? num(avgOf(mr.flatMap((m) => Object.values(m.ratings || {}))), 1) : '—'}</b><small>${mr.length} of ${att.length} rated</small></div></div>
+    ${fb.length ? `<div class="grid g2"><table class="t"><tbody>${qs.map(([k, l]) => { const v = avgOf(fb.map((f) => (f.ratings || {})[k]).filter(Boolean)); return `<tr><td>${esc(l)}</td><td>${bar(v)}</td><td class="r">${v ? num(v, 2) : ''}</td></tr>`; }).join('')}</tbody></table>
+      <div>${fb.filter((f) => f.improve).length ? `<h3 style="margin-top:0">What to improve</h3><ul>${fb.filter((f) => f.improve).map((f) => `<li>${esc(f.improve)}</li>`).join('')}</ul>` : ''}${fb.filter((f) => f.liked).length ? `<h3>What participants liked</h3><ul>${fb.filter((f) => f.liked).map((f) => `<li>${esc(f.liked)}</li>`).join('')}</ul>` : ''}</div></div>` : '<p class="mut">No feedback yet.</p>'}`;
+}
+/* one trainer's report across their completed trainings: ratings against the company's average and what to improve */
+function trReport(key) {
+  const trs = S.trainings.filter((t) => t.status === 'completed' && trKeyOf(t).includes(key)).sort((a, b) => (a.start < b.start ? 1 : -1));
+  const ids = new Set(trs.map((t) => t.id)); const fb = S.trainingFeedback.filter((f) => ids.has(f.trainingId));
+  const labels = {}; trs.forEach((t) => trFbQs(t).forEach(([k, l]) => { labels[k] = l; }));
+  const hrView = trs.some((t) => isHR(t.companyId));
+  const orgFb = hrView ? S.trainingFeedback.filter((f) => { const t = trById(f.trainingId); return t && isHR(t.companyId); }) : [];
+  const rows = Object.keys(labels).map((k) => ({ k, label: labels[k], avg: avgOf(fb.map((f) => (f.ratings || {})[k]).filter(Boolean)), org: hrView ? avgOf(orgFb.map((f) => (f.ratings || {})[k]).filter(Boolean)) : null })).filter((r) => r.avg != null).sort((a, b) => a.avg - b.avg);
+  let improve = rows.filter((r) => r.k !== 'overall' && (r.avg < 3.5 || (r.org && r.avg < r.org - 0.3)));
+  const strong = rows.filter((r) => r.k !== 'overall' && r.avg >= 4.2 && !improve.includes(r)).reverse().slice(0, 3);
+  if (!improve.length) improve = rows.filter((r) => r.k !== 'overall').slice(0, 2);
+  const en = S.trainingEnrols.filter((y) => ids.has(y.trainingId)); const att = en.filter((y) => y.status === 'attended');
+  const mr = att.map((y) => y.mgrReview).filter(Boolean);
+  const gain = att.filter((y) => (y.quiz || {}).pre && (y.quiz || {}).post).map((y) => y.quiz.post.pct - y.quiz.pre.pct);
+  const per = trs.map((t) => ({ t, n: S.trainingEnrols.filter((y) => y.trainingId === t.id && y.status === 'attended').length, r: avgOf(S.trainingFeedback.filter((f) => f.trainingId === t.id).map((f) => (f.ratings || {}).overall).filter(Boolean)) }));
+  return { key, trs, fb, rows, improve, strong, att, en, mr, gain, per, labels, hrView,
+    comments: fb.map((f) => f.improve).filter(Boolean), liked: fb.map((f) => f.liked).filter(Boolean), recommend: fb.length ? Math.round(fb.filter((f) => f.recommend === 'Yes').length * 100 / fb.length) : null };
+}
+function trReportHtml(r, print) {
+  const name = trKeyName(r.key); const ext = r.key.startsWith('ext:');
+  return `${print ? `<h2>Trainer feedback report</h2><p><b>${esc(name)}</b>${ext ? ' (external)' : ''}. ${dmy(todayISO())}.</p>` : ''}
+    <p>${r.trs.length} completed training${r.trs.length === 1 ? '' : 's'}, ${r.att.length} participants, ${r.fb.length} feedback responses${r.recommend != null ? `, ${r.recommend}% would recommend` : ''}. Ratings out of 5. Feedback is anonymous.</p>
+    <h3>Areas to improve</h3>${r.improve.length ? `<ul>${r.improve.map((x) => `<li><b>${esc(x.label)}</b>: rated ${num(x.avg, 2)}${x.org ? ` against ${num(x.org, 2)} across all our trainings` : ''}</li>`).join('')}</ul>` : '<p>Not enough feedback yet.</p>'}
+    ${r.strong.length ? `<h3>Strengths</h3><ul>${r.strong.map((x) => `<li>${esc(x.label)}: ${num(x.avg, 2)}</li>`).join('')}</ul>` : ''}
+    <h3>Ratings</h3><table class="t"><thead><tr><th>Question</th><th class="r">Rating</th>${r.hrView ? '<th class="r">All our trainings</th>' : ''}</tr></thead><tbody>${r.rows.slice().reverse().map((x) => `<tr><td>${esc(x.label)}</td><td class="r"><b>${num(x.avg, 2)}</b></td>${r.hrView ? `<td class="r">${x.org ? num(x.org, 2) : ''}</td>` : ''}</tr>`).join('')}</tbody></table>
+    <h3>Learning and its use at work</h3><p>${r.gain.length ? `Questionnaire scores rose by ${Math.round(avgOf(r.gain))} points on average from before to after the training (${r.gain.length} participants). ` : ''}${r.mr.length ? `Managers rated the effect at work ${num(avgOf(r.mr.flatMap((m) => Object.values(m.ratings || {}))), 1)} out of 5 (${r.mr.length} ratings); ${MGR_QS.map(([k, l]) => `${l.toLowerCase()} ${num(avgOf(r.mr.map((m) => (m.ratings || {})[k]).filter(Boolean)) || 0, 1)}`).join(', ')}.` : 'No manager ratings yet.'}</p>
+    ${r.comments.length ? `<h3>What participants would like improved</h3><ul>${r.comments.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
+    ${r.liked.length ? `<h3>What participants liked</h3><ul>${r.liked.slice(0, 20).map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
+    <h3>Trainings</h3><table class="t"><thead><tr><th>Training</th><th>When</th><th class="r">Attended</th><th class="r">Overall</th></tr></thead><tbody>${r.per.map((p) => `<tr><td>${esc(p.t.title)}</td><td>${trWhen(p.t)}</td><td class="r">${p.n}</td><td class="r">${p.r ? num(p.r, 2) : ''}</td></tr>`).join('')}</tbody></table>`;
+}
+function trTrainersHtml() {
+  const keys = new Set();
+  S.trainings.filter((t) => (isHR(t.companyId) && t.companyId === CO) || trIsTrainer(t)).forEach((t) => trKeyOf(t).forEach((k) => { if (isHR(t.companyId) || k === 'emp:' + me.id) keys.add(k); }));
+  const list = [...keys].map((k) => trReport(k)).filter((r) => r.trs.length || r.key === 'emp:' + me.id).sort((a, b) => b.trs.length - a.trs.length);
+  return `<div class="card"><h2>${isHR() ? 'Instructors' : 'Your training feedback'}</h2><p class="sub">For every internal and external trainer: ratings from participants (without their names) against the company's average, the areas to improve, questionnaire results and managers' ratings of how the training worked. Internal trainers see their own report here; HR can e-mail external trainers theirs.</p>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Trainer</th><th class="r">Trainings</th><th class="r">Participants</th><th class="r">Overall</th><th>Areas to improve</th><th></th></tr></thead><tbody>
+      ${list.map((r) => { const o = r.rows.find((x) => x.k === 'overall'); return `<tr><td><b>${esc(trKeyName(r.key))}</b><div class="fine">${r.key.startsWith('ext:') ? `External${((r.trs[0] || {}).trainer || {}).org ? `, ${esc(r.trs[0].trainer.org)}` : ''}` : 'Internal'}</div></td><td class="r">${r.trs.length}</td><td class="r">${r.att.length}</td><td class="r">${o ? num(o.avg, 2) : '—'}</td>
+        <td class="fine">${r.fb.length ? r.improve.map((x) => esc(x.label)).join(', ') : 'No feedback yet'}</td><td class="r"><button class="btn sm" data-act="trReport" data-k="${esc(r.key)}">Report</button></td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No completed trainings yet.</div>'}</div>`;
+}
+ACT.trReport = (b) => {
+  const r = trReport(b.dataset.k); if (!r.trs.length) { toast('No completed trainings for this trainer yet.'); return; }
+  const canMail = r.hrView;
+  openDlg(`<div class="dlg"><h2>${esc(trKeyName(r.key))}: feedback report</h2>${trReportHtml(r, false)}<p class="err" id="trmE"></p>
+    <div class="btns"><button class="btn ghost" data-act="close">Close</button><button class="btn" data-act="trReportPrint" data-k="${esc(r.key)}">Print</button>${canMail ? `<button class="btn pri" data-act="trReportMail" data-k="${esc(r.key)}">E-mail to the trainer</button>` : ''}</div></div>`, true);
+};
+ACT.trReportPrint = (b) => { const r = trReport(b.dataset.k); printHtml('Trainer feedback report', trReportHtml(r, true)); };
+ACT.trReportMail = async (b) => {
+  const r = trReport(b.dataset.k);
+  try {
+    $('#trmE').textContent = 'Sending…'; await saveAndWait();
+    const res = await fetch('/api/training/report-mail', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-peopledesk': '1' }, body: JSON.stringify({ key: r.key, labels: r.labels }) });
+    const d = await res.json().catch(() => ({})); if (!res.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'Not sent.');
+    $('#trmE').textContent = d.sent ? `Sent to ${d.to}.` : `Not sent: ${d.reason}.`;
+  } catch (e) { $('#trmE').textContent = e.message; }
+};
+
+/* ---------------------------------------------------------------- profile tab */
+PROFILE_TABS.training = (e, { hr, mine }) => {
+  const xs = S.trainingEnrols.filter((y) => y.empId === e.id).map((y) => ({ y, t: trById(y.trainingId) })).filter((z) => z.t).sort((a, b) => (a.t.start < b.t.start ? 1 : -1));
+  const att = xs.filter(({ y }) => y.status === 'attended'); const needs = S.trainingNeeds.filter((n) => n.empId === e.id);
+  return `<div class="grid g3" style="margin-bottom:12px"><div class="kpi"><span>Trainings attended</span><b>${att.length}</b><small>${num(sumBy(att, ({ y, t }) => +y.hours || trHours(t)), 1)} hours in all</small></div>
+      <div class="kpi"><span>Coming up</span><b>${xs.filter(({ y, t }) => ['requested', 'approved'].includes(y.status) && !trEnded(t)).length}</b><small>&nbsp;</small></div><div class="kpi"><span>Open development needs</span><b>${needs.filter((n) => n.status === 'open').length}</b><small><a href="#/training?tab=needs">Development needs</a></small></div></div>
+    <div class="card"><div class="hd"><h2>Training record</h2>${!mine ? `<button class="btn" data-act="trNeedAdd" data-emp="${e.id}">Add a development need</button>` : ''}</div>
+    ${xs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Training</th><th>When</th><th>Status</th><th class="r">Hours</th><th class="r">Before</th><th class="r">After</th>${!mine ? '<th>Manager rating</th>' : ''}</tr></thead><tbody>
+      ${xs.map(({ y, t }) => `<tr class="click" data-act="trOpen" data-id="${t.id}"><td><b>${esc(t.title)}</b><div class="fine">${esc(t.category || '')}, ${t.kind === 'internal' ? 'internal' : 'external'}</div></td><td>${trWhen(t)}</td><td>${trBadge(EN_STATUS, y.status)}</td>
+        <td class="r">${y.status === 'attended' ? num(+y.hours || trHours(t), 1) : ''}</td><td class="r">${(y.quiz || {}).pre ? `${y.quiz.pre.pct}%` : ''}</td><td class="r">${(y.quiz || {}).post ? `${y.quiz.post.pct}%` : ''}</td>${!mine ? `<td>${y.mgrReview ? num(avgOf(Object.values(y.mgrReview.ratings || {})), 1) : ''}</td>` : ''}</tr>`).join('')}</tbody></table></div>` : '<div class="empty">No training yet.</div>'}
+    ${needs.length ? `<h3>Development needs</h3><table class="t"><tbody>${needs.map((n) => `<tr><td><b>${esc(n.topic)}</b><div class="fine">${esc(n.category || '')}${n.note ? `. ${esc(n.note)}` : ''}</div></td><td>${trBadge(NEED_PRI, n.priority)}</td><td>${trBadge(NEED_ST, trNeedStatus(n))}</td></tr>`).join('')}</tbody></table>` : ''}</div>`;
+};
+
+/* ---------------------------------------------------------------- demo data */
+function trainingDemo(co) {
+  const by = (n) => S.employees.find((e) => e.companyId === co.id && fullName(e) === n);
+  const [vik, div, arj, sne, roh, mee, far, lak, kir] = ['Vikram Menon', 'Divya Shetty', 'Arjun Nair', 'Sneha Kulkarni', 'Rohit Bhat', 'Meera Iyer', 'Farhan Sheikh', 'Lakshmi Gowda', 'Kiran Desai'].map(by);
+  if (!vik || !mee || !kir) return;
+  const t0 = todayISO(); const mk = (o) => { const t = { id: uid(), no: nextNo('trn', 'TRN-'), companyId: co.id, materials: [], fbQs: FB_DEFAULT.map((x) => [...x]), log: [], createdBy: kir.id, createdAt: Date.now(), mgrReviewDays: 30, mode: 'classroom', startTime: '10:00', endTime: '17:00', ...o }; S.trainings.push(t); return t; };
+  const en = (t, e, status, extra = {}) => { const x = { id: uid(), trainingId: t.id, companyId: co.id, empId: e.id, status, by: kir.id, at: Date.now(), log: [], hours: status === 'attended' ? trHours(t) : 0, ...extra }; S.trainingEnrols.push(x); return x; };
+  const fb = (t, e, r, liked, improve, rec = 'Yes') => S.trainingFeedback.push({ id: uid(), trainingId: t.id, companyId: co.id, empId: e.id, ratings: Object.fromEntries(FB_DEFAULT.map(([k], i) => [k, r[i]])), liked, improve, recommend: rec, at: Date.now() });
+  const q = (pct, n = 5) => ({ score: Math.round(pct * n / 100), total: n, pct, passed: pct >= 60, answers: {}, at: Date.now() });
+  const quiz = { pre: true, post: true, pass: 60, questions: [
+    { id: 'q1', text: 'Which of these prevents SQL injection?', options: ['Escaping quotes by hand', 'Parameterised queries', 'Longer passwords', 'HTTPS'], correct: 1 },
+    { id: 'q2', text: 'Where should secrets such as API keys be kept?', options: ['In the code', 'In a secrets manager', 'In the README', 'In a public bucket'], correct: 1 },
+    { id: 'q3', text: 'What does OWASP publish?', options: ['A list of top web risks', 'A programming language', 'A database', 'A cloud'], correct: 0 },
+    { id: 'q4', text: 'Input from users should be…', options: ['Trusted', 'Validated on the server', 'Validated only in the browser', 'Logged in full'], correct: 1 },
+    { id: 'q5', text: 'Least privilege means…', options: ['Everyone is an administrator', 'Each account has only the access it needs', 'No passwords', 'Read-only databases'], correct: 1 }] };
+  const s1 = mk({ title: 'Secure coding practices', category: 'Technical', kind: 'internal', trainerIds: [vik.id], start: addDays(t0, -70), end: addDays(t0, -69), status: 'completed', capacity: 12, venue: 'Training room, 3rd floor', hours: 12, cost: 0,
+    objectives: 'Recognise the OWASP top ten risks\nWrite code that resists injection and broken access control', audience: 'Developers and testers', quiz,
+    materials: [{ id: uid(), kind: 'link', name: 'OWASP Top Ten', url: 'https://owasp.org/www-project-top-ten/', at: Date.now(), by: vik.id }] });
+  [[div, 40, 80], [arj, 60, 100], [sne, 40, 60]].forEach(([e, a, b]) => en(s1, e, 'attended', { quiz: { pre: q(a), post: q(b) }, mgrReview: e === arj ? { ratings: { applied: 4, improved: 4, worth: 5 }, comment: 'Now reviews pull requests for security issues.', by: vik.id, at: Date.now() } : undefined }));
+  if (roh) en(s1, roh, 'absent');
+  fb(s1, div, [5, 4, 5, 4, 3, 3, 4, 4, 4], 'Real examples from our own code.', 'More hands-on exercises; the second day felt rushed.');
+  fb(s1, arj, [5, 5, 5, 4, 4, 3, 4, 5, 5], 'The live demo of an injection attack.', 'Slow down on access control; share the slides before.');
+  fb(s1, sne, [4, 4, 5, 3, 3, 2, 3, 4, 4], 'Clear checklists.', 'Too fast in the afternoon. Fewer slides, more practice.', 'Maybe');
+  const s2 = mk({ title: 'Negotiation skills for account managers', category: 'Sales and customer', kind: 'external', trainer: { name: 'Rhea Kapoor', org: 'Bridge Learning', email: 'rhea@bridgelearning.example', phone: '9845011122' },
+    start: addDays(t0, -40), end: addDays(t0, -40), status: 'completed', capacity: 10, venue: 'Bridge Learning, Indiranagar', mode: 'provider', hours: 7, cost: 45000, audience: 'Sales team' });
+  [far, lak].filter(Boolean).forEach((e) => en(s2, e, 'attended'));
+  if (far) fb(s2, far, [4, 3, 5, 4, 5, 4, 2, 3, 4], 'Role plays with feedback.', 'The workbook was thin; would like templates to take away.');
+  if (lak) fb(s2, lak, [4, 4, 5, 5, 5, 4, 3, 2, 4], 'Very engaging trainer.', 'Venue was hard to reach and the AC did not work. Handouts please.');
+  const s3 = mk({ title: 'Leadership essentials for first-time managers', category: 'Leadership and management', kind: 'external', trainer: { name: 'Anand Rao', org: 'Northstar Leadership', email: 'anand@northstar.example' },
+    start: addDays(t0, 20), end: addDays(t0, 21), status: 'scheduled', capacity: 8, venue: 'Hotel Lalit Ashok, Bengaluru', hours: 14, cost: 120000, closeBy: addDays(t0, 12), audience: 'People managers in their first two years',
+    objectives: 'Give feedback that helps\nRun one-to-ones\nDelegate and follow up' });
+  en(s3, mee, 'approved'); if (div) en(s3, div, 'requested', { by: div.id, note: 'I started managing Rohit this year.' });
+  mk({ title: 'POSH awareness (prevention of sexual harassment)', category: 'Compliance and safety', kind: 'internal', trainerIds: [kir.id], start: addDays(t0, 35), end: addDays(t0, 35), startTime: '15:00', endTime: '17:00', status: 'scheduled', mandatory: true, mode: 'virtual', link: 'https://meet.example.com/posh', audience: 'Everyone', quiz: { pre: false, post: true, pass: 80, questions: [] } });
+  [[arj, 'Kubernetes and container operations', 'Technical', 'high', 'Moving our services to Kubernetes next quarter.'], [sne, 'Public speaking', 'Soft skills', 'medium', 'Will present at client reviews.'], [roh, 'Secure coding practices', 'Technical', 'high', 'Missed the last session.']]
+    .filter(([e]) => e).forEach(([e, topic, category, priority, note]) => S.trainingNeeds.push({ id: uid(), companyId: co.id, empId: e.id, topic, category, priority, note, status: 'open', by: e.managerId || kir.id, at: Date.now(), source: 'manager', targetDate: addDays(t0, 90) }));
+}
+
 /* ---------------------------------------------------------------- server state and session (used by the React app) */
 function loadServerState(state, meId) {
   S = hydrate(state);
@@ -6221,6 +6795,7 @@ function loadDemo() {
     letterNo: 'OL/NRPL/2026-27/0001', issuedAt: Date.now() - 2 * 86400000, issuedBy: emps[11].id };
   S.seq['ol-' + B.id] = 1; a7.followups.push({ id: uid(), due: addDays(todayISO(), 3), note: 'Check on offer decision', done: false, by: emps[11].id });
   const a8 = app(r3, ca8, 'interview', 3); iv(a8, 'Store manager round', addDays(todayISO(), 1), '16:00', [emps[12]], 'scheduled');
+  trainingDemo(A);
   me = save0; S.audit = [];
 }
 

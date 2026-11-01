@@ -60,7 +60,7 @@ export default function Approvals() {
   return (
     <div className="card">
       <h2>Waiting for you</h2>
-      <p className="sub">Leave, attendance corrections, goal sheets, resignations and clearances, job requisitions, offers and interview feedback, expense claims, leave encashment, promotion proposals, statutory detail changes, enrolment tasks for new joiners, salary revision plans, and leavers to mark on the EPFO and ESIC portals.</p>
+      <p className="sub">Leave, attendance corrections, goal sheets, resignations and clearances, job requisitions, offers and interview feedback, expense claims, leave encashment, promotion proposals, statutory detail changes, enrolment tasks for new joiners, salary revision plans, leavers to mark on the EPFO and ESIC portals, and training requests, questionnaires, feedback and ratings.</p>
       {items.length ? (
         <div className="scroll"><table className="t">
           <thead><tr><th>Employee</th><th>Request</th><th>When</th><th>Details</th><th /></tr></thead>

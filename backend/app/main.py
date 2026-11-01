@@ -28,14 +28,14 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response as RawResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import doctemplates, mailer, migrate, policy, repo
+from . import doctemplates, mailer, migrate, policy, repo, training
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
@@ -474,6 +474,12 @@ def _file_visible(conn, fid: str, me: dict) -> bool:
     for table in ("expense_claims", "approval_requests"):
         if any(me["id"] in (repo.loads(d).get("participants") or []) or emp == me["id"] for emp, d in hit(table)):
             return True
+    tr_rows = hit("trainings")
+    for _emp, d in tr_rows:     # training content: the trainers and the people who attended
+        t = repo.loads(d)
+        if training.is_trainer(t, me["id"]) or conn.execute(text(
+                "SELECT 1 FROM training_enrolments WHERE training_id=:t AND emp_id=:e AND status='attended'"), {"t": t.get("id"), "e": me["id"]}).fetchone():
+            return True
     rows = hit("leave_requests")
     if rows:
         ctx = policy.make_ctx(me, repo.employees_index(conn))
@@ -631,6 +637,108 @@ def comp_notify(body: CompNotifyBody, me=Depends(current_user)):
             return {"sent": False, "reason": "the e-mail server refused the message; it shows in Approvals"}
         repo.audit_add(conn, "E-mail sent", f"comp:{body.cycleId}:{body.poolId}:{body.event}", me["id"], module="compensation", ref_type="comp", ref_id=body.cycleId)
         return {"sent": True, "to": f"{len(to)} recipient{'s' if len(to) > 1 else ''}"}
+
+
+# ---------------------------------------------------------------- training and development
+TRAINING_UPLOAD_MB = int(os.getenv("TRAINING_UPLOAD_MB", "200"))
+
+
+def _training_for(conn, tid: str, me: dict, need_manage: bool):
+    t = repo.get_records(conn, "trainings", [tid]).get(tid)
+    if not t:
+        raise HTTPException(404, "That training is not saved yet.")
+    ctx = policy.make_ctx(me, repo.employees_index(conn))
+    manage = ctx.is_hr_for(t.get("companyId")) or training.is_trainer(t, me["id"])
+    if need_manage and not manage:
+        raise HTTPException(403, "Only HR and the trainer can do this.")
+    return t, ctx, manage
+
+
+@app.post("/api/training/upload")
+async def training_upload(trainingId: str = Form(...), file: UploadFile = File(...), me=Depends(current_user)):
+    """Training content: slides, documents, spreadsheets, PDFs, pictures, audio, video or a zip. HR and the
+    training's trainers upload it; it opens for the people who attended (see _file_visible)."""
+    with repo.engine.connect() as conn:
+        t, _ctx, _m = _training_for(conn, trainingId, me, True)
+    data = await file.read()
+    if len(data) > TRAINING_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"Training content can be up to {TRAINING_UPLOAD_MB} MB a file. Share larger videos as a link.")
+    mime = file.content_type or "application/octet-stream"
+    if not mime.startswith(training.CONTENT_MIME):
+        raise HTTPException(400, "Upload a document, presentation, spreadsheet, PDF, picture, audio, video or zip file.")
+    fid = _store_file(data, file.filename, mime, t.get("companyId"), me["id"])
+    return {"id": fid, "name": file.filename, "size": len(data), "mime": mime}
+
+
+class ScoreBody(BaseModel):
+    trainingId: str
+    phase: str
+    answers: dict = Field(default_factory=dict)
+
+
+@app.post("/api/training/score")
+def training_score(body: ScoreBody, me=Depends(current_user)):
+    """Marks a participant's answers. The correct answers never leave the server for participants; the same
+    marking is applied again when the answers are saved."""
+    with repo.engine.connect() as conn:
+        t, _ctx, manage = _training_for(conn, body.trainingId, me, False)
+        if not manage and not conn.execute(text("SELECT 1 FROM training_enrolments WHERE training_id=:t AND emp_id=:e AND status IN ('requested','approved','attended')"),
+                                           {"t": t["id"], "e": me["id"]}).fetchone():
+            raise HTTPException(403, "You are not taking part in this training.")
+    if body.phase not in ("pre", "post") or not (t.get("quiz") or {}).get(body.phase):
+        raise HTTPException(400, "This training has no such questionnaire.")
+    return training.score(t.get("quiz"), body.answers)
+
+
+class TrainerReportBody(BaseModel):
+    key: str              # emp:<id> for an internal trainer, ext:<e-mail or name> for an external one
+    labels: dict = Field(default_factory=dict)
+
+
+@app.post("/api/training/report-mail")
+def training_report_mail(body: TrainerReportBody, me=Depends(current_user)):
+    """E-mails a trainer their feedback report: ratings against the company's average and what to improve.
+    Participants' names are never included."""
+    with repo.engine.begin() as conn:
+        emps = repo.employees_index(conn)
+        ctx = policy.make_ctx(me, emps)
+        st = repo.load_state(conn)
+        trs = [t for t in st["trainings"] if ctx.is_hr_for(t.get("companyId"))]
+        if not trs:
+            raise HTTPException(403, "Only HR sends trainer reports.")
+        ids = {t["id"] for t in trs}
+        fb = [f for f in st["trainingFeedback"] if f.get("trainingId") in ids]
+        en = [x for x in st["trainingEnrols"] if x.get("trainingId") in ids]
+        r = training.report(body.key, trs, fb, en, body.labels)
+        if not r["trainings"]:
+            raise HTTPException(400, "This trainer has no completed trainings yet.")
+        if body.key.startswith("emp:"):
+            e = emps.get(body.key[4:]) or {}
+            to, name = e.get("email"), f"{e.get('firstName', '')} {e.get('lastName', '')}".strip()
+        else:
+            tr = next((t.get("trainer") or {} for t in r["trainings"] if (t.get("trainer") or {}).get("email")), {})
+            to, name = tr.get("email"), tr.get("name") or "Trainer"
+        if not to:
+            raise HTTPException(400, "There is no e-mail address for this trainer. Add it to the training.")
+        if not mailer.configured():
+            return {"sent": False, "reason": "e-mail is not set up on the server; print the report instead"}
+        lines = [f"Dear {name},", "", f"Thank you for running {len(r['trainings'])} training{'s' if len(r['trainings']) > 1 else ''} with us: "
+                 + ", ".join(f"{t.get('title')} ({t.get('start')})" for t in r["trainings"]) + ".",
+                 f"{r['attended']} of {r['enrolled']} participants attended and {r['feedback']} gave feedback. Ratings are out of 5.", "", "Ratings"]
+        lines += [f"- {x['label']}: {x['avg']}" + (f" (all our trainings {x['org']})" if x["org"] else "") for x in reversed(r["rows"])]
+        lines += ["", "Areas to improve"] + [f"- {x['label']}: rated {x['avg']}" for x in r["improve"]]
+        if r["comments"]:
+            lines += ["", "What participants would like improved"] + [f"- {c}" for c in r["comments"][:30]]
+        if r["liked"]:
+            lines += ["", "What participants liked"] + [f"- {c}" for c in r["liked"][:15]]
+        lines += ["", "Feedback is anonymous.", "", "Human resources"]
+        try:
+            mailer.send([to], f"Your training feedback report ({len(r['trainings'])} training{'s' if len(r['trainings']) > 1 else ''})", "\n".join(lines))
+        except Exception as e:  # noqa: BLE001
+            log.warning("Mail failed: %s", e)
+            return {"sent": False, "reason": "the e-mail server refused the message; print the report instead"}
+        repo.audit_add(conn, "Trainer report e-mailed", f"{name} <{to}>", me["id"], module="training", ref_type="trainer", ref_id=body.key[:64])
+        return {"sent": True, "to": to}
 
 
 # ---------------------------------------------------------------- document templates (Word files filled from the database)

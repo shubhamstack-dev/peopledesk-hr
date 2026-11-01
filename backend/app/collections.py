@@ -74,6 +74,12 @@ COLLS = [
     Coll("compCycles", "comp_cycles", {"name": ("name", "str"), "status": ("status", "str"), "effective": ("effective", "date")}),
     Coll("compBudgets", "comp_budgets", {"cycle_id": ("cycleId", "str"), "parent_id": ("parentId", "str"), "status": ("status", "str")}),
     Coll("compRecs", "comp_recommendations", {"cycle_id": ("cycleId", "str"), "status": ("status", "str")}),
+    # v2.5: training and development (see training.py). Trainings, one enrolment per participant,
+    # participants' feedback (kept apart so trainers see it without names) and development needs
+    Coll("trainings", "trainings", {"title": ("title", "str"), "status": ("status", "str"), "start_date": ("start", "date")}),
+    Coll("trainingEnrols", "training_enrolments", {"training_id": ("trainingId", "str"), "status": ("status", "str")}),
+    Coll("trainingFeedback", "training_feedback", {"training_id": ("trainingId", "str")}),
+    Coll("trainingNeeds", "training_needs", {"status": ("status", "str")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 
