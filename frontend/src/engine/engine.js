@@ -98,6 +98,7 @@ function blank() {
     payComps: [], payInputs: [], payRuns: [], declarations: [], audit: [], seq: {},
     exits: [], reqs: [], cands: [], apps: [], interviews: [], otRecs: [], shiftPatterns: [],
     requests: [], expenseCats: [], expenseClaims: [], perfTemplates: [], onboardings: [], onboardTemplates: [], assets: [], docTypes: [], docTemplates: [],
+    compCycles: [], compBudgets: [], compRecs: [],
   };
 }
 /* Storage: the MySQL database behind the Python API. Changes are sent as they happen (see sync.js). */
@@ -867,6 +868,10 @@ const MENU = [
     { page: 'payroll', label: 'Payroll runs', show: HR },
     { page: 'form130', label: 'TDS certificates (Form 130 / 16)', show: HR },
     { page: 'esi', label: 'ESI', show: HR },
+    { page: 'statreg', tab: 'pf', label: 'PF register', show: HR },
+    { page: 'statreg', tab: 'esi', label: 'ESI register', show: HR },
+    { page: 'statreg', tab: 'pt', label: 'Professional tax register', show: HR },
+    { page: 'statreg', tab: 'moves', label: 'PF and ESI joiners and leavers', show: HR },
     { page: 'paysetup', tab: 'comps', label: 'Pay components', show: HR },
     { page: 'otpolicy', tab: 'pay', label: 'Overtime pay', show: HR },
     { page: 'paysetup', tab: 'pf', label: 'PF, ESI and Labour Code rates', show: HR },
@@ -875,6 +880,9 @@ const MENU = [
     { page: 'paysetup', tab: 'tax', label: 'Income tax', show: HR },
     { page: 'varpay', label: 'Variable pay', show: HR },
     { page: 'sap', label: 'SAP HR export', show: HR },
+  ] },
+  { grp: 'comp', label: 'Compensation', items: [
+    { page: 'compplan', label: 'Salary revision planning', show: () => isHR() || S.compBudgets.length > 0 },
   ] },
   { grp: 'exp', label: 'Expenses', items: [
     { page: 'expenses', label: 'My expense claims' },
@@ -885,7 +893,7 @@ const MENU = [
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
     { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
-const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates' };
+const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf' };
 const itemShown = (it) => !it.show || it.show();
 const itemOn = (it) => (R.page === it.page && (!it.tab || (R.q.get('tab') || DEFAULT_TAB[it.page]) === it.tab)) || ({ exit: 'exits', req: 'reqs', app: 'reqs' }[R.page] === it.page);
 const itemHref = (it) => `#/${it.page}${it.tab ? '?tab=' + it.tab : ''}`;
@@ -2235,7 +2243,7 @@ ACT.repECR = (b) => { const { run, rows } = runRows(b.dataset.id); const ceil = 
   downloadText(`ECR_${company().pfCode || company().code}_${run.month}.txt`, lines.join('\n')); };
 ACT.repESI = (b) => { const { run, rows } = runRows(b.dataset.id);
   writeBook(`ESI_${company().code}_${run.month}.xlsx`, { Contribution: rows.filter(({ r }) => r.esi.covered).map(({ r, e }) => ({ 'IP Number': e.esiNo || '', 'IP Name': fullName(e), 'No of Days for which wages paid/payable during the month': Math.round(r.paidDays), 'Total Monthly Wages': Math.round(r.esi.wage),
-    'Reason Code for Zero workings days': r.paidDays ? '' : 1, 'Last Working Day': e.exit && e.exit.lwd && e.exit.lwd.startsWith(run.month) ? dmy(e.exit.lwd).replace(/-/g, '/') : '', 'Employee contribution': r.esi.ee, 'Employer contribution': r.esi.er })) }); };
+    'Reason Code for Zero workings days': esiReasonCode(e, run.month, r), 'Last Working Day': e.exit && e.exit.lwd && e.exit.lwd.startsWith(run.month) ? dmy(e.exit.lwd).replace(/-/g, '/') : '', 'Employee contribution': r.esi.ee, 'Employer contribution': r.esi.er })) }); };
 ACT.repPT = (b) => { const { run, rows } = runRows(b.dataset.id);
   writeBook(`PT_${company().code}_${run.month}.xlsx`, { 'Professional tax': rows.filter(({ r }) => r.pt).map(({ r, e }) => ({ 'Employee number': e.empNo, Employee: fullName(e), State: STATES[(loc(e.locationId) || {}).state || company().state] || '', Gross: r.gross, 'PT deducted': r.pt })) }); };
 ACT.repLWF = (b) => { const { run, rows } = runRows(b.dataset.id); const list = rows.filter(({ r }) => r.lwf.ee || r.lwf.er);
@@ -2607,7 +2615,8 @@ const exitStage = (x) => (['withdrawn', 'rejected'].includes(x.status) ? x.statu
 function syncExit(x) {
   const e = empById(x.empId);
   if (['withdrawn', 'rejected'].includes(x.status)) { if (e.status !== 'exited') { e.status = 'active'; e.exit = null; } return; }
-  e.exit = { resignDate: x.resignDate, lwd: x.lwd, type: x.type, noticeDays: x.noticeDays, noticeServed: Math.max(0, Math.round((D(x.lwd) - D(x.resignDate)) / 86400000)), waiveNotice: !!x.waiveNotice, reason: x.reason, exitId: x.id };
+  e.exit = { resignDate: x.resignDate, lwd: x.lwd, type: x.type, noticeDays: x.noticeDays, noticeServed: Math.max(0, Math.round((D(x.lwd) - D(x.resignDate)) / 86400000)), waiveNotice: !!x.waiveNotice, reason: x.reason, exitId: x.id,
+    pfDoe: (x.stat || {}).pfDoe || '', pfReason: (x.stat || {}).pfReason || '', esiReason: (x.stat || {}).esiReason ?? '' };
   if (x.status === 'completed') { e.status = 'exited'; e.blocked = true; } else if (x.status === 'notice') e.status = 'notice';
 }
 function newExit(e, d, by) {
@@ -2721,6 +2730,8 @@ VIEWS.exit = () => {
         <div class="btns" style="justify-content:flex-start">${fs.status === 'pending' ? `<button class="btn pri" data-act="fnfApprove" ${clearancesDone(x) ? '' : 'disabled title="Clearances are still open"'}>Approve settlement</button>` : ''}${fs.status === 'approved' ? '<button class="btn pri" data-act="fnfPostX">Post to payroll</button>' : ''}
           <button class="btn" data-act="fnfPrint">Print statement</button></div>`);
     }
+    // PF and ESI exit (EPFO date of exit and reason; ESIC reason code and last working day)
+    if (hr) html += sec('PF and ESI exit', statExitHtml(e, x), `<button class="btn" data-act="statExit" data-id="${x.id}">Record PF and ESI exit</button>`);
     // completion and letters
     if (hr) html += sec('Completion', x.status === 'completed' ? `<p>Completed on ${dt(x.completedAt)} by ${esc(nameOf(x.completedBy))}. Rehire: ${x.rehireEligible ? '<span class="badge ok">Eligible</span>' : '<span class="badge bad">Not eligible</span>'} ${esc(x.rehireNote || '')}</p>
         <div class="btns" style="justify-content:flex-start"><button class="btn" data-act="letter" data-k="relieving">Relieving letter</button><button class="btn" data-act="letter" data-k="experience">Experience letter</button>${x.rehireEligible !== false ? `<a class="btn" href="#/rehire">Rehire</a>` : ''}</div>`
@@ -2797,6 +2808,8 @@ ACT.exitComplete = async () => {
   const x = curExit(), e = empById(x.empId);
   const miss = [!clearancesDone(x) && 'department clearances', !(x.interview.done || x.interview.waived) && 'the exit interview', x.fnf.status !== 'posted' && 'posting the settlement'].filter(Boolean);
   if (miss.length) { toast(`Still to do: ${miss.join(', ')}.`); return; }
+  const sx = statExitOf(e);
+  if (sx && (!sx.pfDone || !sx.esiDone) && !(await confirmBox('PF and ESI exit not recorded', `${[!sx.pfDone && 'the date of exit on the EPFO portal', !sx.esiDone && 'the exit on the ESIC portal'].filter(Boolean).join(' and ')} is not recorded yet. The registers list this person as a leaver to update until it is. Complete the exit anyway?`, 'Complete anyway'))) return;
   if (x.lwd > todayISO() && !(await confirmBox('Complete before the last working day?', `The last working day is ${dmy(x.lwd)}. The employee will lose access now.`, 'Complete now'))) return;
   x.rehireEligible = $('[name=rehireOk]').value === 'yes'; x.rehireNote = $('[name=rehireNote]').value.trim(); x.status = 'completed'; x.completedAt = Date.now(); x.completedBy = me.id;
   xlog(x, `Exit completed; ${x.rehireEligible ? 'eligible' : 'not eligible'} for rehire`); syncExit(x);
@@ -4521,12 +4534,14 @@ function extPending() {
   Object.values(byOnb).forEach(({ o, items }) => out.push({ kind: 'onb', r: { empId: o.empId }, what: `New joiner on ${dShort(o.doj)}: ${items.join(', ')}`, link: '#/onboarding/' + o.id }));
   S.assets.filter((a) => a.status === 'issued' && (a.custodianIds || []).includes(me.id) && S.exits.some((x) => x.empId === a.empId && ['notice', 'hr'].includes(x.status)))
     .forEach((a) => out.push({ kind: 'asset', r: { empId: a.empId }, what: `Collect ${a.type.toLowerCase()} ${a.tag} before they leave`, link: '#/assets' }));
+  statPending().forEach((x) => out.push(x));
+  cpPending().forEach((x) => out.push(x));
   return out;
 }
 function extEnsureSchema() {
   S.employees.forEach((e) => { if (e.emergency && !e.emergencyName && !e.emergencyRelation) e.emergencyName = e.emergency; });
   S.companies.forEach((co) => { if (!co.timeMode) co.timeMode = 'shift'; });
-  ['requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+  ['requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets', 'docTypes', 'docTemplates', 'compCycles', 'compBudgets', 'compRecs'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
 }
 
 
@@ -5116,6 +5131,874 @@ ACT.insEdit = (b) => {
     co.insurancePolicies = co.insurancePolicies.filter((x) => x !== p0); saveNow(); route();
   };
 };
+
+
+/* =====================================================================
+   PeopleDesk 2.4: statutory registers
+   PF, ESI and professional tax registers for every employee of the company over any period (a month, a
+   quarter, a financial year), from the payroll runs. Employees who are not members, not covered or not
+   liable are listed too, with the reason. Joiners and leavers: who needs a UAN or IP number, and who has
+   left but is not yet marked as left on the EPFO and ESIC portals.
+   ===================================================================== */
+const PF_EXIT = { C: 'Cessation (short service)', S: 'Superannuation', R: 'Retirement', D: 'Death in service', P: 'Permanent disablement' };
+const ESI_REASON = { 0: 'Without reason', 1: 'On leave', 2: 'Left service', 3: 'Retired', 4: 'Out of coverage', 5: 'Expired', 6: 'Non-implemented area',
+  7: 'Compliance by immediate employer', 8: 'Suspension of work', 9: 'Strike or lockout', 10: 'Retrenchment', 11: 'No work', 12: 'Does not belong to this employer', 13: 'Duplicate IP' };
+const ESI_LEFT = ['2', '3', '5', '10'];   // reason codes that end employment; the ESIC file needs the last working day with them
+function pfExitDefault(e, x) {
+  if (x.type === 'death') return 'D';
+  if (x.type === 'retirement') return e.dob && yearsBetween(e.dob, x.lwd) >= 58 ? 'S' : 'R';
+  return 'C';
+}
+const esiExitDefault = (x) => (x.type === 'death' ? '5' : x.type === 'retirement' ? '3' : '2');
+/* What PF and ESI still need for someone leaving: the EPFO date of exit and reason, the ESIC reason code */
+function statExitOf(e) {
+  const x = e && exitOf(e.id); if (!x || !x.lwd) return null;
+  const st = x.stat || {};
+  const runs = S.payRuns.filter((r) => r.companyId === e.companyId && r.results && r.results[e.id]).sort((a, b) => (a.month < b.month ? 1 : -1));
+  const lastPf = runs.find((r) => (r.results[e.id].pf || {}).wage > 0);
+  const lastEsi = runs.find((r) => (r.results[e.id].esi || {}).covered);
+  const pfApplies = e.pfOn !== false && (!!e.uan || !!lastPf);
+  const esiApplies = e.esiOn !== false && !!lastEsi && lastEsi.month >= ymAdd(x.lwd.slice(0, 7), -6);
+  return { x, st, pfApplies, esiApplies, lastPf: lastPf ? lastPf.month : '', lastEsi: lastEsi ? lastEsi.month : '',
+    pfDoe: st.pfDoe || x.lwd, pfReason: st.pfReason || pfExitDefault(e, x), esiReason: String(st.esiReason ?? esiExitDefault(x)),
+    pfDone: !pfApplies || !!st.epfoOn, esiDone: !esiApplies || !!st.esicOn };
+}
+/* ESIC monthly file: reason code for a leaver in their last month, or for a month with no days paid */
+function esiReasonCode(e, ym, r) {
+  if (e.exit && e.exit.lwd && e.exit.lwd.startsWith(ym)) { const sx = statExitOf(e); return sx ? +sx.esiReason : 2; }
+  return r.paidDays ? '' : 1;
+}
+function statExitHtml(e, x) {
+  const sx = statExitOf(e); if (!sx) return '<p class="mut">No exit date yet.</p>';
+  const done = (ok, applies, on) => (!applies ? '<span class="badge">Not applicable</span>' : ok ? `<span class="badge ok">Updated ${on ? dmy(on) : ''}</span>` : '<span class="badge warn">Not yet updated</span>');
+  return `<p class="sub">After the last working day, mark the exit on the EPFO unified portal (date of exit and reason) and on the ESIC portal (reason code with the last working day in the monthly contribution). Record it here; the registers and the ESIC file use it.</p>
+    <table class="t"><tbody>
+      <tr><td>Provident fund</td><td>${sx.pfApplies ? `UAN ${esc(e.uan || 'missing')}. Date of exit <b>${dmy(sx.pfDoe)}</b>, reason <b>${esc(PF_EXIT[sx.pfReason] || sx.pfReason)}</b>. Last PF wages in ${sx.lastPf ? monthName(sx.lastPf) : '—'}.` : 'Not a PF member.'}</td><td>${done(sx.pfDone, sx.pfApplies, sx.st.epfoOn)}</td></tr>
+      <tr><td>ESI</td><td>${sx.esiApplies ? `IP number ${esc(e.esiNo || 'missing')}. Reason code <b>${esc(sx.esiReason)} ${esc(ESI_REASON[sx.esiReason] || '')}</b>, last working day ${dmy(x.lwd)}, in the ${monthName(x.lwd.slice(0, 7))} contribution.` : 'Not covered by ESI when leaving.'}</td><td>${done(sx.esiDone, sx.esiApplies, sx.st.esicOn)}</td></tr>
+    </tbody></table>${sx.st.note ? `<p class="fine">${esc(sx.st.note)}</p>` : ''}${sx.st.by ? `<p class="fine">Recorded by ${esc(nameOf(sx.st.by))}, ${dt(sx.st.at)}</p>` : ''}`;
+}
+ACT.statExit = (b) => {
+  const x = S.exits.find((y) => y.id === b.dataset.id); if (!x) return; const e = empById(x.empId); const sx = statExitOf(e); if (!sx) return;
+  if (!isHR(x.companyId)) { toast('Only HR records the PF and ESI exit.'); return; }
+  const fields = [
+    ...(sx.pfApplies ? [{ k: 'pfDoe', label: 'PF date of exit', type: 'date', req: true }, { k: 'pfReason', label: 'PF reason for leaving', type: 'select', opts: Object.entries(PF_EXIT) },
+      { k: 'epfoOn', label: 'Marked on the EPFO portal on', type: 'date', help: 'Leave empty until it is done' }] : []),
+    ...(sx.esiApplies ? [{ k: 'esiReason', label: 'ESI reason code', type: 'select', opts: Object.entries(ESI_REASON).map(([k, v]) => [k, `${k} ${v}`]) },
+      { k: 'esicOn', label: 'Updated on the ESIC portal on', type: 'date', help: 'Leave empty until it is done' }] : []),
+    { k: 'note', label: 'Note', wide: true }];
+  const v = { pfDoe: sx.pfDoe, pfReason: sx.pfReason, epfoOn: sx.st.epfoOn || '', esiReason: sx.esiReason, esicOn: sx.st.esicOn || '', note: sx.st.note || '' };
+  openDlg(`<form class="dlg" id="sxF" novalidate><h2>PF and ESI exit: ${esc(fullName(e))}</h2><p class="fine" style="margin:0">Last working day ${dmy(x.lwd)}, ${esc(EXIT_TYPES[x.type] || '')}. The date of exit on the EPFO portal is normally the last working day; it can be marked only after the member's last contribution is paid. ESIC takes the reason code and last working day in that month's contribution.</p>
+    ${!sx.pfApplies && !sx.esiApplies ? '<div class="note">Neither PF nor ESI applies to this employee.</div>' : ''}
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="sxE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#sxF').onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields);
+    if (d.pfDoe && d.pfDoe < e.doj) { $('#sxE').textContent = 'The date of exit is before the date of joining.'; return; }
+    if (sx.esiApplies && ![...ESI_LEFT, '4'].includes(String(d.esiReason))) { $('#sxE').textContent = 'For someone leaving, choose left service, retired, expired or retrenchment (or out of coverage).'; return; }
+    x.stat = { ...(x.stat || {}), ...d, by: me.id, at: Date.now() };
+    xlog(x, `PF and ESI exit recorded${d.epfoOn ? `; EPFO updated ${dmy(d.epfoOn)}` : ''}${d.esicOn ? `; ESIC updated ${dmy(d.esicOn)}` : ''}`);
+    const now = statExitOf(e);
+    if (now.pfDone && now.esiDone) x.clearances.forEach((c) => c.items.forEach((it) => { if (/PF|ESI/.test(it.name) && it.status === 'pending' && c.status !== 'cleared') it.status = 'cleared'; }));
+    syncExit(x); audit('PF and ESI exit recorded', fullName(e), 'payroll', 'employee', e.id); saveNow(); closeDlg(); toast('Saved'); route();
+  };
+};
+function statPending() {
+  if (!me) return [];
+  return S.exits.filter((x) => isHR(x.companyId) && ['notice', 'completed'].includes(x.status) && x.lwd && x.lwd <= todayISO()).map((x) => ({ x, e: empById(x.empId) }))
+    .filter(({ e }) => e).map(({ x, e }) => ({ x, e, sx: statExitOf(e) })).filter(({ x, sx }) => sx && (!sx.pfDone || !sx.esiDone) && sx.x === x)
+    .map(({ x, e, sx }) => ({ kind: 'statexit', r: { empId: e.id, lwd: x.lwd }, what: `Mark exit on ${[!sx.pfDone && 'EPFO', !sx.esiDone && 'ESIC'].filter(Boolean).join(' and ')}`, link: '#/exit/' + x.id }));
+}
+
+/* ---------------------------------------------------------------- the registers */
+function regPeriod() {
+  const ran = S.payRuns.filter((r) => r.companyId === CO).map((r) => r.month).sort();
+  const last = ran.length ? ran[ran.length - 1] : ymAdd(todayISO().slice(0, 7), -1);
+  let to = R.q.get('to') || last, from = R.q.get('from') || fyStart(to);
+  if (from > to) [from, to] = [to, from];
+  const months = []; for (let m = from; m <= to && months.length < 36; m = ymAdd(m, 1)) months.push(m);
+  return { from, to: months[months.length - 1], months, single: months.length === 1 };
+}
+const mEnd = (ym) => `${ym}-${pad(daysInMonth(ym))}`;
+const mShort = (ym) => new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
+/* Everyone employed for some part of the period, leavers included, in employee-number order */
+function regPeople(months) {
+  const s = `${months[0]}-01`, e = mEnd(months[months.length - 1]);
+  return S.employees.filter((x) => x.companyId === CO && x.doj && x.doj <= e && !(x.exit && x.exit.lwd && x.exit.lwd < s))
+    .sort((a, b) => String(a.empNo || '').localeCompare(String(b.empNo || ''), 'en', { numeric: true }));
+}
+function regMiss(run, e, ym) {
+  if (!run) return 'Payroll not run';
+  if (e.doj > mEnd(ym)) return 'Not yet joined';
+  if (e.exit && e.exit.lwd && e.exit.lwd < `${ym}-01`) return 'Left';
+  const sk = (run.skipped || []).find((x) => x.empId === e.id); return sk ? sk.reason : 'Not in this payroll';
+}
+const regLwd = (e) => (e.exit && e.exit.lwd) || '';
+const regIn = (iso, months) => !!iso && iso >= `${months[0]}-01` && iso <= mEnd(months[months.length - 1]);
+const stateOf = (e) => (loc(e.locationId) || {}).state || (coById(e.companyId) || {}).state || '';
+function ptSlab(e, gross) {
+  const st = stateOf(e);
+  const row = S.stat.pt.find((r) => r.state === st && (r.gender === 'all' || r.gender === e.gender) && gross >= r.from && gross <= (r.to === null ? Infinity : r.to));
+  return row ? `${inr0(row.from)}${row.to === null || row.to === Infinity ? ' and above' : ` to ${inr0(row.to)}`}` : 'Below the threshold';
+}
+/* One employee, one month, PF: wages and every share as in the ECR */
+function pfLine(x, ym) {
+  const p = x.pf, ceil = pfCeilingFor(ym);
+  return { gross: x.gross, epfW: Math.round(p.base), epsW: p.eps ? Math.round(Math.min(p.wage, ceil)) : 0, edliW: p.wage ? Math.round(Math.min(p.wage, ceil)) : 0,
+    ee: p.ee, vpf: p.vpf, epf: p.epf, eps: p.eps, edli: p.edli, admin: p.admin, ncp: p.ncp };
+}
+function regData(months) {
+  const runs = months.map((m) => runOf(CO, m));
+  const people = regPeople(months);
+  return { runs, people, cell: (e, i) => (runs[i] && runs[i].results[e.id]) || null };
+}
+const regRunBadge = (r) => (!r ? '<span class="badge">Not run</span>' : r.status === 'locked' ? '<span class="badge ok">Locked</span>' : '<span class="badge warn">Draft</span>');
+const sumBy = (arr, f) => arr.reduce((s, x) => s + (+f(x) || 0), 0);
+
+VIEWS.statreg = () => {
+  const tab = R.q.get('tab') || 'pf';
+  const P = regPeriod();
+  const co = company();
+  const tabs = [['pf', 'PF register'], ['esi', 'ESI register'], ['pt', 'Professional tax register'], ['moves', 'Joiners and leavers']];
+  const q = (o) => `#/statreg?${new URLSearchParams({ tab, from: P.from, to: P.to, ...o })}`;
+  const fy = fyStart(P.to);
+  const head = `<nav class="tabs">${tabs.map(([k, l]) => `<a href="#/statreg?${new URLSearchParams({ tab: k, from: P.from, to: P.to })}" class="${tab === k ? 'on' : ''}">${l}</a>`).join('')}</nav>
+    <div class="card"><div class="hd"><div><h2>${esc(tabs.find((t) => t[0] === tab)[1])}, ${esc(co.name)}</h2><p class="sub">${P.single ? monthName(P.from) : `${monthName(P.from)} to ${monthName(P.to)}`}. Built from the payroll runs; every employee on the rolls in the period is listed, including those not covered and those who left. Lock each month's payroll before filing.</p></div>
+      <div class="tools"><label class="fine">From <input type="month" class="inp" data-ch="regFrom" value="${P.from}"></label><label class="fine">To <input type="month" class="inp" data-ch="regTo" value="${P.to}"></label>
+        <a class="btn sm" href="${q({ from: P.to, to: P.to })}">One month</a><a class="btn sm" href="${q({ from: fy, to: ymAdd(fy, 11) })}">Financial year ${fyLabel(P.to)}</a>
+        <button class="btn" data-act="regExcel" data-tab="${tab}">Excel</button><button class="btn" data-act="regPrint" data-tab="${tab}">Print</button></div></div></div>`;
+  const body = tab === 'esi' ? regEsiHtml(P) : tab === 'pt' ? regPtHtml(P) : tab === 'moves' ? regMovesHtml(P) : regPfHtml(P);
+  return { title: tabs.find((t) => t[0] === tab)[1], html: head + body };
+};
+ACT.regFrom = (el) => { const p = new URLSearchParams(location.hash.split('?')[1] || ''); p.set('from', el.value); go('#/statreg?' + p); };
+ACT.regTo = (el) => { const p = new URLSearchParams(location.hash.split('?')[1] || ''); p.set('to', el.value); go('#/statreg?' + p); };
+
+/* ---- PF */
+function pfRegister(P) {
+  const { runs, people, cell } = regData(P.months);
+  const rows = people.map((e) => {
+    const lines = P.months.map((m, i) => { const x = cell(e, i); return x && x.pf && x.pf.wage > 0 ? pfLine(x, m) : null; });
+    const tot = (k) => sumBy(lines.filter(Boolean), (l) => l[k]);
+    const member = lines.some(Boolean);
+    const why = member ? '' : e.pfOn === false ? 'Not a PF member (excluded)' : P.months.map((m, i) => (cell(e, i) ? 'No PF wages' : regMiss(runs[i], e, m))).find(Boolean) || '';
+    return { e, lines, member, why, months: lines.filter(Boolean).length, gross: tot('gross'), epfW: tot('epfW'), epsW: tot('epsW'), edliW: tot('edliW'), ee: tot('ee'), vpf: tot('vpf'), epf: tot('epf'), eps: tot('eps'), edli: tot('edli'), admin: tot('admin'), ncp: tot('ncp') };
+  });
+  const monthly = P.months.map((m, i) => { const ls = people.map((e) => { const x = cell(e, i); return x && x.pf && x.pf.wage > 0 ? pfLine(x, m) : null; }).filter(Boolean);
+    const t = (k) => sumBy(ls, (l) => l[k]); return { m, run: runs[i], n: ls.length, epfW: t('epfW'), ac1: t('ee') + t('vpf') + t('epf'), ac2: t('admin'), ac10: t('eps'), ac21: t('edli'), ee: t('ee') + t('vpf'), er: t('epf') + t('eps') }; });
+  return { rows, monthly };
+}
+function regPfHtml(P) {
+  const { rows, monthly } = pfRegister(P);
+  const mem = rows.filter((r) => r.member), non = rows.filter((r) => !r.member);
+  const noUan = mem.filter((r) => !r.e.uan);
+  const T = (k) => sumBy(monthly, (x) => x[k]);
+  const lwdCell = (e) => { const l = regLwd(e); if (!l) return ''; const sx = statExitOf(e); return `${dmy(l)}${sx ? `<div class="fine">${esc(PF_EXIT[sx.pfReason] || '')}${sx.pfApplies && !sx.pfDone ? ' <span class="badge warn">EPFO not updated</span>' : ''}</div>` : ''}`; };
+  const detail = P.single
+    ? `<table class="t"><thead><tr><th>Employee</th><th>UAN</th><th>Joined</th><th>Left</th><th class="r">Gross</th><th class="r">EPF wages</th><th class="r">EPS wages</th><th class="r">EDLI wages</th><th class="r">Employee 12%</th><th class="r">VPF</th><th class="r">Employer EPF</th><th class="r">EPS 8.33%</th><th class="r">EDLI</th><th class="r">Admin</th><th class="r">NCP days</th></tr></thead><tbody>
+      ${mem.map((r) => { const l = r.lines[0]; return `<tr><td><b>${esc(fullName(r.e))}</b><div class="fine">${esc(r.e.empNo)}${r.e.pfNo ? `, ${esc(r.e.pfNo)}` : ''}</div></td><td class="mono">${r.e.uan ? esc(r.e.uan) : '<span class="badge warn">Missing</span>'}</td><td>${dmy(r.e.doj)}</td><td>${lwdCell(r.e)}</td>
+        <td class="r">${inr0(l.gross)}</td><td class="r">${inr0(l.epfW)}</td><td class="r">${inr0(l.epsW)}</td><td class="r">${inr0(l.edliW)}</td><td class="r">${inr0(l.ee)}</td><td class="r">${l.vpf ? inr0(l.vpf) : ''}</td><td class="r">${inr0(l.epf)}</td><td class="r">${inr0(l.eps)}</td><td class="r">${inr0(l.edli)}</td><td class="r">${inr0(l.admin)}</td><td class="r">${l.ncp || ''}</td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td><td></td><td></td><td class="r">${inr0(sumBy(mem, (r) => r.gross))}</td><td class="r">${inr0(sumBy(mem, (r) => r.epfW))}</td><td class="r">${inr0(sumBy(mem, (r) => r.epsW))}</td><td class="r">${inr0(sumBy(mem, (r) => r.edliW))}</td><td class="r">${inr0(sumBy(mem, (r) => r.ee))}</td><td class="r">${inr0(sumBy(mem, (r) => r.vpf))}</td><td class="r">${inr0(sumBy(mem, (r) => r.epf))}</td><td class="r">${inr0(sumBy(mem, (r) => r.eps))}</td><td class="r">${inr0(sumBy(mem, (r) => r.edli))}</td><td class="r">${inr0(sumBy(mem, (r) => r.admin))}</td><td class="r">${sumBy(mem, (r) => r.ncp)}</td></tr></tfoot></table>`
+    : `<table class="t"><thead><tr><th>Employee</th><th>UAN</th><th>Joined</th><th>Left</th><th class="r">Months</th><th class="r">EPF wages</th><th class="r">Employee share</th><th class="r">VPF</th><th class="r">Employer EPF</th><th class="r">EPS</th><th class="r">NCP days</th></tr></thead><tbody>
+      ${mem.map((r) => `<tr><td><b>${esc(fullName(r.e))}</b><div class="fine">${esc(r.e.empNo)}</div></td><td class="mono">${r.e.uan ? esc(r.e.uan) : '<span class="badge warn">Missing</span>'}</td><td>${dmy(r.e.doj)}</td><td>${lwdCell(r.e)}</td>
+        <td class="r">${r.months}</td><td class="r">${inr0(r.epfW)}</td><td class="r">${inr0(r.ee)}</td><td class="r">${r.vpf ? inr0(r.vpf) : ''}</td><td class="r">${inr0(r.epf)}</td><td class="r">${inr0(r.eps)}</td><td class="r">${r.ncp || ''}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td><td></td><td></td><td></td><td class="r">${inr0(sumBy(mem, (r) => r.epfW))}</td><td class="r">${inr0(sumBy(mem, (r) => r.ee))}</td><td class="r">${inr0(sumBy(mem, (r) => r.vpf))}</td><td class="r">${inr0(sumBy(mem, (r) => r.epf))}</td><td class="r">${inr0(sumBy(mem, (r) => r.eps))}</td><td class="r">${sumBy(mem, (r) => r.ncp)}</td></tr></tfoot></table>`;
+  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>PF members</span><b>${mem.length}</b><small>of ${rows.length} on the rolls</small></div>
+      <div class="kpi"><span>Employee share</span><b>${inr0(T('ee'))}</b><small>12% and VPF</small></div><div class="kpi"><span>Employer share</span><b>${inr0(T('er'))}</b><small>EPF and EPS</small></div>
+      <div class="kpi"><span>UAN missing</span><b style="color:${noUan.length ? 'var(--warn)' : 'inherit'}">${noUan.length}</b><small>${noUan.length ? 'generate them on the EPFO portal' : 'all members have one'}</small></div></div>
+    <div class="card"><h2>Challan by month</h2><p class="sub">Account 1 is the employee share with VPF and the employer EPF share, account 2 the administration charges, account 10 the pension fund (EPS) and account 21 EDLI. Pay by the 15th of the next month.</p>
+      <div class="scroll"><table class="t"><thead><tr><th>Month</th><th>Payroll</th><th class="r">Members</th><th class="r">EPF wages</th><th class="r">A/c 1</th><th class="r">A/c 2</th><th class="r">A/c 10</th><th class="r">A/c 21</th><th class="r">Total</th><th>Due by</th></tr></thead><tbody>
+      ${monthly.map((x) => `<tr><td><b>${monthName(x.m)}</b></td><td>${regRunBadge(x.run)}</td><td class="r">${x.run ? x.n : ''}</td><td class="r">${x.run ? inr0(x.epfW) : ''}</td><td class="r">${x.run ? inr0(x.ac1) : ''}</td><td class="r">${x.run ? inr0(x.ac2) : ''}</td><td class="r">${x.run ? inr0(x.ac10) : ''}</td><td class="r">${x.run ? inr0(x.ac21) : ''}</td><td class="r"><b>${x.run ? inr0(x.ac1 + x.ac2 + x.ac10 + x.ac21) : ''}</b></td><td>${dmy(`${ymAdd(x.m, 1)}-15`)}</td></tr>`).join('')}</tbody>
+      ${monthly.length > 1 ? `<tfoot><tr><td>Period</td><td></td><td></td><td class="r">${inr0(T('epfW'))}</td><td class="r">${inr0(T('ac1'))}</td><td class="r">${inr0(T('ac2'))}</td><td class="r">${inr0(T('ac10'))}</td><td class="r">${inr0(T('ac21'))}</td><td class="r">${inr0(T('ac1') + T('ac2') + T('ac10') + T('ac21'))}</td><td></td></tr></tfoot>` : ''}</table></div></div>
+    <div class="card"><h2>${P.single ? 'Members this month' : 'Members, totals for the period'}</h2><p class="sub">${P.single ? 'As in the ECR: EPF wages up to the ceiling where the company restricts contributions, EPS and EDLI wages up to the ceiling, non-contributing (NCP) days from loss of pay.' : 'One line per member with the totals for the period (as in the annual member statement). The Excel file has every month for every member.'}</p>
+      ${mem.length ? `<div class="scroll">${detail}</div>` : '<div class="empty">No PF contributions in this period.</div>'}</div>
+    ${non.length ? `<div class="card"><h2>Not contributing</h2><p class="sub">On the rolls in the period without PF.</p><div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Joined</th><th>Left</th><th>Reason</th></tr></thead><tbody>
+      ${non.map((r) => `<tr><td>${esc(fullName(r.e))} <span class="fine">${esc(r.e.empNo)}</span></td><td>${dmy(r.e.doj)}</td><td>${dmy(regLwd(r.e))}</td><td>${esc(r.why)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+}
+
+/* ---- ESI */
+function esiRegister(P) {
+  const { runs, people, cell } = regData(P.months);
+  const rows = people.map((e) => {
+    const lines = P.months.map((m, i) => { const x = cell(e, i); return x && x.esi && x.esi.covered ? { days: Math.round(x.paidDays), wage: Math.round(x.esi.wage), ee: x.esi.ee, er: x.esi.er, exempt: x.esi.exempt } : null; });
+    const covered = lines.some(Boolean);
+    const why = covered ? '' : e.esiOn === false ? 'ESI turned off for this employee' : P.months.map((m, i) => { const x = cell(e, i); return x ? x.esi.reason || 'Not covered' : regMiss(runs[i], e, m); }).filter(Boolean).pop() || '';
+    const t = (k) => sumBy(lines.filter(Boolean), (l) => l[k]);
+    return { e, lines, covered, why, months: lines.filter(Boolean).length, days: t('days'), wage: t('wage'), ee: t('ee'), er: t('er') };
+  });
+  const monthly = P.months.map((m, i) => { const ls = rows.map((r) => r.lines[i]).filter(Boolean); return { m, run: runs[i], n: ls.length, wage: sumBy(ls, (l) => l.wage), ee: sumBy(ls, (l) => l.ee), er: sumBy(ls, (l) => l.er) }; });
+  return { rows, monthly };
+}
+function regEsiHtml(P) {
+  const co = company(); const { rows, monthly } = esiRegister(P);
+  const cov = rows.filter((r) => r.covered), non = rows.filter((r) => !r.covered);
+  const noIp = cov.filter((r) => !r.e.esiNo);
+  const T = (k) => sumBy(monthly, (x) => x[k]);
+  const left = (e) => { const l = regLwd(e); if (!regIn(l, P.months)) return ''; const sx = statExitOf(e); return `${dmy(l)}${sx ? `<div class="fine">Code ${esc(sx.esiReason)} ${esc(ESI_REASON[sx.esiReason] || '')}</div>` : ''}`; };
+  const table = P.single
+    ? `<table class="t"><thead><tr><th>Employee</th><th>IP number</th><th>Dispensary</th><th class="r">Days paid</th><th class="r">ESI wages</th><th class="r">Employee ${S.stat.esiEE}%</th><th class="r">Employer ${S.stat.esiER}%</th><th class="r">Total</th><th>Left</th></tr></thead><tbody>
+      ${cov.map((r) => { const l = r.lines[0]; return `<tr><td><b>${esc(fullName(r.e))}</b><div class="fine">${esc(r.e.empNo)}, joined ${dmy(r.e.doj)}</div></td><td class="mono">${r.e.esiNo ? esc(r.e.esiNo) : '<span class="badge warn">Missing</span>'}</td><td>${esc(r.e.esiDispensary || '—')}</td>
+        <td class="r">${l.days}</td><td class="r">${inr0(l.wage)}</td><td class="r">${l.exempt ? 'Exempt' : inr0(l.ee)}</td><td class="r">${inr0(l.er)}</td><td class="r"><b>${inr0(l.ee + l.er)}</b></td><td>${left(r.e)}</td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td><td></td><td class="r">${sumBy(cov, (r) => r.days)}</td><td class="r">${inr0(sumBy(cov, (r) => r.wage))}</td><td class="r">${inr0(sumBy(cov, (r) => r.ee))}</td><td class="r">${inr0(sumBy(cov, (r) => r.er))}</td><td class="r">${inr0(sumBy(cov, (r) => r.ee + r.er))}</td><td></td></tr></tfoot></table>`
+    : `<table class="t"><thead><tr><th>Employee</th><th>IP number</th><th class="r">Months</th><th class="r">Days paid</th><th class="r">ESI wages</th><th class="r">Employee</th><th class="r">Employer</th><th class="r">Total</th><th>Left</th></tr></thead><tbody>
+      ${cov.map((r) => `<tr><td><b>${esc(fullName(r.e))}</b><div class="fine">${esc(r.e.empNo)}</div></td><td class="mono">${r.e.esiNo ? esc(r.e.esiNo) : '<span class="badge warn">Missing</span>'}</td><td class="r">${r.months}</td><td class="r">${r.days}</td><td class="r">${inr0(r.wage)}</td><td class="r">${inr0(r.ee)}</td><td class="r">${inr0(r.er)}</td><td class="r"><b>${inr0(r.ee + r.er)}</b></td><td>${left(r.e)}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td><td></td><td class="r">${sumBy(cov, (r) => r.days)}</td><td class="r">${inr0(sumBy(cov, (r) => r.wage))}</td><td class="r">${inr0(sumBy(cov, (r) => r.ee))}</td><td class="r">${inr0(sumBy(cov, (r) => r.er))}</td><td class="r">${inr0(sumBy(cov, (r) => r.ee + r.er))}</td><td></td></tr></tfoot></table>`;
+  return `${co.esiEnabled === false ? `<div class="note warn">${esc(co.name)} is not marked as registered for ESI, so no ESI is calculated.</div>` : ''}
+    <div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Insured persons</span><b>${cov.length}</b><small>of ${rows.length} on the rolls; ceiling ${inr0(S.stat.esiCeiling)}</small></div>
+      <div class="kpi"><span>Employee share</span><b>${inr0(T('ee'))}</b><small>deducted from pay</small></div><div class="kpi"><span>Employer share</span><b>${inr0(T('er'))}</b><small>company cost</small></div>
+      <div class="kpi"><span>IP numbers missing</span><b style="color:${noIp.length ? 'var(--warn)' : 'inherit'}">${noIp.length}</b><small>${noIp.length ? 'register them on the ESIC portal' : 'all registered'}</small></div></div>
+    <div class="card"><h2>Contribution by month</h2><p class="sub">Employer code ${esc(co.esiCode || 'not set')}. Pay and file by the 15th of the next month; the upload file for each month is under Payroll › ESI.</p>
+      <div class="scroll"><table class="t"><thead><tr><th>Month</th><th>Payroll</th><th class="r">Insured persons</th><th class="r">ESI wages</th><th class="r">Employee</th><th class="r">Employer</th><th class="r">Total</th><th>Due by</th></tr></thead><tbody>
+      ${monthly.map((x) => `<tr><td><b>${monthName(x.m)}</b></td><td>${regRunBadge(x.run)}</td><td class="r">${x.run ? x.n : ''}</td><td class="r">${x.run ? inr0(x.wage) : ''}</td><td class="r">${x.run ? inr0(x.ee) : ''}</td><td class="r">${x.run ? inr0(x.er) : ''}</td><td class="r"><b>${x.run ? inr0(x.ee + x.er) : ''}</b></td><td>${dmy(esiDueDate(x.m))}</td></tr>`).join('')}</tbody>
+      ${monthly.length > 1 ? `<tfoot><tr><td>Period</td><td></td><td></td><td class="r">${inr0(T('wage'))}</td><td class="r">${inr0(T('ee'))}</td><td class="r">${inr0(T('er'))}</td><td class="r">${inr0(T('ee') + T('er'))}</td><td></td></tr></tfoot>` : ''}</table></div></div>
+    <div class="card"><h2>${P.single ? 'Insured persons this month' : 'Insured persons, totals for the period'}</h2><p class="sub">Coverage is decided at the start of each contribution period (April and October) and continues to its end. Leavers show the ESIC reason code used in their last month.</p>
+      ${cov.length ? `<div class="scroll">${table}</div>` : '<div class="empty">Nobody is covered in this period.</div>'}</div>
+    ${non.length ? `<div class="card"><h2>Not covered</h2><p class="sub">On the rolls in the period without ESI, with the reason.</p><div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Joined</th><th>Left</th><th>Reason</th></tr></thead><tbody>
+      ${non.map((r) => `<tr><td>${esc(fullName(r.e))} <span class="fine">${esc(r.e.empNo)}</span></td><td>${dmy(r.e.doj)}</td><td>${dmy(regLwd(r.e))}</td><td>${esc(r.why)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+}
+
+/* ---- Professional tax */
+function ptRegister(P) {
+  const { runs, people, cell } = regData(P.months);
+  const rows = people.map((e) => {
+    const lines = P.months.map((m, i) => { const x = cell(e, i); return x ? { gross: x.gross, pt: x.pt, slab: ptSlab(e, x.gross) } : null; });
+    const liable = lines.some((l) => l && l.pt);
+    const why = liable ? '' : e.ptOn === false ? 'Professional tax turned off for this employee' : lines.some(Boolean) ? 'Gross below the taxable slab' : P.months.map((m, i) => regMiss(runs[i], e, m)).find(Boolean) || '';
+    return { e, state: stateOf(e), lines, liable, why, gross: sumBy(lines.filter(Boolean), (l) => l.gross), pt: sumBy(lines.filter(Boolean), (l) => l.pt), months: lines.filter((l) => l && l.pt).length };
+  });
+  const slabs = {};
+  rows.forEach((r) => r.lines.forEach((l, i) => { if (!l || !l.pt) return; const k = `${r.state}|${P.months[i]}|${l.slab}|${l.pt}`; (slabs[k] = slabs[k] || { state: r.state, m: P.months[i], slab: l.slab, rate: l.pt, n: 0, amt: 0 }); slabs[k].n++; slabs[k].amt += l.pt; }));
+  return { rows, runs, slabs: Object.values(slabs).sort((a, b) => (a.state + a.m + a.rate < b.state + b.m + b.rate ? -1 : 1)) };
+}
+function regPtHtml(P) {
+  const co = company(); const { rows, runs, slabs } = ptRegister(P);
+  const liable = rows.filter((r) => r.liable), non = rows.filter((r) => !r.liable);
+  const states = [...new Set(liable.map((r) => r.state))];
+  const byState = states.map((s) => ({ s, n: liable.filter((r) => r.state === s).length, amt: sumBy(liable.filter((r) => r.state === s), (r) => r.pt) }));
+  const table = P.single
+    ? `<table class="t"><thead><tr><th>Employee</th><th>State</th><th class="r">Gross</th><th>Slab</th><th class="r">Professional tax</th></tr></thead><tbody>
+      ${liable.map((r) => { const l = r.lines[0]; return `<tr><td><b>${esc(fullName(r.e))}</b><div class="fine">${esc(r.e.empNo)}</div></td><td>${esc(STATES[r.state] || r.state)}</td><td class="r">${inr0(l.gross)}</td><td class="fine">${esc(l.slab)}</td><td class="r"><b>${inr0(l.pt)}</b></td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td><td class="r">${inr0(sumBy(liable, (r) => r.gross))}</td><td></td><td class="r">${inr0(sumBy(liable, (r) => r.pt))}</td></tr></tfoot></table>`
+    : `<table class="t"><thead><tr><th>Employee</th><th>State</th>${P.months.map((m) => `<th class="r">${mShort(m)}</th>`).join('')}<th class="r">Total</th></tr></thead><tbody>
+      ${liable.map((r) => `<tr><td><b>${esc(fullName(r.e))}</b><div class="fine">${esc(r.e.empNo)}</div></td><td>${esc(STATES[r.state] || r.state)}</td>${r.lines.map((l) => `<td class="r">${l ? (l.pt ? inr0(l.pt) : '0') : '<span class="mut">—</span>'}</td>`).join('')}<td class="r"><b>${inr0(r.pt)}</b></td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td>${P.months.map((m, i) => `<td class="r">${inr0(sumBy(liable, (r) => (r.lines[i] || {}).pt))}</td>`).join('')}<td class="r">${inr0(sumBy(liable, (r) => r.pt))}</td></tr></tfoot></table>`;
+  return `${co.ptEnabled === false ? `<div class="note warn">Professional tax is turned off for ${esc(co.name)}.</div>` : ''}
+    <div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Employees liable</span><b>${liable.length}</b><small>of ${rows.length} on the rolls</small></div>
+      <div class="kpi"><span>Professional tax</span><b>${inr0(sumBy(liable, (r) => r.pt))}</b><small>deducted in the period</small></div>
+      ${byState.slice(0, 2).map((x) => `<div class="kpi"><span>${esc(STATES[x.s] || x.s)}</span><b>${inr0(x.amt)}</b><small>${x.n} employees</small></div>`).join('')}</div>
+    <div class="card"><h2>By state, month and slab</h2><p class="sub">The figures each state's monthly or annual return asks for: number of employees in each salary slab and the tax deducted. Slabs are under Payroll › Professional tax.</p>
+      ${slabs.length ? `<div class="scroll"><table class="t"><thead><tr><th>State</th><th>Month</th><th>Monthly salary slab</th><th class="r">Rate</th><th class="r">Employees</th><th class="r">Tax deducted</th></tr></thead><tbody>
+        ${slabs.map((x) => `<tr><td>${esc(STATES[x.state] || x.state)}</td><td>${monthName(x.m)} ${regRunBadge(runs[P.months.indexOf(x.m)])}</td><td>${esc(x.slab)}</td><td class="r">${inr0(x.rate)}</td><td class="r">${x.n}</td><td class="r"><b>${inr0(x.amt)}</b></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No professional tax deducted in this period.</div>'}</div>
+    <div class="card"><h2>${P.single ? 'Employees this month' : 'Employees by month'}</h2>${liable.length ? `<div class="scroll">${table}</div>` : '<div class="empty">Nobody paid professional tax in this period.</div>'}</div>
+    ${non.length ? `<div class="card"><h2>Not liable</h2><div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>State</th><th>Reason</th></tr></thead><tbody>
+      ${non.map((r) => `<tr><td>${esc(fullName(r.e))} <span class="fine">${esc(r.e.empNo)}</span></td><td>${esc(STATES[r.state] || r.state || '—')}</td><td>${esc(r.why)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+}
+
+/* ---- Joiners and leavers */
+function regMoves(P) {
+  const people = regPeople(P.months);
+  const joiners = people.filter((e) => regIn(e.doj, P.months));
+  const leavers = S.employees.filter((e) => e.companyId === CO && (regIn(regLwd(e), P.months) || (e.status === 'notice' && regLwd(e)))).map((e) => ({ e, sx: statExitOf(e) })).filter((x) => x.sx)
+    .sort((a, b) => (regLwd(a.e) < regLwd(b.e) ? -1 : 1));
+  return { joiners, leavers };
+}
+function regMovesHtml(P) {
+  const { joiners, leavers } = regMoves(P);
+  const pend = leavers.filter(({ e, sx }) => regLwd(e) <= todayISO() && (!sx.pfDone || !sx.esiDone));
+  const st = (applies, done, on) => (!applies ? '<span class="mut">n/a</span>' : done ? `<span class="badge ok">Done${on ? ' ' + dmy(on) : ''}</span>` : '<span class="badge warn">To do</span>');
+  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Joined</span><b>${joiners.length}</b><small>${joiners.filter((e) => e.pfOn !== false && !e.uan).length} without a UAN</small></div>
+      <div class="kpi"><span>Leaving or left</span><b>${leavers.length}</b><small>${leavers.filter(({ e }) => e.status === 'notice').length} serving notice</small></div>
+      <div class="kpi"><span>Exit to mark on portals</span><b style="color:${pend.length ? 'var(--warn)' : 'inherit'}">${pend.length}</b><small>EPFO date of exit or ESIC reason</small></div>
+      <div class="kpi"><span>IP numbers missing</span><b>${joiners.filter((e) => e.esiOn !== false && !e.esiNo).length}</b><small>new joiners covered by ESI</small></div></div>
+    <div class="card"><h2>Leavers</h2><p class="sub">Everyone whose last working day falls in the period, and everyone serving notice. After the last day, mark the exit on the EPFO portal (date of exit and reason) and give ESIC the reason code with the last working day, then record it with <b>Record</b>. The reason codes are suggested from the type of exit.</p>
+      ${leavers.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>UAN / IP number</th><th>Last working day</th><th>Exit</th><th>PF reason</th><th>ESI code</th><th>EPFO</th><th>ESIC</th><th>Settlement</th><th></th></tr></thead><tbody>
+        ${leavers.map(({ e, sx }) => `<tr><td><a href="#/exit/${sx.x.id}"><b>${esc(fullName(e))}</b></a><div class="fine">${esc(e.empNo)}, joined ${dmy(e.doj)}</div></td><td class="mono fine">${esc(e.uan || '—')}<br>${esc(e.esiNo || '—')}</td>
+          <td>${dmy(sx.x.lwd)}${e.status === 'notice' ? ' <span class="badge mari">Notice</span>' : ''}</td><td>${esc(EXIT_TYPES[sx.x.type] || '')}</td><td>${sx.pfApplies ? `${esc(sx.pfReason)} ${esc(PF_EXIT[sx.pfReason] || '')}` : ''}</td><td>${sx.esiApplies ? `${esc(sx.esiReason)} ${esc(ESI_REASON[sx.esiReason] || '')}` : ''}</td>
+          <td>${st(sx.pfApplies, sx.pfDone, sx.st.epfoOn)}</td><td>${st(sx.esiApplies, sx.esiDone, sx.st.esicOn)}</td><td>${sx.x.fnf && sx.x.fnf.status === 'posted' ? `<span class="badge ok">Posted ${monthName(sx.x.fnf.postedMonth || '')}</span>` : `<span class="badge">${esc((sx.x.fnf || {}).status || 'pending')}</span>`}</td>
+          <td class="r"><button class="btn sm" data-act="statExit" data-id="${sx.x.id}">Record</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nobody left in this period.</div>'}</div>
+    <div class="card"><h2>Joiners</h2><p class="sub">New members need a UAN (or their existing one linked) before their first ECR, and an IP number from ESIC within ten days of joining if their wages are within the ESI ceiling.</p>
+      ${joiners.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Joined</th><th>PF</th><th>UAN</th><th>ESI</th><th>IP number</th><th></th></tr></thead><tbody>
+        ${joiners.map((e) => `<tr><td><b>${esc(fullName(e))}</b><div class="fine">${esc(e.empNo)}</div></td><td>${dmy(e.doj)}</td><td>${e.pfOn === false ? 'Excluded' : 'Member'}</td><td class="mono">${e.pfOn === false ? '' : e.uan ? esc(e.uan) : '<span class="badge warn">Missing</span>'}</td>
+          <td>${e.esiOn === false ? 'Off' : 'If within ceiling'}</td><td class="mono">${e.esiOn === false ? '' : e.esiNo ? esc(e.esiNo) : '<span class="badge warn">Missing</span>'}</td><td class="r"><button class="btn sm" data-act="esiEmp" data-id="${e.id}">Update numbers</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nobody joined in this period.</div>'}</div>`;
+}
+
+/* ---- Excel and print */
+function regBook(tab, P) {
+  const co = company(); const per = P.single ? P.from : `${P.from}_to_${P.to}`;
+  const base = (e) => ({ 'Employee number': e.empNo, Employee: fullName(e) });
+  if (tab === 'pf') {
+    const { rows, monthly } = pfRegister(P);
+    const long = []; rows.forEach((r) => r.lines.forEach((l, i) => { if (!l) return; long.push({ Month: P.months[i], ...base(r.e), UAN: r.e.uan || '', 'PF member ID': r.e.pfNo || '', 'Date of joining': r.e.doj, 'Date of exit': regIn(regLwd(r.e), [P.months[i]]) ? regLwd(r.e) : '',
+      Gross: Math.round(l.gross), 'EPF wages': l.epfW, 'EPS wages': l.epsW, 'EDLI wages': l.edliW, 'Employee share 12%': l.ee, VPF: l.vpf, 'Employer EPF': l.epf, 'EPS 8.33%': l.eps, EDLI: l.edli, 'Admin charges': l.admin, 'NCP days': l.ncp }); }));
+    return [`PF_register_${co.code}_${per}.xlsx`, {
+      'Challan by month': monthly.map((x) => ({ Month: x.m, Payroll: x.run ? x.run.status : 'not run', Members: x.n, 'EPF wages': x.epfW, 'A/c 1 (EE+VPF+ER EPF)': x.ac1, 'A/c 2 (admin)': x.ac2, 'A/c 10 (EPS)': x.ac10, 'A/c 21 (EDLI)': x.ac21, Total: x.ac1 + x.ac2 + x.ac10 + x.ac21, 'Due by': `${ymAdd(x.m, 1)}-15` })),
+      Register: long,
+      'Member totals': rows.map((r) => { const sx = statExitOf(r.e); return { ...base(r.e), UAN: r.e.uan || '', 'Date of joining': r.e.doj, 'Date of exit': regLwd(r.e), 'Exit reason': sx && sx.pfApplies ? PF_EXIT[sx.pfReason] : '', Status: r.member ? 'Member' : r.why,
+        Months: r.months, 'EPF wages': r.epfW, 'Employee share': r.ee, VPF: r.vpf, 'Employer EPF': r.epf, EPS: r.eps, EDLI: r.edli, 'Admin charges': r.admin, 'NCP days': r.ncp }; }),
+    }];
+  }
+  if (tab === 'esi') {
+    const { rows, monthly } = esiRegister(P);
+    const long = []; rows.forEach((r) => r.lines.forEach((l, i) => { if (!l) return; const lw = regLwd(r.e); const leftHere = lw && lw.startsWith(P.months[i]); const sx = leftHere ? statExitOf(r.e) : null;
+      long.push({ Month: P.months[i], 'IP number': r.e.esiNo || '', ...base(r.e), Dispensary: r.e.esiDispensary || '', 'Date of joining': r.e.doj, 'Days paid': l.days, 'ESI wages': l.wage, 'Employee share': l.ee, 'Employer share': l.er, Total: l.ee + l.er,
+        'Reason code': leftHere ? (sx ? +sx.esiReason : 2) : l.days ? '' : 1, 'Last working day': leftHere ? lw : '' }); }));
+    return [`ESI_register_${co.code}_${per}.xlsx`, {
+      'By month': monthly.map((x) => ({ Month: x.m, Payroll: x.run ? x.run.status : 'not run', 'Insured persons': x.n, 'ESI wages': x.wage, 'Employee share': x.ee, 'Employer share': x.er, Total: x.ee + x.er, 'Due by': esiDueDate(x.m) })),
+      Register: long,
+      'Employee totals': rows.map((r) => ({ 'IP number': r.e.esiNo || '', ...base(r.e), 'Date of joining': r.e.doj, 'Last working day': regLwd(r.e), Status: r.covered ? 'Covered' : r.why, Months: r.months, 'Days paid': r.days, 'ESI wages': r.wage, 'Employee share': r.ee, 'Employer share': r.er })),
+    }];
+  }
+  if (tab === 'pt') {
+    const { rows, slabs } = ptRegister(P);
+    const long = []; rows.forEach((r) => r.lines.forEach((l, i) => { if (l) long.push({ Month: P.months[i], ...base(r.e), State: STATES[r.state] || r.state, Gross: Math.round(l.gross), Slab: l.slab, 'Professional tax': l.pt }); }));
+    return [`PT_register_${co.code}_${per}.xlsx`, {
+      'Slab summary': slabs.map((x) => ({ State: STATES[x.state] || x.state, Month: x.m, Slab: x.slab, Rate: x.rate, Employees: x.n, 'Tax deducted': x.amt })),
+      Register: long,
+      'Employee totals': rows.map((r) => ({ ...base(r.e), State: STATES[r.state] || r.state, Status: r.liable ? 'Liable' : r.why, 'Months deducted': r.months, Gross: Math.round(r.gross), 'Professional tax': r.pt })),
+    }];
+  }
+  const { joiners, leavers } = regMoves(P);
+  return [`PF_ESI_joiners_leavers_${co.code}_${per}.xlsx`, {
+    Leavers: leavers.map(({ e, sx }) => ({ ...base(e), UAN: e.uan || '', 'IP number': e.esiNo || '', 'Date of joining': e.doj, 'Last working day': sx.x.lwd, 'Type of exit': EXIT_TYPES[sx.x.type] || '',
+      'PF date of exit': sx.pfApplies ? sx.pfDoe : '', 'PF reason': sx.pfApplies ? `${sx.pfReason} ${PF_EXIT[sx.pfReason]}` : 'Not a member', 'EPFO updated on': sx.st.epfoOn || '',
+      'ESI reason code': sx.esiApplies ? +sx.esiReason : '', 'ESI reason': sx.esiApplies ? ESI_REASON[sx.esiReason] : 'Not covered', 'ESIC updated on': sx.st.esicOn || '', 'Settlement': (sx.x.fnf || {}).status || '' })),
+    Joiners: joiners.map((e) => ({ ...base(e), 'Date of joining': e.doj, 'Date of birth': e.dob || '', Gender: e.gender || '', PAN: e.pan || '', Aadhaar: e.aadhaar || '', UAN: e.uan || '', 'PF member': e.pfOn === false ? 'No' : 'Yes', 'IP number': e.esiNo || '', 'ESI applicable': e.esiOn === false ? 'No' : 'If within ceiling' })),
+  }];
+}
+ACT.regExcel = (b) => { const [name, sheets] = regBook(b.dataset.tab, regPeriod()); writeBook(name, sheets); audit('Statutory register downloaded', name, 'payroll'); };
+ACT.regPrint = (b) => {
+  const tab = b.dataset.tab, P = regPeriod(), co = company(); const [, sheets] = regBook(tab, P);
+  const title = { pf: 'Provident fund register', esi: 'ESI register', pt: 'Professional tax register', moves: 'PF and ESI joiners and leavers' }[tab];
+  const keys = Object.keys(sheets); const main = tab === 'moves' ? keys : [keys[0], keys[keys.length - 1]];
+  const tbl = (rows) => { if (!rows.length) return '<p class="fine">None.</p>'; const cols = Object.keys(rows[0]); const isNum = (v) => typeof v === 'number';
+    return `<table><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>${rows.map((r) => `<tr>${cols.map((c) => `<td class="${isNum(r[c]) ? 'r' : ''}">${esc(isNum(r[c]) ? (+r[c]).toLocaleString('en-IN') : r[c])}</td>`).join('')}</tr>`).join('')}</table>`; };
+  printHtml(title, `<h2>${esc(co.legalName || co.name)}</h2><p class="fine">${esc(co.address || '')}${tab === 'pf' && co.pfCode ? `. PF establishment code ${esc(co.pfCode)}` : ''}${tab === 'esi' && co.esiCode ? `. ESI employer code ${esc(co.esiCode)}` : ''}</p>
+    <h2>${title}</h2><p class="fine">${P.single ? monthName(P.from) : `${monthName(P.from)} to ${monthName(P.to)}`}. Printed ${dmy(todayISO())}.</p>
+    ${main.map((k) => `<h3>${esc(k)}</h3>${tbl(sheets[k])}`).join('')}<br><p>Authorised signatory</p>`);
+};
+
+/* =====================================================================
+   PeopleDesk 2.4: compensation planning and salary revision
+   HR opens a cycle with the organisation's increment budget (for example ₹10,00,000) and the date the new
+   salaries take effect. HR hands budgets to managers; each manager may hand part of theirs to the managers
+   below them, and proposes the new salary of everyone else they decide for. A plan is submitted, discussed
+   and approved by every budget holder above, then HR. When all are approved HR approves the cycle and
+   applies it: each new salary is added to the salary history from the effective date, so payroll pays it
+   from that month, and revision letters can be made from a Word template.
+   Who decides an employee's increase: the nearest manager above them who holds a budget; if nobody does,
+   HR from the organisation's budget. The server enforces the same rules (backend/app/comp.py).
+   ===================================================================== */
+const CP_STATUS = { draft: ['Being set up', ''], planning: ['Planning', 'mari'], approved: ['Approved', 'ok'], applied: ['Applied to salaries', 'ok'] };
+const POOL_ST = { open: ['Planning', 'mari'], submitted: ['Waiting for approval', 'info'], returned: ['Sent back', 'bad'], approved: ['Approved', 'ok'] };
+const CP_GUIDE = { 5: 12, 4: 9, 3: 6, 2: 3, 1: 0 };
+const EDITABLE_POOL = ['open', 'returned'];
+const cpCycle = (id) => S.compCycles.find((c) => c.id === id);
+const cpPools = (c) => S.compBudgets.filter((p) => p.cycleId === c.id);
+const cpRecs = (c) => S.compRecs.filter((r) => r.cycleId === c.id);
+const cpLeaving = (e) => !e || e.status === 'notice' || e.status === 'exited';
+const cpCounted = (r) => !r.excluded && !cpLeaving(empById(r.empId));
+const cpHike = (r) => { const n = +r.newCtc || 0, c = +r.currentCtc || 0; return n ? Math.max(0, n - c) : 0; };
+const cpPct = (r) => (+r.currentCtc ? cpHike(r) * 100 / +r.currentCtc : 0);
+const r100 = (n) => Math.round((+n || 0) / 100) * 100;
+const pct1 = (n) => `${(Math.round((+n || 0) * 10) / 10).toLocaleString('en-IN')}%`;
+const cpBadge = (map, k) => { const [l, c] = map[k] || [k, '']; return `<span class="badge ${c}">${esc(l)}</span>`; };
+const cpGuide = (c) => ({ ...CP_GUIDE, ...(c.guide || {}) });
+/* the budget that pays for this employee's increase: the nearest manager above them holding one (null: the organisation) */
+function cpDecider(empId, pools) {
+  const by = {}; pools.forEach((p) => { by[p.empId] = p; });
+  const seen = new Set([empId]); let cur = (empById(empId) || {}).managerId;
+  while (cur && !seen.has(cur)) { if (by[cur]) return by[cur]; seen.add(cur); cur = (empById(cur) || {}).managerId; }
+  return null;
+}
+const cpRoot = (c) => ({ id: '', root: true, amount: +c.budget || 0, empId: '', status: ['draft', 'planning'].includes(c.status) ? 'open' : 'approved', chain: [], comments: c.comments || [] });
+const cpNode = (c, id) => (!id || id === 'org' ? cpRoot(c) : cpPools(c).find((p) => p.id === id) || null);
+const cpKids = (c, n) => cpPools(c).filter((p) => (p.parentId || '') === n.id);
+const cpMine = (c, n) => { const pools = cpPools(c); return cpRecs(c).filter((r) => { const d = cpDecider(r.empId, pools); return (d ? d.id : '') === n.id; }); };
+function cpUse(c, n) {
+  const allocated = sumBy(cpKids(c, n), (p) => p.amount);
+  const spent = sumBy(cpMine(c, n).filter(cpCounted), cpHike);
+  return { allocated, spent, left: (+n.amount || 0) - allocated - spent };
+}
+const cpTeam = (c, empId) => { const ids = new Set(allReportees(empId)); return cpRecs(c).filter((r) => ids.has(r.empId)); };
+const cpWho = (n) => (n.root ? 'Organisation (HR)' : nameOf(n.empId));
+const cpStepNow = (p) => (p.steps || []).find((s) => !s.decision);
+const cpSteps = (p) => [...(p.chain || []).map((id) => ({ kind: 'mgr', approverIds: [id], label: nameOf(id), decision: '', by: '', at: 0, note: '' })),
+  { kind: 'hr', approverIds: [], label: 'HR', decision: '', by: '', at: 0, note: '' }];
+function cpCanPlan(c, n) {
+  if (!n || !EDITABLE_POOL.includes(n.status)) return false;
+  if (n.root) return isHR(c.companyId) && ['draft', 'planning'].includes(c.status);
+  return c.status === 'planning' && (n.empId === me.id || isHR(c.companyId));
+}
+const cpCanDecide = (p) => { const s = cpStepNow(p); return p.status === 'submitted' && !!s && p.empId !== me.id && ((s.kind === 'mgr' && s.approverIds.includes(me.id)) || (s.kind === 'hr' && isHR(p.companyId))); };
+/* managers who can be given a budget from this one: they have people in the plan and this budget is the nearest above them */
+function cpCandidates(c, n) {
+  const pools = cpPools(c); const held = new Set(pools.map((p) => p.empId)); const inPlan = new Set(cpRecs(c).map((r) => r.empId));
+  const pool = n.root ? S.employees.filter((e) => e.companyId === c.companyId) : allReportees(n.empId).map(empById).filter(Boolean);
+  return pool.filter((m) => m.status === 'active' && !held.has(m.id) && allReportees(m.id).some((id) => inPlan.has(id)) && ((cpDecider(m.id, pools) || { id: '' }).id === n.id));
+}
+const cpDefaultEffective = () => { const t = todayISO(); const y = +t.slice(0, 4) + (+t.slice(5, 7) >= 4 ? 1 : 0); return `${y}-04-01`; };
+function cpEligible(c) {
+  const before = addDays(c.effective, -1);
+  return S.employees.filter((e) => e.companyId === c.companyId && e.status === 'active' && e.doj && e.doj <= (c.eligibleBy || before)
+    && (c.includeProbation || e.empType !== 'probation') && +(salaryAt(e, before) || {}).ctc > 0);
+}
+function cpRecFor(c, e) {
+  const sal = salaryAt(e, addDays(c.effective, -1)) || {}; const lr = lastRating(e);
+  return { id: uid(), cycleId: c.id, companyId: c.companyId, empId: e.id, currentCtc: +sal.ctc || 0, currentVariable: +sal.variable || 0, salarySince: sal.effective || '',
+    rating: lr ? lr.r : '', gradeId: e.gradeId || '', desigId: e.desigId || '', deptId: e.deptId || '', newCtc: '', note: '', status: 'planned' };
+}
+async function cpNotify(c, p, event) {
+  try {
+    await saveAndWait();
+    const res = await fetch('/api/comp/notify', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-peopledesk': '1' }, body: JSON.stringify({ cycleId: c.id, poolId: p ? p.id : '', event }) });
+    const d = await res.json().catch(() => ({}));
+    if (d.sent) toast(`E-mail sent to ${d.to}`);
+  } catch (e) { /* the item still shows in Approvals */ }
+}
+const cpHref = (c, n) => `#/compplan?c=${c.id}${n ? `&p=${n.root ? 'org' : n.id}` : ''}`;
+const cpCur = () => { const c = cpCycle(R.q.get('c')); return { c, n: c ? cpNode(c, R.q.get('p') || cpDefaultNode(c)) : null }; };
+function cpDefaultNode(c) {
+  const mine = cpPools(c).find((p) => p.empId === me.id);
+  if (mine) return mine.id;
+  if (isHR(c.companyId)) return 'org';
+  const vis = cpPools(c).sort((a, b) => (a.chain || []).length - (b.chain || []).length)[0];
+  return vis ? vis.id : 'org';
+}
+
+/* ---------------------------------------------------------------- list of cycles */
+VIEWS.compplan = () => {
+  const id = R.q.get('c');
+  const hrCo = isHR();
+  const mine = S.compCycles.filter((c) => (c.companyId === CO || !hrCo) && (isHR(c.companyId) || cpPools(c).length)).sort((a, b) => (a.effective < b.effective ? 1 : -1));
+  if (!id && !hrCo && mine.length === 1) { R.q.set('c', mine[0].id); return cpCycleView(mine[0]); }
+  if (id) { const c = cpCycle(id); if (!c) return { title: 'Salary revision planning', html: '<div class="empty">That plan does not exist or is not shared with you.</div>' }; return cpCycleView(c); }
+  return { title: 'Salary revision planning', html: `<div class="card"><div class="hd"><div><h2>Salary revision cycles${hrCo ? ` in ${esc(company().name)}` : ''}</h2>
+      <p class="sub">${hrCo ? 'Open a cycle with the increment budget and the date new salaries take effect. Hand budgets to managers; they pass part of theirs to their own managers, propose each person’s new salary and submit. Every manager above, then HR, approves; then the cycle is applied to salaries.' : 'Salary revision plans you take part in.'}</p></div>
+      ${hrCo ? '<button class="btn pri" data-act="cpNewCycle">New cycle</button>' : ''}</div>
+    ${mine.length ? `<div class="scroll"><table class="t"><thead><tr><th>Cycle</th><th>Effective from</th>${hrCo ? '<th class="r">Budget</th><th class="r">Used</th>' : ''}<th class="r">People</th><th>Budgets approved</th><th>Status</th></tr></thead><tbody>
+      ${mine.map((c) => { const pools = cpPools(c); const ok = pools.filter((p) => p.status === 'approved').length; const used = isHR(c.companyId) ? sumBy(pools.filter((p) => !p.parentId), (p) => p.amount) + cpUse(c, cpRoot(c)).spent : 0;
+        return `<tr class="click" data-act="cpOpen" data-id="${c.id}"><td><b>${esc(c.name)}</b>${c.deadline ? `<div class="fine">Plans due ${dmy(c.deadline)}</div>` : ''}</td><td>${dmy(c.effective)}</td>
+        ${hrCo ? `<td class="r">${inr0(c.budget)}</td><td class="r">${inr0(used)}</td>` : ''}<td class="r">${cpRecs(c).length}</td><td>${pools.length ? `${ok} of ${pools.length}` : '—'}</td><td>${cpBadge(CP_STATUS, c.status)}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${hrCo ? 'No salary revision cycles yet. Start one with New cycle.' : 'You are not part of a salary revision plan.'}</div>`}</div>` };
+};
+ACT.cpOpen = (b) => go(`#/compplan?c=${b.dataset.id}`);
+const CP_FIELDS = () => [{ k: 'name', label: 'Name', req: true, help: 'For example Annual increments 2027-28' }, { k: 'effective', label: 'New salaries effective from', type: 'date', req: true },
+  { k: 'budget', label: 'Total increment budget (₹ a year)', type: 'number', req: true, min: 0, help: 'Increase in annual fixed CTC across everyone in the plan' },
+  { k: 'deadline', label: 'Managers submit plans by', type: 'date' }, { k: 'eligibleBy', label: 'Include people who joined on or before', type: 'date' },
+  { k: 'includeProbation', label: 'Include people on probation', type: 'check' }, { k: 'reason', label: 'Reason written on the salary history', req: true },
+  { k: 'maxPct', label: 'Flag increases above (%)', type: 'number', min: 0 },
+  ...[5, 4, 3, 2, 1].map((r) => ({ k: 'g' + r, label: `Guideline for rating ${r}, ${RATING[r].toLowerCase()} (%)`, type: 'number', min: 0, step: 0.1 }))];
+function cpEditDialog(c) {
+  const fields = CP_FIELDS(); const g = c ? cpGuide(c) : CP_GUIDE;
+  const eff = c ? c.effective : cpDefaultEffective();
+  const v = c ? { ...c, ...Object.fromEntries([5, 4, 3, 2, 1].map((r) => ['g' + r, g[r]])) }
+    : { name: `Annual increments ${fyLabel(eff.slice(0, 7))}`, effective: eff, budget: 1000000, deadline: addDays(todayISO(), 21), eligibleBy: `${+eff.slice(0, 4) - 1}-12-31`, includeProbation: false, reason: 'Annual increment', maxPct: 20, ...Object.fromEntries([5, 4, 3, 2, 1].map((r) => ['g' + r, g[r]])) };
+  const pay = sumBy(cpEligible({ ...v, companyId: CO }), (e) => (salaryAt(e, addDays(v.effective, -1)) || {}).ctc);
+  openDlg(`<form class="dlg" id="cpF" novalidate><h2>${c ? 'Cycle settings' : 'New salary revision cycle'}</h2><p class="fine" style="margin:0">Guidelines suggest an increase by performance rating; managers can follow or change them within their budget. Current annual CTC of the people who would be included: ${inr0(pay)}${+v.budget && pay ? ` (budget ${pct1(+v.budget * 100 / pay)} of it)` : ''}.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="cpE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${c ? 'Save' : 'Create'}</button></div></form>`, true);
+  $('#cpF').onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields);
+    if (!d.name || !d.effective) { $('#cpE').textContent = 'Enter the name and the effective date.'; return; }
+    if (!(+d.budget > 0)) { $('#cpE').textContent = 'Enter the budget.'; return; }
+    if (c && c.status !== 'draft' && +d.budget < sumBy(cpPools(c).filter((p) => !p.parentId), (p) => p.amount) + cpUse(c, cpRoot(c)).spent) { $('#cpE').textContent = 'The budget is less than what is already handed down and decided.'; return; }
+    const guide = Object.fromEntries([5, 4, 3, 2, 1].map((r) => [r, +d['g' + r] || 0]));
+    const rec = { name: d.name, effective: d.effective, budget: Math.round(+d.budget), deadline: d.deadline, eligibleBy: d.eligibleBy, includeProbation: d.includeProbation, reason: d.reason || 'Annual increment', maxPct: +d.maxPct || 0, guide };
+    if (c) { if (c.status !== 'draft' && d.effective !== c.effective && cpRecs(c).length) { $('#cpE').textContent = 'The effective date cannot change after planning has started.'; return; } Object.assign(c, rec); logEntry(c, 'Settings changed'); saveNow(); closeDlg(); route(); return; }
+    const nc = { id: uid(), companyId: CO, status: 'draft', createdBy: me.id, createdAt: Date.now(), comments: [], log: [], ...rec };
+    logEntry(nc, 'Cycle created'); S.compCycles.push(nc); audit('Salary revision cycle created', nc.name, 'payroll'); saveNow(); closeDlg(); go(`#/compplan?c=${nc.id}`);
+  };
+}
+ACT.cpNewCycle = () => cpEditDialog(null);
+ACT.cpEdit = () => cpEditDialog(cpCur().c);
+ACT.cpDelete = async () => { const { c } = cpCur(); if (c.status !== 'draft') return; if (!(await confirmBox('Delete this cycle?', c.name, 'Delete'))) return;
+  S.compRecs = S.compRecs.filter((r) => r.cycleId !== c.id); S.compBudgets = S.compBudgets.filter((p) => p.cycleId !== c.id); S.compCycles = S.compCycles.filter((x) => x !== c); saveNow(); go('#/compplan'); };
+ACT.cpLaunch = async () => {
+  const { c } = cpCur(); const elig = cpEligible(c);
+  if (!elig.length) { toast('Nobody is eligible. Check the joining date cut-off and that employees have a salary.'); return; }
+  const pools = cpPools(c);
+  if (!(await confirmBox('Open planning?', `${elig.length} employees are included, with their current salaries as they stand the day before ${dmy(c.effective)}. ${pools.length ? `${pools.length} managers have budgets and are told by e-mail.` : 'No manager has a budget yet: you decide every increase from the organisation’s budget, or give budgets to managers first.'} Employees do not see the plan.`, 'Open planning'))) return;
+  const have = new Set(cpRecs(c).map((r) => r.empId));
+  elig.filter((e) => !have.has(e.id)).forEach((e) => S.compRecs.push(cpRecFor(c, e)));
+  c.status = 'planning'; c.launchedAt = Date.now(); logEntry(c, `Planning opened for ${elig.length} employees`); audit('Salary planning opened', c.name, 'payroll');
+  saveNow(); route(); if (pools.length) cpNotify(c, null, 'launched');
+};
+
+/* ---------------------------------------------------------------- one cycle */
+function cpCycleView(c) {
+  const hr = isHR(c.companyId);
+  const nid = R.q.get('p') || cpDefaultNode(c); const n = cpNode(c, nid);
+  if (!n || (n.root && !hr)) return { title: c.name, html: '<div class="empty">That budget is not shared with you.</div>' };
+  const pools = cpPools(c);
+  const stepsBar = [['draft', 'Set up'], ['planning', 'Planning and approval'], ['approved', 'Approved'], ['applied', 'Applied to salaries']];
+  const at = stepsBar.findIndex(([k]) => k === c.status);
+  const rootU = hr ? cpUse(c, cpRoot(c)) : null;
+  const allOk = pools.length > 0 && pools.every((p) => p.status === 'approved');
+  let html = `<div class="card"><div class="hd"><div><h2>${esc(c.name)} ${cpBadge(CP_STATUS, c.status)}</h2><p class="sub">New salaries effective from <b>${dmy(c.effective)}</b>${c.deadline ? `. Plans due by ${dmy(c.deadline)}` : ''}. ${cpRecs(c).length} people in the plan. ${hr ? '' : 'Employees do not see the plan; they are told their new salary when HR issues the revision.'}</p></div>
+      <div class="tools"><a class="btn" href="#/compplan">All cycles</a>${hr ? `<button class="btn" data-act="cpExcel">Excel</button>${['draft', 'planning'].includes(c.status) ? '<button class="btn" data-act="cpEdit">Settings</button>' : ''}
+        ${c.status === 'draft' ? '<button class="btn" data-act="cpDelete">Delete</button><button class="btn pri" data-act="cpLaunch">Open planning</button>' : ''}
+        ${c.status === 'planning' ? `<button class="btn ${allOk ? 'pri' : ''}" data-act="cpApprove">Approve the cycle</button>` : ''}
+        ${c.status === 'approved' ? '<button class="btn" data-act="cpReopen">Reopen</button><button class="btn pri" data-act="cpApply">Apply to salaries</button>' : ''}
+        ${c.status === 'applied' ? '<button class="btn" data-act="cpUnapply">Undo</button><button class="btn pri" data-act="cpLetters">Revision letters</button>' : ''}` : ''}</div></div>
+    <div class="steps">${stepsBar.map(([k, l], i) => `<div class="step ${i < at || c.status === 'applied' ? 'done' : i === at ? 'cur' : ''}"><span>${i < at || c.status === 'applied' ? '✓' : i + 1}</span>${l}</div>`).join('')}</div></div>`;
+  if (hr) {
+    html += `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Organisation budget</span><b>${inr0(c.budget)}</b><small>${pct1(c.budget * 100 / (sumBy(cpRecs(c), (r) => r.currentCtc) || 1))} of current CTC in the plan</small></div>
+      <div class="kpi"><span>Handed to managers</span><b>${inr0(rootU.allocated)}</b><small>${pools.filter((p) => !p.parentId).length} budgets at the top</small></div>
+      <div class="kpi"><span>Increases proposed</span><b>${inr0(sumBy(cpRecs(c).filter(cpCounted), cpHike))}</b><small>${pct1(sumBy(cpRecs(c).filter(cpCounted), cpHike) * 100 / (sumBy(cpRecs(c).filter(cpCounted), (r) => r.currentCtc) || 1))} average</small></div>
+      <div class="kpi"><span>Not yet handed down or used</span><b style="color:${rootU.left < 0 ? 'var(--bad)' : 'inherit'}">${inr0(rootU.left)}</b><small>at the organisation level</small></div></div>`;
+    if (c.status === 'planning' && allOk && rootU.left >= -1) html += '<div class="note ok">Every manager’s plan is approved. Approve the cycle, then apply it to salaries.</div>';
+  }
+  html += cpTreeHtml(c, n, hr);
+  html += cpNodeHtml(c, n);
+  const log = (c.log || []).slice().reverse();
+  if (hr && log.length) html += `<div class="card"><h2>Cycle activity</h2><table class="t"><tbody>${log.slice(0, 30).map((l) => `<tr><td style="width:150px">${dt(l.at)}</td><td>${esc(l.what)}${l.note ? `: ${esc(l.note)}` : ''}</td><td class="fine">${esc(nameOf(l.by))}</td></tr>`).join('')}</tbody></table></div>`;
+  return { title: c.name, html };
+}
+/* the budgets as a tree, from the organisation (HR) or from the viewer's own budget down */
+function cpTreeHtml(c, n, hr) {
+  const pools = cpPools(c); if (!pools.length && !hr) return '';
+  const tops = hr ? [cpRoot(c)] : pools.filter((p) => !pools.some((q) => q.id === p.parentId)).sort((a, b) => nameOf(a.empId).localeCompare(nameOf(b.empId)));
+  const rows = [];
+  const walk = (node, depth) => { rows.push({ node, depth }); cpKids(c, node).sort((a, b) => nameOf(a.empId).localeCompare(nameOf(b.empId))).forEach((k) => walk(k, depth + 1)); };
+  tops.forEach((t) => walk(t, 0));
+  if (rows.length < 2 && rows[0] && rows[0].node.id === n.id) return '';
+  return `<div class="card"><h2>Budgets</h2><p class="sub">Each budget pays for the budgets handed down from it and for the increases its holder decides. Select one to see its plan and discussion.</p>
+    <div class="scroll"><table class="t"><thead><tr><th>Budget holder</th><th class="r">People</th><th class="r">Budget</th><th class="r">Handed down</th><th class="r">Increases</th><th class="r">Left</th><th>Status</th><th>Waiting for</th><th></th></tr></thead><tbody>
+    ${rows.map(({ node, depth }) => { const u = cpUse(c, node); const s = node.root ? null : cpStepNow(node); const people = node.root ? cpRecs(c).length : cpTeam(c, node.empId).length;
+      return `<tr class="click ${node.id === n.id ? 'sel' : ''}" data-act="cpGoNode" data-p="${node.root ? 'org' : node.id}"><td style="padding-left:${10 + depth * 22}px">${depth ? '↳ ' : ''}<b>${esc(cpWho(node))}</b>${node.id === n.id ? ' <span class="badge pri">Shown below</span>' : ''}</td>
+        <td class="r">${people}</td><td class="r">${inr0(node.amount)}</td><td class="r">${u.allocated ? inr0(u.allocated) : ''}</td><td class="r">${inr0(u.spent)}</td><td class="r" style="color:${u.left < -1 ? 'var(--bad)' : 'inherit'}">${inr0(u.left)}</td>
+        <td>${node.root ? cpBadge(CP_STATUS, c.status) : cpBadge(POOL_ST, node.status)}</td><td class="fine">${s && node.status === 'submitted' ? esc(s.kind === 'hr' ? 'HR' : nameOf(s.approverIds[0])) : ''}</td>
+        <td class="r" style="white-space:nowrap">${!node.root && cpCanDecide(node) ? `<button class="btn sm" data-act="cpDecideDlg" data-p="${node.id}">Review</button>` : ''}${!node.root && hr && ['submitted', 'approved'].includes(node.status) && c.status === 'planning' ? `<button class="btn sm ghost" data-act="cpPoolReopen" data-p="${node.id}">Reopen</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
+    ${hr && c.status === 'planning' && pools.some((p) => p.status === 'submitted' && (cpStepNow(p) || {}).kind === 'hr') ? '<div class="btns" style="justify-content:flex-start"><button class="btn" data-act="cpHrApproveAll">Approve every plan waiting for HR</button></div>' : ''}</div>`;
+}
+ACT.cpGoNode = (b) => { const { c } = cpCur(); go(`#/compplan?c=${c.id}&p=${b.dataset.p}`); };
+
+/* one budget: what is handed down, the increases decided, the approval chain and the discussion */
+function cpNodeHtml(c, n) {
+  const hr = isHR(c.companyId); const can = cpCanPlan(c, n); const u = cpUse(c, n); const mine = !n.root && n.empId === me.id;
+  const kids = cpKids(c, n).sort((a, b) => nameOf(a.empId).localeCompare(nameOf(b.empId)));
+  const recs = cpMine(c, n).sort((a, b) => nameOf(a.empId).localeCompare(nameOf(b.empId)));
+  const live = recs.filter(cpCounted), out = recs.filter((r) => !cpCounted(r));
+  const g = cpGuide(c); const maxPct = +c.maxPct || 0;
+  const forDecisions = (+n.amount || 0) - u.allocated;
+  const who = n.root ? 'the organisation' : mine ? 'you' : nameOf(n.empId);
+  const used = (+n.amount || 0) ? Math.min(100, (u.allocated + u.spent) * 100 / n.amount) : 0;
+  let html = `<div class="card" id="cpNode" data-c="${c.id}" data-n="${n.root ? 'org' : n.id}"><div class="hd"><div><h2>${n.root ? 'Organisation budget' : mine ? 'Your budget' : `Budget of ${esc(nameOf(n.empId))}`} ${n.root ? '' : cpBadge(POOL_ST, n.status)}</h2>
+      <p class="sub">${n.root ? 'Hand budgets to the top managers; increases for anyone with no budget holder above them (such as the head of the company) are decided here by HR.' : `Given by ${esc(n.parentId ? nameOf((cpPools(c).find((p) => p.id === n.parentId) || {}).empId) : 'HR')}. Covers ${cpTeam(c, n.empId).length} people below ${mine ? 'you' : esc(nameOf(n.empId))}.`}</p></div>
+      <div class="tools">${mine && EDITABLE_POOL.includes(n.status) && c.status === 'planning' ? '<button class="btn pri" data-act="cpSubmit">Submit plan</button>' : ''}${mine && n.status === 'submitted' && !(n.steps || []).some((s) => s.decision === 'approved') ? '<button class="btn" data-act="cpWithdraw">Take back</button>' : ''}${!n.root && cpCanDecide(n) ? `<button class="btn pri" data-act="cpDecideDlg" data-p="${n.id}">Approve or send back</button>` : ''}</div></div>
+    ${n.status === 'returned' ? `<div class="note bad">Sent back${(() => { const s = (n.steps || []).find((x) => x.decision === 'returned'); return s ? ` by ${esc(nameOf(s.by))}: ${esc(s.note)}` : ''; })()}. Make the changes and submit again.</div>` : ''}
+    <div class="grid g4"><div class="kpi"><span>Budget</span><b>${inr0(n.amount)}</b><small>annual increase in fixed CTC</small></div><div class="kpi"><span>Handed down</span><b>${inr0(u.allocated)}</b><small>to ${kids.length} manager${kids.length === 1 ? '' : 's'}</small></div>
+      <div class="kpi"><span>Increases decided by ${esc(who)}</span><b id="cpSpent">${inr0(u.spent)}</b><small>${live.length} people</small></div>
+      <div class="kpi"><span>Left</span><b id="cpLeft" style="color:${u.left < -1 ? 'var(--bad)' : 'inherit'}">${inr0(u.left)}</b><div class="bar" style="margin-top:6px"><i id="cpBar" style="width:${used}%;${used >= 100 ? 'background:var(--warn)' : ''}"></i></div></div></div></div>`;
+  // budgets handed down
+  const cands = can ? cpCandidates(c, n) : [];
+  if (kids.length || cands.length) {
+    html += `<div class="card"><div class="hd"><div><h2>Budgets handed to managers</h2><p class="sub">Each manager plans the increases of their own team from this, and may pass part of it further down. The suggestion splits what is left in proportion to each team’s current salaries.</p></div>
+      ${cands.length ? '<button class="btn" data-act="cpGive">Give budgets to managers</button>' : ''}</div>
+      ${kids.length ? `<div class="scroll"><table class="t"><thead><tr><th>Manager</th><th class="r">People</th><th class="r">Their current CTC</th><th class="r">Budget</th><th class="r">As % of CTC</th><th class="r">Used</th><th>Status</th><th></th></tr></thead><tbody>
+        ${kids.map((k) => { const team = cpTeam(c, k.empId).filter(cpCounted); const pay = sumBy(team, (r) => r.currentCtc); const ku = cpUse(c, k); const editAmt = can && EDITABLE_POOL.includes(k.status);
+          return `<tr><td><a href="${cpHref(c, k)}"><b>${esc(nameOf(k.empId))}</b></a><div class="fine">${esc((desig((empById(k.empId) || {}).desigId) || {}).name || '')}</div></td><td class="r">${team.length}</td><td class="r">${inr0(pay)}</td>
+          <td class="r">${editAmt ? `<input class="inp" style="width:120px;text-align:right" inputmode="numeric" value="${Math.round(k.amount)}" data-ch="cpAmt" data-p="${k.id}">` : inr0(k.amount)}</td><td class="r">${pay ? pct1(k.amount * 100 / pay) : ''}</td>
+          <td class="r">${inr0(ku.allocated + ku.spent)}</td><td>${cpBadge(POOL_ST, k.status)}</td><td class="r">${editAmt && !cpKids(c, k).length && k.status === 'open' ? `<button class="btn sm ghost" data-act="cpTakeBack" data-p="${k.id}">Take back</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="mut">None yet.</p>'}</div>`;
+  }
+  // increases decided here
+  const row = (r) => { const e = empById(r.empId) || {}; const self = r.empId === me.id; const ed = can && !self && cpCounted(r); const p = cpPct(r);
+    const flag = maxPct && p > maxPct ? `<span class="badge warn">Above ${pct1(maxPct)}</span>` : '';
+    const lr = r.rating ? `${r.rating} <span class="fine">${esc(RATING[r.rating] || '')}</span>` : '<span class="mut">—</span>';
+    return `<tr data-rec="${r.id}"><td><b>${esc(fullName(e))}</b><div class="fine">${esc((desig(r.desigId) || {}).name || '')}${r.gradeId ? `, ${esc((grade(r.gradeId) || {}).name || '')}` : ''}${e.managerId && e.managerId !== n.empId ? `. Reports to ${esc(nameOf(e.managerId))}` : ''}</div></td>
+      <td>${lr}</td><td class="r">${inr0(r.currentCtc)}${r.salarySince ? `<div class="fine">since ${dmy(r.salarySince)}</div>` : ''}</td><td class="r fine">${r.rating ? pct1(g[r.rating] || 0) : ''}</td>
+      <td class="r">${ed ? `<input class="inp" style="width:72px;text-align:right" inputmode="decimal" placeholder="%" value="${+r.newCtc ? Math.round(p * 10) / 10 : ''}" data-in="cpPctIn" data-id="${r.id}">` : +r.newCtc ? pct1(p) : '—'}</td>
+      <td class="r">${ed ? `<input class="inp" style="width:120px;text-align:right" inputmode="numeric" placeholder="New CTC" value="${+r.newCtc || ''}" data-in="cpNewIn" data-id="${r.id}">` : +r.newCtc ? inr0(r.newCtc) : self ? '<span class="fine">Decided above you</span>' : '—'}</td>
+      <td class="r" id="cph-${r.id}">${cpHike(r) ? inr0(cpHike(r)) : ''}</td><td id="cpw-${r.id}">${flag}${+r.newCtc ? gradeBandNote(e, +r.newCtc) : ''}</td>
+      <td>${ed ? `<input class="inp" style="min-width:140px" value="${esc(r.note || '')}" placeholder="Note" data-ch="cpRecNote" data-id="${r.id}">` : esc(r.note || '')}</td>
+      ${hr && c.status !== 'applied' ? `<td class="r"><button class="btn sm ghost" data-act="cpExclude" data-id="${r.id}">Take out</button></td>` : hr ? '<td></td>' : ''}</tr>`; };
+  html += `<div class="card"><div class="hd"><div><h2>Increases decided ${n.root ? 'by HR' : mine ? 'by you' : `by ${esc(nameOf(n.empId))}`}</h2><p class="sub">${n.root ? 'People with no budget holder above them.' : 'Your direct reports, the managers you gave budgets to, and anyone below you whose manager has no budget.'} Enter the increase as a percentage or the new annual fixed CTC. ${can ? `Up to ${inr0(forDecisions)} is available for these after what you handed down.` : ''}</p></div>
+      <div class="tools">${can && live.some((r) => r.empId !== me.id) ? '<button class="btn" data-act="cpGuideFill">Fill from guidelines</button>' : ''}${hr && c.status === 'planning' && n.root ? '<button class="btn" data-act="cpAddPeople">Add people</button>' : ''}</div></div>
+    ${live.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Last rating</th><th class="r">Current CTC</th><th class="r">Guideline</th><th class="r">Increase</th><th class="r">New CTC</th><th class="r">Increase ₹</th><th></th><th>Note</th>${hr ? '<th></th>' : ''}</tr></thead><tbody>${live.map(row).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td><td class="r">${inr0(sumBy(live, (r) => r.currentCtc))}</td><td></td><td class="r" id="cpAvg">${pct1(sumBy(live, cpHike) * 100 / (sumBy(live, (r) => r.currentCtc) || 1))}</td><td></td><td class="r" id="cpTot">${inr0(sumBy(live, cpHike))}</td><td colspan="${hr ? 3 : 2}"></td></tr></tfoot></table></div>` : '<p class="mut">Nobody here.</p>'}
+    ${out.length ? `<h3>Not in the increase</h3><p class="fine">Serving notice, left or taken out by HR. Their increase is not paid and does not use the budget.</p><table class="t"><tbody>${out.map((r) => { const e = empById(r.empId) || {};
+      return `<tr><td>${esc(fullName(e))}</td><td>${r.excluded ? `Taken out by HR${r.excludedNote ? `: ${esc(r.excludedNote)}` : ''}` : e.status === 'exited' ? `Left on ${dmy((e.exit || {}).lwd)}` : `Serving notice, last day ${dmy((e.exit || {}).lwd)}`}</td><td class="r">${hr && r.excluded && c.status !== 'applied' ? `<button class="btn sm ghost" data-act="cpExclude" data-id="${r.id}">Put back</button>` : ''}</td></tr>`; }).join('')}</tbody></table>` : ''}</div>`;
+  // approval chain and discussion
+  if (!n.root) {
+    const steps = n.steps && n.steps.length ? n.steps : cpSteps(n);
+    const now = cpStepNow(n);
+    html += `<div class="grid g2"><div class="card"><h2>Approval</h2><p class="sub">When submitted, the plan is approved in turn by every budget holder above and then HR. Anyone can send it back with a comment.</p>
+      <ol class="steps">${steps.map((s) => `<li class="${s.decision === 'approved' ? 'approved' : s.decision === 'returned' ? 'rejected' : s === now && n.status === 'submitted' ? 'now' : ''}"><b>${esc(s.kind === 'hr' ? 'HR' : nameOf(s.approverIds[0]))}</b>
+        ${s.decision ? `<div class="fine">${s.decision === 'approved' ? 'Approved' : 'Sent back'} by ${esc(nameOf(s.by))}, ${dt(s.at)}${s.note ? `: ${esc(s.note)}` : ''}</div>` : s === now && n.status === 'submitted' ? '<div class="fine">Reviewing now</div>' : ''}</li>`).join('')}</ol>
+      ${n.submittedAt ? `<p class="fine">Submitted ${dt(n.submittedAt)}.</p>` : ''}</div>
+      <div class="card"><h2>Discussion</h2><p class="sub">Seen by ${esc(nameOf(n.empId))}, the managers above and HR.</p>
+      ${(n.comments || []).length ? `<div style="max-height:340px;overflow:auto">${n.comments.map((m) => `<div style="border-bottom:1px solid var(--rule);padding:8px 0"><b>${esc(nameOf(m.by))}</b> <span class="fine">${dt(m.at)}${m.empId ? `, about ${esc(nameOf(m.empId))}` : ''}</span><div style="white-space:pre-wrap">${esc(m.text)}</div></div>`).join('')}</div>` : '<p class="mut">No comments yet.</p>'}
+      ${c.status === 'planning' ? `<form id="cpCm" class="form" novalidate style="margin-top:8px"><label class="field wide">Comment<textarea class="inp" name="text" rows="2"></textarea></label>
+        <label class="field">About<select class="inp" name="empId"><option value="">The whole plan</option>${recs.map((r) => `<option value="${r.empId}">${esc(nameOf(r.empId))}</option>`).join('')}</select></label>
+        <div style="align-self:end"><button class="btn">Post</button></div></form>` : ''}</div></div>`;
+  }
+  return html;
+}
+
+/* ---------------------------------------------------------------- live editing of increases */
+function cpRefreshTotals() {
+  const box = $('#cpNode'); if (!box) return; const c = cpCycle(box.dataset.c); const n = cpNode(c, box.dataset.n); if (!c || !n) return;
+  const u = cpUse(c, n); const live = cpMine(c, n).filter(cpCounted);
+  const set = (id, v) => { const el = $('#' + id); if (el) el.textContent = v; };
+  set('cpSpent', inr0(u.spent)); set('cpLeft', inr0(u.left)); set('cpTot', inr0(sumBy(live, cpHike)));
+  set('cpAvg', pct1(sumBy(live, cpHike) * 100 / (sumBy(live, (r) => r.currentCtc) || 1)));
+  const l = $('#cpLeft'); if (l) l.style.color = u.left < -1 ? 'var(--bad)' : 'inherit';
+  const bar = $('#cpBar'); if (bar) { const w = n.amount ? Math.min(100, (u.allocated + u.spent) * 100 / n.amount) : 0; bar.style.width = w + '%'; bar.style.background = w >= 100 ? 'var(--warn)' : ''; }
+}
+function cpRowRefresh(r) {
+  const c = cpCycle(r.cycleId); const maxPct = +c.maxPct || 0; const e = empById(r.empId);
+  const h = $('#cph-' + r.id); if (h) h.textContent = cpHike(r) ? inr0(cpHike(r)) : '';
+  const w = $('#cpw-' + r.id); if (w) w.innerHTML = `${maxPct && cpPct(r) > maxPct ? `<span class="badge warn">Above ${pct1(maxPct)}</span>` : ''}${+r.newCtc && e ? gradeBandNote(e, +r.newCtc) : ''}`;
+  cpRefreshTotals();
+}
+const cpRecById = (id) => S.compRecs.find((r) => r.id === id);
+const cpTouch = (r) => { r.updatedAt = Date.now(); r.updatedBy = me.id; save(); };
+ACT.cpPctIn = (el) => {
+  const r = cpRecById(el.dataset.id); if (!r) return;
+  r.newCtc = el.value.trim() === '' ? '' : r100(r.currentCtc * (1 + Math.max(0, parseNum(el.value)) / 100));
+  const nw = el.closest('tr').querySelector('[data-in="cpNewIn"]'); if (nw) nw.value = r.newCtc || '';
+  cpTouch(r); cpRowRefresh(r);
+};
+ACT.cpNewIn = (el) => {
+  const r = cpRecById(el.dataset.id); if (!r) return;
+  const v = el.value.trim() === '' ? '' : Math.round(parseNum(el.value));
+  if (v !== '' && v < r.currentCtc) { el.style.borderColor = 'var(--bad)'; el.title = 'Lower than the current salary'; return; }   // still typing, or a cut: not kept
+  el.style.borderColor = ''; el.title = '';
+  r.newCtc = v;
+  const pc = el.closest('tr').querySelector('[data-in="cpPctIn"]'); if (pc) pc.value = +r.newCtc ? Math.round(cpPct(r) * 10) / 10 : '';
+  cpTouch(r); cpRowRefresh(r);
+};
+ACT.cpRecNote = (el) => { const r = cpRecById(el.dataset.id); if (!r) return; r.note = el.value.trim(); cpTouch(r); };
+ACT.cpGuideFill = async () => {
+  const { c, n } = cpCur(); if (!cpCanPlan(c, n)) return;
+  const g = cpGuide(c); const u = cpUse(c, n);
+  const list = cpMine(c, n).filter((r) => cpCounted(r) && r.empId !== me.id);
+  const want = sumBy(list, (r) => r.currentCtc * (g[r.rating || 3] || 0) / 100);
+  const avail = (+n.amount || 0) - u.allocated;
+  const f = want > avail && want > 0 ? Math.max(0, avail / want) : 1;
+  if (!(await confirmBox('Fill from the guidelines?', `Sets each person’s increase from their last rating (${[5, 4, 3, 2, 1].map((r) => `${r}: ${pct1(g[r])}`).join(', ')}; no rating counts as 3). That comes to ${inr0(want)}${f < 1 ? `, more than the ${inr0(avail)} available, so every increase is scaled down to ${pct1(f * 100)} of the guideline` : ''}. Increases already entered are replaced.`, 'Fill'))) return;
+  list.forEach((r) => { const pc = (g[r.rating || 3] || 0) * f; r.newCtc = pc > 0 ? Math.floor(r.currentCtc * (1 + pc / 100) / 100) * 100 : ''; if (+r.newCtc && +r.newCtc <= r.currentCtc) r.newCtc = ''; cpTouch(r); });
+  saveNow(); route();
+};
+
+/* ---------------------------------------------------------------- handing budgets down */
+ACT.cpGive = () => {
+  const { c, n } = cpCur(); if (!cpCanPlan(c, n)) return;
+  const cands = cpCandidates(c, n); if (!cands.length) { toast('There is no manager below to give a budget to.'); return; }
+  const u = cpUse(c, n); const forDecisions = (+n.amount || 0) - u.allocated;
+  const base = sumBy(cpMine(c, n).filter(cpCounted), (r) => r.currentCtc) || 1;
+  const candIds = new Set(cands.map((m) => m.id));
+  const under = (m) => { const seen = new Set([m.id]); let cur = m.managerId; while (cur && !seen.has(cur)) { if (candIds.has(cur)) return true; seen.add(cur); cur = (empById(cur) || {}).managerId; } return false; };
+  const info = cands.map((m) => { const team = cpTeam(c, m.id).filter(cpCounted); const pay = sumBy(team, (r) => r.currentCtc); return { m, team, pay, top: !under(m), sug: Math.max(0, Math.floor(forDecisions * pay / base / 100) * 100) }; })
+    .sort((a, b) => (a.top === b.top ? b.pay - a.pay : a.top ? -1 : 1));
+  openDlg(`<form class="dlg" id="cgF" novalidate><h2>Give budgets to managers</h2><p class="fine" style="margin:0">${inr0(forDecisions)} is not yet handed down. The suggestion gives each manager a share in proportion to their team’s current CTC (${inr0(base)} in all, including people you keep deciding for). Their own increase stays with you. Managers below a ticked manager get their budget from that manager, so they are not ticked.</p>
+    <div class="scroll"><table class="t"><thead><tr><th></th><th>Manager</th><th class="r">People</th><th class="r">Team CTC</th><th class="r">Budget</th></tr></thead><tbody>
+    ${info.map((x, i) => `<tr><td><input type="checkbox" name="on${i}" ${x.top ? 'checked' : ''}></td><td><b>${esc(fullName(x.m))}</b><div class="fine">${esc((desig(x.m.desigId) || {}).name || '')}${x.m.managerId ? `, reports to ${esc(nameOf(x.m.managerId))}` : ''}</div></td><td class="r">${x.team.length}</td><td class="r">${inr0(x.pay)}</td>
+      <td class="r"><input class="inp" style="width:120px;text-align:right" inputmode="numeric" name="amt${i}" value="${x.sug}"></td></tr>`).join('')}</tbody></table></div>
+    <p class="err" id="cgE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Give budgets</button></div></form>`, true);
+  $('#cgF').onsubmit = (ev) => {
+    ev.preventDefault(); const f = ev.target.elements;
+    const pick = info.map((x, i) => ({ ...x, on: f['on' + i].checked, amt: Math.round(parseNum(f['amt' + i].value)) })).filter((x) => x.on);
+    if (!pick.length) { $('#cgE').textContent = 'Tick at least one manager.'; return; }
+    const nested = pick.find((x) => pick.some((y) => y !== x && allReportees(y.m.id).includes(x.m.id)));
+    if (nested) { $('#cgE').textContent = `${fullName(nested.m)} is in the team of another ticked manager, who hands them their budget. Untick one of them.`; return; }
+    const moving = new Set(pick.flatMap((x) => x.team.map((r) => r.empId)));
+    const stay = sumBy(cpMine(c, n).filter((r) => cpCounted(r) && !moving.has(r.empId)), cpHike);
+    const total = sumBy(pick, (x) => x.amt);
+    if (total + u.allocated + stay > (+n.amount || 0) + 1) { $('#cgE').textContent = `That is ${inr0(total)}; only ${inr0((+n.amount || 0) - u.allocated - stay)} is free after what is handed down and the increases you keep.`; return; }
+    pick.forEach((x) => {
+      const p = { id: uid(), cycleId: c.id, companyId: c.companyId, empId: x.m.id, parentId: n.id, chain: n.root ? [] : [n.empId, ...(n.chain || [])], amount: Math.max(0, x.amt), status: 'open', steps: [], comments: [], log: [] };
+      logEntry(p, `Budget of ${inr0(p.amount)} given by ${fullName(me)}`); S.compBudgets.push(p);
+    });
+    logEntry(n.root ? c : n, `Budgets given to ${pick.map((x) => fullName(x.m)).join(', ')}`);
+    saveNow(); closeDlg(); toast('Budgets given'); route();
+  };
+};
+ACT.cpAmt = (el) => {
+  const { c, n } = cpCur(); const k = S.compBudgets.find((p) => p.id === el.dataset.p); if (!k || !cpCanPlan(c, n)) return;
+  const v = Math.max(0, Math.round(parseNum(el.value))); const was = +k.amount || 0;
+  k.amount = v; const u = cpUse(c, n);
+  const ku = cpUse(c, k); if (ku.allocated > v + 1) { k.amount = was; el.value = was; toast(`${nameOf(k.empId)} has already handed down ${inr0(ku.allocated)}.`); return; }
+  if (u.allocated > (+n.amount || 0) + 1) { k.amount = was; el.value = was; toast('That is more than the budget you have.'); return; }
+  logEntry(k, `Budget changed from ${inr0(was)} to ${inr0(v)}`); saveNow(); route();
+};
+ACT.cpTakeBack = async (b) => {
+  const k = S.compBudgets.find((p) => p.id === b.dataset.p); if (!k) return;
+  if (!(await confirmBox(`Take back the budget of ${nameOf(k.empId)}?`, 'You decide their team’s increases again. Increases they entered stay as proposals.', 'Take back'))) return;
+  S.compBudgets = S.compBudgets.filter((p) => p !== k); saveNow(); route();
+};
+
+/* ---------------------------------------------------------------- submitting, approving, discussing */
+ACT.cpSubmit = async () => {
+  const { c, n } = cpCur(); if (n.root || n.empId !== me.id) return;
+  const kids = cpKids(c, n).filter((k) => !['submitted', 'approved'].includes(k.status));
+  if (kids.length) { toast(`Wait for ${kids.map((k) => nameOf(k.empId)).join(', ')} to submit first; their plans are part of yours.`); return; }
+  const u = cpUse(c, n); if (u.left < -1) { toast(`The plan is ${inr0(-u.left)} over your budget.`); return; }
+  const blank = cpMine(c, n).filter((r) => cpCounted(r) && r.empId !== me.id && !+r.newCtc).length;
+  const steps = cpSteps(n);
+  if (!(await confirmBox('Submit your plan?', `${blank ? `${blank} ${blank === 1 ? 'person has' : 'people have'} no increase. ` : ''}It goes for approval to ${steps.map((s) => (s.kind === 'hr' ? 'HR' : nameOf(s.approverIds[0]))).join(', then ')}. You can take it back until the first approval.`, 'Submit'))) return;
+  await saveAndWait();
+  Object.assign(n, { status: 'submitted', steps, submittedAt: Date.now(), submittedBy: me.id }); logEntry(n, 'Submitted');
+  saveNow(); toast('Plan submitted'); route(); cpNotify(c, n, 'submitted');
+};
+ACT.cpWithdraw = async () => {
+  const { c, n } = cpCur(); if (n.empId !== me.id || n.status !== 'submitted') return;
+  if (!(await confirmBox('Take back your plan?', 'You can change it and submit again.', 'Take back'))) return;
+  Object.assign(n, { status: 'open', steps: [] }); logEntry(n, 'Taken back to change'); saveNow(); route();
+};
+ACT.cpDecideDlg = (b) => {
+  const { c } = cpCur(); const p = S.compBudgets.find((x) => x.id === b.dataset.p); if (!p || !cpCanDecide(p)) return;
+  const u = cpUse(c, p); const recs = cpMine(c, p).filter(cpCounted);
+  openDlg(`<form class="dlg" id="cdF" novalidate><h2>Plan of ${esc(nameOf(p.empId))}</h2><p class="fine" style="margin:0">Budget ${inr0(p.amount)}: ${inr0(u.allocated)} handed down, ${inr0(u.spent)} in increases for ${recs.length} people (average ${pct1(sumBy(recs, cpHike) * 100 / (sumBy(recs, (r) => r.currentCtc) || 1))}), ${inr0(u.left)} left. <a href="${cpHref(c, p)}" data-act="close">See the whole plan</a>.</p>
+    <label class="field">Comment (needed to send it back)<textarea class="inp" name="n" rows="3"></textarea></label><p class="err" id="cdE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn danger" id="cdBack">Send back</button><button class="btn ok">Approve</button></div></form>`);
+  const done = async (ok) => {
+    const note = $('#cdF').elements.n.value.trim(); if (!ok && note.length < 3) { $('#cdE').textContent = 'Say what should change.'; return; }
+    const s = cpStepNow(p); Object.assign(s, { decision: ok ? 'approved' : 'returned', by: me.id, at: Date.now(), note });
+    p.decidedAt = Date.now(); p.status = !ok ? 'returned' : cpStepNow(p) ? 'submitted' : 'approved';
+    logEntry(p, ok ? `Approved${s.kind === 'hr' ? ' by HR' : ''}` : 'Sent back', note);
+    if (note) (p.comments = p.comments || []).push({ id: uid(), by: me.id, at: Date.now(), text: `${ok ? 'Approved' : 'Sent back'}: ${note}` });
+    saveNow(); closeDlg(); toast(ok ? 'Approved' : 'Sent back'); route(); cpNotify(c, p, 'decided');
+  };
+  $('#cdF').onsubmit = (ev) => { ev.preventDefault(); done(true); };
+  $('#cdBack').onclick = () => done(false);
+};
+ACT.cpHrApproveAll = async () => {
+  const { c } = cpCur(); const list = cpPools(c).filter((p) => p.status === 'submitted' && (cpStepNow(p) || {}).kind === 'hr');
+  if (!list.length || !(await confirmBox(`Approve ${list.length} plan${list.length > 1 ? 's' : ''}?`, list.map((p) => nameOf(p.empId)).join(', '), 'Approve'))) return;
+  list.forEach((p) => { Object.assign(cpStepNow(p), { decision: 'approved', by: me.id, at: Date.now(), note: '' }); p.status = 'approved'; p.decidedAt = Date.now(); logEntry(p, 'Approved by HR'); });
+  saveNow(); route();
+};
+ACT.cpPoolReopen = async (b) => {
+  const p = S.compBudgets.find((x) => x.id === b.dataset.p); if (!p) return; const { c } = cpCur();
+  const note = await askText(`Reopen the plan of ${nameOf(p.empId)}?`, 'Why (they see this)', 'Reopen'); if (note === null) return;
+  const parent = p.parentId && S.compBudgets.find((x) => x.id === p.parentId);
+  const s = cpStepNow(p);
+  if (s) Object.assign(s, { decision: 'returned', by: me.id, at: Date.now(), note });
+  else p.steps = [...(p.steps || []), { kind: 'hr', approverIds: [], label: 'HR', decision: 'returned', by: me.id, at: Date.now(), note }];
+  p.status = 'returned';
+  (p.comments = p.comments || []).push({ id: uid(), by: me.id, at: Date.now(), text: `Reopened by HR: ${note}` }); logEntry(p, 'Reopened by HR', note);
+  if (parent && parent.status !== 'open') { parent.status = 'returned'; logEntry(parent, `Reopened with ${nameOf(p.empId)}’s plan`); }
+  saveNow(); route(); cpNotify(c, p, 'comment');
+};
+document.addEventListener('submit', (ev) => {
+  if (ev.target.id !== 'cpCm') return; ev.preventDefault();
+  const { c, n } = cpCur(); const f = ev.target.elements; const text = f.text.value.trim(); if (!text || !n || n.root) return;
+  (n.comments = n.comments || []).push({ id: uid(), by: me.id, at: Date.now(), text, empId: f.empId.value || '' });
+  saveNow(); route(); cpNotify(c, n, 'comment');
+});
+
+/* ---------------------------------------------------------------- HR: people, approval, applying, letters */
+ACT.cpExclude = async (b) => {
+  const r = cpRecById(b.dataset.id); if (!r) return;
+  if (r.excluded) { r.excluded = false; r.excludedNote = ''; saveNow(); route(); return; }
+  const note = await askText(`Take ${nameOf(r.empId)} out of the increase?`, 'Reason (for example promoted separately, under review)', 'Take out'); if (note === null) return;
+  r.excluded = true; r.excludedNote = note; saveNow(); route();
+};
+ACT.cpAddPeople = () => {
+  const { c } = cpCur(); const have = new Set(cpRecs(c).map((r) => r.empId));
+  const more = S.employees.filter((e) => e.companyId === c.companyId && e.status === 'active' && !have.has(e.id) && +(salaryAt(e, addDays(c.effective, -1)) || {}).ctc > 0);
+  if (!more.length) { toast('Everyone with a salary is already in the plan.'); return; }
+  openDlg(`<form class="dlg" id="caF"><h2>Add people to the plan</h2><p class="fine" style="margin:0">For example people who joined after the cut-off or finished probation. Their manager decides their increase like the others.</p>
+    <div class="scroll" style="max-height:360px"><table class="t"><tbody>${more.map((e) => `<tr><td><input type="checkbox" name="e" value="${e.id}"></td><td>${esc(fullName(e))} <span class="fine">${esc(e.empNo)}, joined ${dmy(e.doj)}${e.empType === 'probation' ? ', on probation' : ''}</span></td></tr>`).join('')}</tbody></table></div>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`, true);
+  $('#caF').onsubmit = (ev) => { ev.preventDefault(); const ids = [...ev.target.querySelectorAll('[name=e]:checked')].map((x) => x.value);
+    ids.forEach((id) => S.compRecs.push(cpRecFor(c, empById(id)))); logEntry(c, `${ids.length} people added`); saveNow(); closeDlg(); route(); };
+};
+ACT.cpApprove = async () => {
+  const { c } = cpCur(); const pools = cpPools(c);
+  const open = pools.filter((p) => p.status !== 'approved');
+  if (open.length) { toast(`Still to approve: ${open.map((p) => `${nameOf(p.empId)} (${POOL_ST[p.status][0].toLowerCase()})`).join(', ')}.`); return; }
+  const u = cpUse(c, cpRoot(c)); if (u.left < -1) { toast(`The plan is ${inr0(-u.left)} over the organisation’s budget.`); return; }
+  const live = cpRecs(c).filter(cpCounted); const tot = sumBy(live, cpHike);
+  if (!(await confirmBox('Approve the cycle?', `${live.filter((r) => cpHike(r) > 0).length} of ${live.length} people get an increase, ${inr0(tot)} in all (${pct1(tot * 100 / (sumBy(live, (r) => r.currentCtc) || 1))} on average) against a budget of ${inr0(c.budget)}. Plans can no longer change. Then apply it to salaries.`, 'Approve'))) return;
+  c.status = 'approved'; c.approvedBy = me.id; c.approvedAt = Date.now(); logEntry(c, 'Cycle approved'); audit('Salary revision cycle approved', c.name, 'payroll'); saveNow(); route();
+};
+ACT.cpReopen = async () => { const { c } = cpCur(); if (!(await confirmBox('Reopen planning?', 'Managers’ plans stay approved; reopen a plan from the budgets list to let its manager change it.', 'Reopen'))) return;
+  c.status = 'planning'; logEntry(c, 'Reopened'); saveNow(); route(); };
+ACT.cpApply = async () => {
+  const { c } = cpCur(); const recs = cpRecs(c);
+  const go_ = recs.filter((r) => cpCounted(r) && cpHike(r) > 0);
+  const changed = go_.filter((r) => { const now = salaryAt(empById(r.empId), addDays(c.effective, -1)); return now && Math.round(+now.ctc) !== Math.round(+r.currentCtc); });
+  const lockedLater = S.payRuns.some((r) => r.companyId === c.companyId && r.status === 'locked' && r.month >= c.effective.slice(0, 7));
+  if (!(await confirmBox('Apply to salaries?', `New annual fixed CTC from ${dmy(c.effective)} for ${go_.length} people; payroll pays it from ${monthName(c.effective.slice(0, 7))}.${lockedLater ? ' Payroll for that month is already locked, so arrears are added to the next open month.' : ''}${changed.length ? ` Note: the salary of ${changed.map((r) => nameOf(r.empId)).join(', ')} changed after planning opened; the new CTC from the plan replaces it.` : ''} Variable pay targets stay as they are. People leaving are skipped.`, 'Apply'))) return;
+  recs.forEach((r) => {
+    const e = empById(r.empId);
+    if (!cpCounted(r)) { r.status = 'skipped'; return; }
+    if (!(cpHike(r) > 0)) { r.status = 'unchanged'; return; }
+    reviseSalary(e, c.effective, Math.round(+r.newCtc), c.reason || 'Annual increment');
+    r.status = 'applied'; r.appliedAt = Date.now();
+  });
+  c.status = 'applied'; c.appliedAt = Date.now(); c.appliedBy = me.id; logEntry(c, `Applied to ${go_.length} salaries from ${dmy(c.effective)}`); audit('Salary revisions applied', `${c.name}: ${go_.length} employees`, 'payroll');
+  saveNow(); toast(`${go_.length} salaries revised from ${dmy(c.effective)}`); route();
+};
+ACT.cpUnapply = async () => {
+  const { c } = cpCur();
+  if (S.payRuns.some((r) => r.companyId === c.companyId && r.status === 'locked' && r.month >= c.effective.slice(0, 7))) { toast('Payroll from the effective month is already locked. Revise those salaries individually instead.'); return; }
+  if (!(await confirmBox('Undo the salary revisions?', `Removes the revisions from ${dmy(c.effective)} written by this cycle. The approved plan stays, so you can apply it again.`, 'Undo'))) return;
+  cpRecs(c).filter((r) => r.status === 'applied').forEach((r) => { const e = empById(r.empId); if (!e) return;
+    e.salaryHist = (e.salaryHist || []).filter((s) => !(s.effective === c.effective && s.reason === (c.reason || 'Annual increment') && Math.round(+s.ctc) === Math.round(+r.newCtc)));
+    e.history.push({ date: todayISO(), type: 'Salary revision withdrawn', note: `${c.name}`, by: me.id }); r.status = 'planned'; r.appliedAt = 0; });
+  c.status = 'approved'; logEntry(c, 'Revisions undone'); audit('Salary revisions undone', c.name, 'payroll'); saveNow(); route();
+};
+ACT.cpExcel = () => {
+  const { c } = cpCur(); const pools = cpPools(c);
+  writeBook(`Salary_revision_${(coById(c.companyId) || {}).code || ''}_${c.effective}.xlsx`, {
+    Plan: cpRecs(c).map((r) => { const e = empById(r.empId) || {}; const d = cpDecider(r.empId, pools);
+      return { 'Employee number': e.empNo, Employee: fullName(e), Department: (dept(r.deptId) || {}).name || '', Designation: (desig(r.desigId) || {}).name || '', Grade: (grade(r.gradeId) || {}).name || '',
+        Manager: nameOf(e.managerId), 'Decided by': d ? nameOf(d.empId) : 'HR', 'Last rating': r.rating || '', 'Current CTC': r.currentCtc, 'New CTC': +r.newCtc || '', Increase: cpHike(r), 'Increase %': Math.round(cpPct(r) * 10) / 10,
+        Note: r.note || '', Status: r.excluded ? 'Taken out' : cpLeaving(e) ? 'Leaving' : r.status }; }),
+    Budgets: [cpRoot(c), ...pools].map((p) => { const u = cpUse(c, p); return { 'Budget holder': cpWho(p), 'Given by': p.root ? '' : p.parentId ? nameOf((pools.find((x) => x.id === p.parentId) || {}).empId) : 'HR', Budget: p.amount, 'Handed down': u.allocated, Increases: u.spent, Left: u.left, Status: p.root ? c.status : p.status }; }),
+  });
+};
+ACT.cpLetters = () => {
+  const { c } = cpCur(); const list = cpRecs(c).filter((r) => r.status === 'applied').map((r) => ({ r, e: empById(r.empId) })).filter((x) => x.e);
+  if (!list.length) { toast('Nobody’s salary was revised in this cycle.'); return; }
+  const tpls = docTemplatesFor(list[0].e); if (!tpls.length) { toast('Add a salary revision letter under Administration › Document templates first.'); return; }
+  const pre = tpls.find((t) => /revis|increment|increase/i.test(t.name)) || tpls[0];
+  openDlg(`<form class="dlg" id="clF" novalidate><h2>Salary revision letters</h2><p class="fine" style="margin:0">One letter for each of the ${list.length} people whose salary was revised, numbered and added to their profile under Letters and service documents, where they can download it. The letter is dated ${dmy(c.effective)} so the new and previous salary, the increase and the salary breakup come from the revision.</p>
+    <div class="form"><label class="field wide">Template<select class="inp" name="tpl">${tpls.map((t) => `<option value="${t.id}" ${t === pre ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label></div><div class="form" id="clAsk"></div>
+    <label class="chk"><input type="checkbox" name="skip" checked> Skip people who already have a letter from this cycle</label><p class="err" id="clE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Create letters</button></div></form>`, true);
+  const f = $('#clF'); const cur = () => tpls.find((t) => t.id === f.elements.tpl.value);
+  const draw = () => { $('#clAsk').innerHTML = docAsks(cur()).map((ph) => { const m = cur().mapping[ph]; return `<label class="field">${esc(m.label || ph)}${m.required ? ' *' : ''}<input class="inp" name="ask_${esc(ph)}" value="${esc(m.type === 'date' ? c.effective : m.default || '')}"><small>Same for every letter</small></label>`; }).join(''); };
+  f.elements.tpl.onchange = draw; draw();
+  f.onsubmit = async (ev) => {
+    ev.preventDefault(); const t = cur(); const answers = Object.fromEntries(docAsks(t).map((ph) => [ph, f.elements[`ask_${ph}`].value]));
+    const miss = docAsks(t).filter((ph) => t.mapping[ph].required && !String(answers[ph]).trim()); if (miss.length) { $('#clE').textContent = `Fill in: ${miss.join(', ')}.`; return; }
+    const todo = list.filter((x) => !(f.elements.skip.checked && x.r.letterFileId));
+    let ok = 0; const bad = [];
+    for (const x of todo) {
+      $('#clE').textContent = `Creating ${ok + bad.length + 1} of ${todo.length}…`;
+      try {
+        const d = await docGenerate(t.id, x.e.id, c.effective, answers);
+        (x.e.documents = x.e.documents || []).push({ id: uid(), category: d.type || t.name, name: d.letterNo ? `${t.name} (${d.letterNo})` : t.name, fileId: d.fileId, date: c.effective, by: me.id, at: Date.now(), templateId: t.id, letterNo: d.letterNo || '' });
+        (x.e.history = x.e.history || []).push({ date: c.effective, type: 'Document issued', note: `${d.type || t.name}${d.letterNo ? ` ${d.letterNo}` : ''}`, by: me.id });
+        x.r.letterFileId = d.fileId; x.r.letterNo = d.letterNo || ''; ok++;
+      } catch (e2) { bad.push(`${fullName(x.e)}: ${e2.message}`); }
+    }
+    logEntry(c, `${ok} revision letters created`); saveNow();
+    if (bad.length) { $('#clE').textContent = `${ok} created. Not created: ${bad.join('; ')}`; return; }
+    closeDlg(); toast(`${ok} letters created and added to the profiles`); route();
+  };
+};
+
+/* ---------------------------------------------------------------- Approvals inbox */
+function cpPending() {
+  if (!me) return [];
+  const out = [];
+  S.compBudgets.forEach((p) => {
+    const c = cpCycle(p.cycleId); if (!c || c.status !== 'planning') return;
+    const link = `#/compplan?c=${c.id}&p=${p.id}`;
+    if (cpCanDecide(p)) out.push({ kind: 'comp', r: { empId: p.empId }, what: `Salary revision plan to approve${(cpStepNow(p) || {}).kind === 'hr' ? ' (HR)' : ''}: ${c.name}`, link });
+    if (p.empId === me.id && p.status === 'open') out.push({ kind: 'comp', r: { empId: me.id }, what: `Plan salary increases for your team: ${c.name}${c.deadline ? `, by ${dmy(c.deadline)}` : ''}`, link });
+    if (p.empId === me.id && p.status === 'returned') out.push({ kind: 'comp', r: { empId: me.id }, what: `Your salary revision plan was sent back: ${c.name}`, link });
+  });
+  S.compCycles.filter((c) => isHR(c.companyId)).forEach((c) => {
+    const pools = cpPools(c);
+    if (c.status === 'planning' && pools.length && pools.every((p) => p.status === 'approved')) out.push({ kind: 'comp', r: { empId: null, cand: c.name }, what: 'Every plan approved: approve the salary revision cycle', link: `#/compplan?c=${c.id}` });
+    if (c.status === 'approved') out.push({ kind: 'comp', r: { empId: null, cand: c.name }, what: 'Approved: apply the salary revisions', link: `#/compplan?c=${c.id}` });
+  });
+  return out;
+}
 
 /* ---------------------------------------------------------------- server state and session (used by the React app) */
 function loadServerState(state, meId) {

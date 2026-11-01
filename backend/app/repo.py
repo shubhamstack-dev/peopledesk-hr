@@ -71,6 +71,14 @@ def get_records(conn: Connection, coll_name: str, ids) -> dict:
     return out
 
 
+def records_where(conn: Connection, coll_name: str, col: str, value) -> list:
+    """Every record of a collection whose indexed column equals a value, e.g. the budgets of one cycle."""
+    c = BY_NAME[coll_name]
+    if col not in c.extra and col not in ("company_id", "emp_id"):
+        raise ValueError(f"{col} is not an indexed column of {c.table}")
+    return [loads(d) for d in conn.execute(text(f"SELECT data FROM {c.table} WHERE {col}=:v"), {"v": value}).scalars()]
+
+
 def get_singleton(conn: Connection, k: str):
     v = conn.execute(text("SELECT data FROM app_kv WHERE k=:k"), {"k": k}).scalar()
     return loads(v)

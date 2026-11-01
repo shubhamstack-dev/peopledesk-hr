@@ -17,12 +17,14 @@ cannot approve their own requests, change their access, salary or job record.
 """
 from dataclasses import dataclass, field
 
-from . import repo
+from . import comp, repo
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
            "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns",
-           "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates"}
+           "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles"}
+# Compensation planning: budgets and recommendations follow their own rules (comp.py)
+COMP = {"compBudgets", "compRecs"}
 # Records shared by the people taking part in them (requester, approvers, department owners).
 # Each carries a `participants` list of employee ids; approval steps carry `approverIds`.
 PARTICIPANT = {"requests", "expenseClaims", "onboardings", "assets"}
@@ -122,6 +124,7 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     for coll in PARTICIPANT:
         st[coll] = [x for x in st.get(coll, []) if ctx.is_hr_for(x.get("companyId") or emp_co.get(x.get("empId")))
                     or ctx.id in (x.get("participants") or []) or x.get("empId") == ctx.id]
+    comp.visible(st, ctx)
     if not ctx.is_hr:
         st["docTemplates"] = []          # only HR makes documents; employees see the finished letters on their profile
     s = st.get("settings") or {}
@@ -165,6 +168,8 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
 
     if hr_ok:
         return new
+    if coll in COMP:
+        return _comp(conn, coll, new, old, ctx)
     if coll in PARTICIPANT:
         return _participant(coll, new, old, ctx)
     if coll in HR_ONLY or coll not in WORKFLOW:
@@ -180,6 +185,8 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         raise Rejected("a new request cannot already be approved")
     if coll == "punches" and subject == ctx.id:
         _own_punch(new, old)
+    if coll == "exits" and old and (new.get("stat") != old.get("stat") or new.get("fnf") != old.get("fnf")):
+        raise Rejected("only HR records the PF and ESI exit and the settlement")
     if coll == "feedback":
         if not old and new.get("from") != ctx.id:
             raise Rejected("feedback can only be sent as yourself")
@@ -196,6 +203,44 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
             if not (coll == "goals" and no_manager):
                 raise Rejected("you cannot approve your own request")
     return new
+
+
+def _comp_context(conn, rec: dict):
+    cyc_id = rec.get("cycleId")
+    cycle = (repo.get_records(conn, "compCycles", [cyc_id]) or {}).get(cyc_id) if cyc_id else None
+    pools = repo.records_where(conn, "compBudgets", "cycle_id", cyc_id) if cyc_id else []
+    return cycle, pools
+
+
+def _comp(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
+    """Budgets and salary recommendations changed by a manager (HR is allowed everything above)."""
+    if old and new.get("cycleId") != old.get("cycleId"):
+        raise Rejected("a budget or recommendation cannot move to another cycle")
+    cycle, pools = _comp_context(conn, old or new)
+    if cycle and cycle.get("companyId") != ctx.me.get("companyId"):
+        raise Rejected("belongs to another company")
+    if (new.get("companyId") or (cycle or {}).get("companyId")) != (cycle or {}).get("companyId"):
+        raise Rejected("belongs to another company")
+    try:
+        if coll == "compBudgets":
+            return comp.check_pool(new, old, ctx.id, ctx.line, ctx.emps, cycle, pools)
+        return comp.check_rec(new, old, ctx.id, ctx.emps, cycle, pools)
+    except comp.Problem as e:
+        raise Rejected(str(e)) from None
+
+
+def check_comp_budgets(conn, cycle_ids, ctx: Ctx):
+    """After a save: no budget in the cycles touched hands down or (once finished) spends more than it has."""
+    for cyc_id in {c for c in cycle_ids if c}:
+        cycle = (repo.get_records(conn, "compCycles", [cyc_id]) or {}).get(cyc_id)
+        if not cycle:
+            continue
+        pools = repo.records_where(conn, "compBudgets", "cycle_id", cyc_id)
+        recs = repo.records_where(conn, "compRecs", "cycle_id", cyc_id)
+        try:
+            comp.check_budgets(cycle, pools, recs, ctx.emps)
+        except comp.Problem as e:
+            raise Rejected(str(e)) from None
 
 
 def _own_punch(new: dict, old: dict | None):
@@ -325,6 +370,15 @@ def check_delete(conn, coll: str, old: dict, ctx: Ctx):
         return
     if coll in ("requests", "expenseClaims") and old.get("empId") == ctx.id and old.get("status") in ("draft", "withdrawn", None):
         return
+    if coll == "compBudgets":
+        cycle, pools = _comp_context(conn, old)
+        try:
+            comp.check_pool_delete(old, ctx.id, cycle, pools)
+        except comp.Problem as e:
+            raise Rejected(str(e)) from None
+        return
+    if coll == "compRecs":
+        raise Rejected("only HR can take someone out of a salary plan")
     if coll in HR_ONLY or coll not in WORKFLOW or coll == "employees":
         raise Rejected("only HR can delete this")
     subject = old.get("empId")

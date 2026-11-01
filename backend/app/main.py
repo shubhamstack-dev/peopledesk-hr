@@ -322,6 +322,12 @@ def sync(body: SyncBody, me=Depends(current_user)):
                         r.pop(k, None)
                 keep.append(policy.check_upsert(conn, coll, r, olds.get(r["id"]), ctx))
             repo.upsert(conn, coll, keep, me["id"])
+        comp_cycles = set()   # salary-planning cycles touched: budgets are checked once everything is saved
+        for coll, recs in body.upsert.items():
+            if coll in ("compBudgets", "compRecs"):
+                comp_cycles |= {r.get("cycleId") for r in recs}
+            elif coll == "compCycles":
+                comp_cycles |= {r.get("id") for r in recs}
         for coll, ids in body.delete.items():
             if coll not in BY_NAME:
                 raise HTTPException(400, f"Unknown data: {coll}")
@@ -329,7 +335,10 @@ def sync(body: SyncBody, me=Depends(current_user)):
             for i in ids:
                 if i in olds:
                     policy.check_delete(conn, coll, olds[i], ctx)
+                    if coll in ("compBudgets", "compRecs"):
+                        comp_cycles.add(olds[i].get("cycleId"))
             repo.delete(conn, coll, list(olds))
+        policy.check_comp_budgets(conn, comp_cycles, ctx)
         for k, v in body.singletons.items():
             if k not in SINGLETONS:
                 raise HTTPException(400, f"Unknown setting: {k}")
@@ -537,6 +546,90 @@ def notify(body: NotifyBody, me=Depends(current_user)):
             log.warning("Mail failed: %s", e)
             return {"sent": False, "reason": "the e-mail server refused the message; HR sees it in Approvals"}
         repo.audit_add(conn, "E-mail sent", key, me["id"], module="approvals", ref_type="employee", ref_id=r.get("empId"))
+        return {"sent": True, "to": f"{len(to)} recipient{'s' if len(to) > 1 else ''}"}
+
+
+class CompNotifyBody(BaseModel):
+    cycleId: str
+    poolId: str = ""
+    event: str            # launched | submitted | decided | comment
+
+
+@app.post("/api/comp/notify")
+def comp_notify(body: CompNotifyBody, me=Depends(current_user)):
+    """E-mails for salary planning. Recipients are worked out here from the saved budget, never taken from the
+    browser: the next approver when a budget is submitted, the holder (and the next approver) after a decision,
+    everyone on the budget for a comment, and every budget holder when HR opens planning."""
+    with repo.engine.begin() as conn:
+        emps = repo.employees_index(conn)
+        ctx = policy.make_ctx(me, emps)
+        cycle = repo.get_records(conn, "compCycles", [body.cycleId]).get(body.cycleId)
+        if not cycle:
+            raise HTTPException(404, "That salary plan is not saved yet.")
+        pools = repo.records_where(conn, "compBudgets", "cycle_id", body.cycleId)
+        co = cycle.get("companyId")
+        hr_ids = [e["id"] for e in emps.values() if e.get("status") != "exited" and (
+            e.get("role") == "super" or (e.get("role") == "hr" and co in {e.get("companyId"), *(e.get("hrCompanies") or [])}))]
+        nm = lambda i: f"{(emps.get(i) or {}).get('firstName', '')} {(emps.get(i) or {}).get('lastName', '')}".strip()  # noqa: E731
+        link = f"{APP_URL}/#/compplan?c={cycle['id']}"
+        if body.event == "launched":
+            if not ctx.is_hr_for(co):
+                raise HTTPException(403, "Only HR opens salary planning.")
+            to_ids = [p.get("empId") for p in pools]
+            subject = f"Salary revision planning is open: {cycle.get('name', '')}"
+            text_ = (f"Salary revision planning for {cycle.get('name', '')} is open in PeopleDesk.\n\n"
+                     f"You have a budget for increases in your team. Hand part of it to the managers below you if you wish, "
+                     f"propose each person's new salary and submit your plan" + (f" by {cycle['deadline']}" if cycle.get("deadline") else "") + ".\n\n"
+                     f"New salaries take effect from {cycle.get('effective', '')}.\n\nOpen your plan: {link}")
+        else:
+            pool = next((p for p in pools if p.get("id") == body.poolId), None)
+            if not pool:
+                raise HTTPException(404, "That budget is not saved yet.")
+            holder = pool.get("empId")
+            if not (ctx.is_hr_for(co) or holder == me["id"] or holder in ctx.line):
+                raise HTTPException(403, "You are not taking part in this budget.")
+            steps = pool.get("steps") or []
+            nxt = next((s for s in steps if not s.get("decision")), None)
+            next_ids = (hr_ids if nxt and nxt.get("kind") == "hr" else list((nxt or {}).get("approverIds") or [])) if pool.get("status") == "submitted" else []
+            who = nm(holder)
+            if body.event == "submitted":
+                if holder != me["id"] and not ctx.is_hr_for(co):
+                    raise HTTPException(403, "Only the budget holder submits it.")
+                to_ids = next_ids
+                subject = f"Salary revision plan from {who} for your review"
+                text_ = f"{who} has submitted their salary revision plan for {cycle.get('name', '')}.\n\nReview it, discuss, then approve or send it back: {link}&p={pool['id']}"
+            elif body.event == "decided":
+                last = next((s for s in reversed(steps) if s.get("decision")), None)
+                if not last or last.get("by") != me["id"]:
+                    raise HTTPException(403, "Only the person who decided can announce it.")
+                ok = last.get("decision") == "approved"
+                to_ids = [holder] + (next_ids if ok else [])
+                subject = f"Salary revision plan of {who} {'approved' if ok else 'sent back'} by {nm(me['id'])}"
+                text_ = (f"{nm(me['id'])} has {'approved' if ok else 'sent back for changes'} the salary revision plan of {who} for {cycle.get('name', '')}."
+                         + (f"\n\nNote: {last.get('note')}" if last.get("note") else "") + f"\n\nOpen it: {link}&p={pool['id']}")
+            elif body.event == "comment":
+                c = (pool.get("comments") or [None])[-1]
+                if not c or c.get("by") != me["id"]:
+                    raise HTTPException(403, "Only the writer can announce a comment.")
+                to_ids = [holder] + [i for s in steps for i in (s.get("approverIds") or [])] + [p.get("empId") for p in pools if p.get("id") == pool.get("parentId")]
+                if nxt and nxt.get("kind") == "hr":
+                    to_ids += hr_ids
+                subject = f"New comment on the salary revision plan of {who}"
+                text_ = f"{nm(me['id'])} wrote:\n\n{c.get('text', '')}\n\nReply in PeopleDesk: {link}&p={pool['id']}"
+            else:
+                raise HTTPException(400, "Unknown event.")
+        to = [(emps.get(i) or {}).get("email") for i in dict.fromkeys(to_ids) if i and i != me["id"] and (emps.get(i) or {}).get("status") != "exited"]
+        to = [t for t in to if t]
+        if not mailer.configured():
+            return {"sent": False, "reason": "e-mail is not set up on the server; it shows in Approvals"}
+        if not to:
+            return {"sent": False, "reason": "no e-mail address to send to"}
+        try:
+            mailer.send(to, subject, text_)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Mail failed: %s", e)
+            return {"sent": False, "reason": "the e-mail server refused the message; it shows in Approvals"}
+        repo.audit_add(conn, "E-mail sent", f"comp:{body.cycleId}:{body.poolId}:{body.event}", me["id"], module="compensation", ref_type="comp", ref_id=body.cycleId)
         return {"sent": True, "to": f"{len(to)} recipient{'s' if len(to) > 1 else ''}"}
 
 

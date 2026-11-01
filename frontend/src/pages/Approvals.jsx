@@ -40,7 +40,7 @@ function Row({ it }) {
     );
   }
   if (it.link) {
-    const when = it.kind === 'ot' ? 'This and last month' : it.kind === 'exit' ? `Last day ${E.dShort(it.r.lwd)}`
+    const when = it.kind === 'ot' ? 'This and last month' : it.kind === 'exit' || it.kind === 'statexit' ? `Last day ${E.dShort(it.r.lwd)}`
       : it.kind === 'offer' ? E.inr0(it.r.ctc) : it.kind === 'req' ? `${it.r.positions} position${it.r.positions > 1 ? 's' : ''}` : '';
     return (
       <tr><td><b>{it.r.cand || E.nameOf(it.r.empId)}</b></td><td>{it.what}</td><td>{when}</td><td />
@@ -60,7 +60,7 @@ export default function Approvals() {
   return (
     <div className="card">
       <h2>Waiting for you</h2>
-      <p className="sub">Leave, attendance corrections, goal sheets, resignations and clearances, job requisitions, offers and interview feedback, expense claims, leave encashment, promotion proposals, statutory detail changes, and enrolment tasks for new joiners.</p>
+      <p className="sub">Leave, attendance corrections, goal sheets, resignations and clearances, job requisitions, offers and interview feedback, expense claims, leave encashment, promotion proposals, statutory detail changes, enrolment tasks for new joiners, salary revision plans, and leavers to mark on the EPFO and ESIC portals.</p>
       {items.length ? (
         <div className="scroll"><table className="t">
           <thead><tr><th>Employee</th><th>Request</th><th>When</th><th>Details</th><th /></tr></thead>

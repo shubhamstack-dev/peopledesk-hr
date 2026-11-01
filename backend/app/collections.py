@@ -69,6 +69,11 @@ COLLS = [
     # v2.3: document types and Word templates filled from the database (see doctemplates.py)
     Coll("docTypes", "document_types", {"name": ("name", "str"), "prefix": ("prefix", "str")}),
     Coll("docTemplates", "document_templates", {"name": ("name", "str"), "type_id": ("typeId", "str"), "status": ("status", "str")}),
+    # v2.4: compensation planning. A cycle holds the organisation's budget; budgets (pools) are handed down the
+    # reporting line, manager by manager; recommendations are one per employee (see comp.py)
+    Coll("compCycles", "comp_cycles", {"name": ("name", "str"), "status": ("status", "str"), "effective": ("effective", "date")}),
+    Coll("compBudgets", "comp_budgets", {"cycle_id": ("cycleId", "str"), "parent_id": ("parentId", "str"), "status": ("status", "str")}),
+    Coll("compRecs", "comp_recommendations", {"cycle_id": ("cycleId", "str"), "status": ("status", "str")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 
