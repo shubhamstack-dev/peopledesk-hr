@@ -104,8 +104,8 @@ export default function App() {
     <div className="boot"><div className="card" style={{ maxWidth: 460 }}><h2>The server is not answering</h2>
       <p className="sub">{message}</p><button className="btn pri" onClick={() => window.location.reload()}>Try again</button></div></div>
   );
-  if (phase === 'setup') return <Setup onSignedIn={() => enter(true)} />;
-  if (phase === 'login' || !resolved) return <Login boot={boot} message={message} onSignedIn={() => enter(true)} />;
+  if (phase === 'setup') return <Setup onSignedIn={() => enter(true)} onSignIn={() => setPhase('login')} />;
+  if (phase === 'login' || !resolved) return <Login boot={boot} message={message} onSignedIn={() => enter(true)} onSetup={boot && boot.needsSetup ? () => setPhase('setup') : null} />;
 
   let page;
   if (resolved.page === 'home') page = <Home />;

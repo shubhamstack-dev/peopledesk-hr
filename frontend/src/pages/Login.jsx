@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
 
-export default function Login({ boot, message, onSignedIn }) {
+export default function Login({ boot, message, onSignedIn, onSetup }) {
   const s = (boot && boot.settings) || {};
   const googleOK = !!s.googleClientId && /^https?:/.test(window.location.protocol);
   const msOK = !!(s.msClientId && s.msTenantId) && /^https?:/.test(window.location.protocol);
@@ -49,14 +49,14 @@ export default function Login({ boot, message, onSignedIn }) {
     run(() => api.post('/api/auth/login', { email: email.trim(), password: pw }));
   };
 
-  const group = (boot && boot.group) || 'Aequm Group';
+  const group = (boot && boot.group) || 'Aequm India Private Limited';
   const n = (boot && boot.companies) || 0;
   return (
     <div className="login">
       <div className="art">
         <div className="brand" style={{ padding: 0 }}>
           <span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span>
-          <div><b>{group} HR</b><small>{n} {n === 1 ? 'company' : 'companies'}</small></div>
+          <div><b>{group}</b><small>HR{n > 1 ? ` · ${n} companies` : ''}</small></div>
         </div>
         <div>
           <h1>Your work, leave and pay in one place.</h1>
@@ -67,6 +67,7 @@ export default function Login({ boot, message, onSignedIn }) {
 
       <form onSubmit={submit} noValidate>
         <h2>Sign in</h2>
+        {onSetup && <p className="note warn" style={{ margin: 0 }}>No company is set up on this server yet, so there is no account to sign in to. <a href="#" onClick={(e) => { e.preventDefault(); onSetup(); }}>Set up the company</a></p>}
         {googleOK ? <div ref={gRef} /> : s.googleClientId ? <p className="note warn">Google sign-in works when this page is opened from a web address (https).</p> : null}
         {msOK && (
           <button type="button" className="msbtn" disabled={busy} onClick={microsoft}>

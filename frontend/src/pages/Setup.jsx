@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
 
-export default function Setup({ onSignedIn }) {
-  const [f, setF] = useState({ group: 'Aequm Group', coName: '', coCode: '', state: '29', name: '', email: '', pw: '' });
+export default function Setup({ onSignedIn, onSignIn }) {
+  const [f, setF] = useState({ group: 'Aequm India Private Limited', coName: '', coCode: '', state: '29', name: '', email: '', pw: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -24,19 +24,19 @@ export default function Setup({ onSignedIn }) {
   return (
     <div className="login">
       <div className="art">
-        <div className="brand" style={{ padding: 0 }}><span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span><div><b>Aequm Group HR</b><small>First-time setup</small></div></div>
+        <div className="brand" style={{ padding: 0 }}><span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span><div><b>Aequm India Private Limited</b><small>First-time setup</small></div></div>
         <div>
           <h1>Set up your group and first company.</h1>
-          <p>More companies can be added later; each has its own policies, payroll and statutory registrations. Employees are then brought in from Google Workspace.</p>
+          <p>More companies can be added later; each has its own policies, payroll and statutory registrations. Employees are then brought in from Google Workspace or Microsoft.</p>
         </div>
         <span />
       </div>
       <form onSubmit={submit} noValidate>
         <h2>Create the group administrator</h2>
-        <label className="field">Group name<input className="inp" value={f.group} onChange={set('group')} placeholder="e.g. Aequm Group" autoFocus /></label>
+        <label className="field">Group name<input className="inp" value={f.group} onChange={set('group')} placeholder="e.g. Aequm India Private Limited" autoFocus /></label>
         <label className="field">First company<input className="inp" value={f.coName} onChange={set('coName')} placeholder="Legal name of the company" /></label>
         <div className="form" style={{ gridTemplateColumns: '1fr 1fr' }}>
-          <label className="field">Company code<input className="inp" value={f.coCode} onChange={set('coCode')} maxLength={6} placeholder="e.g. ANKIT" /></label>
+          <label className="field">Company code<input className="inp" value={f.coCode} onChange={set('coCode')} maxLength={6} placeholder="e.g. AIPL" /></label>
           <label className="field">State
             <select className="inp" value={f.state} onChange={set('state')}>
               {Object.entries(E.STATES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -44,13 +44,14 @@ export default function Setup({ onSignedIn }) {
           </label>
         </div>
         <label className="field">Your name<input className="inp" value={f.name} onChange={set('name')} /></label>
-        <label className="field">Your Google Workspace e-mail<input className="inp" type="email" value={f.email} onChange={set('email')} /></label>
+        <label className="field">Your work e-mail (Google or Microsoft)<input className="inp" type="email" value={f.email} onChange={set('email')} /></label>
         <label className="field">Back-up password
           <input className="inp" type="password" autoComplete="new-password" value={f.pw} onChange={set('pw')} />
-          <small>For signing in before Google sign-in is configured. At least 10 characters.</small>
+          <small>For signing in until Google or Microsoft sign-in is set up. At least 10 characters.</small>
         </label>
         <p className="err" role="alert">{err}</p>
         <button className="btn pri lg" disabled={busy}>Create and sign in</button>
+        {onSignIn && <p className="fine" style={{ textAlign: 'center', margin: '4px 0 0' }}>Already have an account? <a href="#" onClick={(e) => { e.preventDefault(); onSignIn(); }}>Sign in</a></p>}
       </form>
     </div>
   );

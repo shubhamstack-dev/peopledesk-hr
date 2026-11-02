@@ -45,7 +45,7 @@ export default function Shell({ resolved, onSignOut, onSwitchCompany, children }
       <aside className="side" aria-label="Menu">
         <div className="brand">
           <span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span>
-          <div><b>{S.group.name || 'Aequm Group'}</b><small>{co ? co.name : ''}</small></div>
+          <div><b>{S.group.name || 'Aequm India Private Limited'}</b><small>{co && co.name !== (S.group.name || 'Aequm India Private Limited') ? co.name : 'HR'}</small></div>
         </div>
         {cos.length > 1 && (
           <select className="cosw" aria-label="Company" value={CO || ''} onChange={(e) => onSwitchCompany(e.target.value)}>
