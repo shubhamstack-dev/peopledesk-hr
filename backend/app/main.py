@@ -184,7 +184,7 @@ def setup_demo(body: StateBody):
 @app.post("/api/auth/login", dependencies=[Depends(require_csrf)])
 def login(body: LoginBody, resp: Response):
     time.sleep(0.3)   # slows down password guessing
-    bad = HTTPException(401, "E-mail or password is incorrect. Employees added from Google sign in with Google.")
+    bad = HTTPException(401, "E-mail or password is incorrect. Employees added from Google or Microsoft sign in with Google or Microsoft.")
     with repo.engine.begin() as conn:
         if not _public_settings(conn)["allowPassword"]:
             raise HTTPException(403, "Password sign-in is switched off. Sign in with Google.")

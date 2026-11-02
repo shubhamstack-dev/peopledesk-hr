@@ -67,7 +67,7 @@ export default function Login({ boot, message, onSignedIn, onSetup }) {
 
       <form onSubmit={submit} noValidate>
         <h2>Sign in</h2>
-        {onSetup && <p className="note warn" style={{ margin: 0 }}>No company is set up on this server yet, so there is no account to sign in to. <a href="#" onClick={(e) => { e.preventDefault(); onSetup(); }}>Set up the company</a></p>}
+        {onSetup && <p className="note warn" style={{ margin: 0 }}>No company is registered on this server yet, so there is no account to sign in to. Register first.</p>}
         {googleOK ? <div ref={gRef} /> : s.googleClientId ? <p className="note warn">Google sign-in works when this page is opened from a web address (https).</p> : null}
         {msOK && (
           <button type="button" className="msbtn" disabled={busy} onClick={microsoft}>
@@ -85,6 +85,12 @@ export default function Login({ boot, message, onSignedIn, onSetup }) {
           </>
         )}
         <p className="err" role="alert">{err}</p>
+        {onSetup && (
+          <>
+            <div className="or">new here?</div>
+            <button type="button" className="btn lg" onClick={onSetup}>Register</button>
+          </>
+        )}
       </form>
     </div>
   );

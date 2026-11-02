@@ -24,7 +24,7 @@ export default function Setup({ onSignedIn, onSignIn }) {
   return (
     <div className="login">
       <div className="art">
-        <div className="brand" style={{ padding: 0 }}><span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span><div><b>Aequm India Private Limited</b><small>First-time setup</small></div></div>
+        <div className="brand" style={{ padding: 0 }}><span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span><div><b>Aequm India Private Limited</b><small>Registration</small></div></div>
         <div>
           <h1>Set up your group and first company.</h1>
           <p>More companies can be added later; each has its own policies, payroll and statutory registrations. Employees are then brought in from Google Workspace or Microsoft.</p>
@@ -32,7 +32,8 @@ export default function Setup({ onSignedIn, onSignIn }) {
         <span />
       </div>
       <form onSubmit={submit} noValidate>
-        <h2>Create the group administrator</h2>
+        <h2>Register</h2>
+        <p className="fine" style={{ margin: '-6px 0 4px', textAlign: 'center' }}>Create your company and the administrator account.</p>
         <label className="field">Group name<input className="inp" value={f.group} onChange={set('group')} placeholder="e.g. Aequm India Private Limited" autoFocus /></label>
         <label className="field">First company<input className="inp" value={f.coName} onChange={set('coName')} placeholder="Legal name of the company" /></label>
         <div className="form" style={{ gridTemplateColumns: '1fr 1fr' }}>
@@ -50,7 +51,7 @@ export default function Setup({ onSignedIn, onSignIn }) {
           <small>For signing in until Google or Microsoft sign-in is set up. At least 10 characters.</small>
         </label>
         <p className="err" role="alert">{err}</p>
-        <button className="btn pri lg" disabled={busy}>Create and sign in</button>
+        <button className="btn pri lg" disabled={busy}>Register and sign in</button>
         {onSignIn && <p className="fine" style={{ textAlign: 'center', margin: '4px 0 0' }}>Already have an account? <a href="#" onClick={(e) => { e.preventDefault(); onSignIn(); }}>Sign in</a></p>}
       </form>
     </div>
