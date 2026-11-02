@@ -402,6 +402,17 @@ def wipe(resp: Response, me=Depends(current_user)):
     _require_super(me)
     with repo.engine.begin() as conn:
         repo.wipe(conn)
+        # uploaded files go too (receipts, letters, TDS certificates, training content): nothing refers to them any more
+        paths = [r[0] for r in conn.execute(text("SELECT path FROM files")).fetchall()]
+        conn.execute(text("DELETE FROM files"))
+    root = os.path.realpath(UPLOAD_DIR)
+    for rel in paths:
+        full = os.path.realpath(os.path.join(root, rel or ""))
+        if full.startswith(root + os.sep) and os.path.isfile(full):
+            try:
+                os.remove(full)
+            except OSError:
+                log.warning("Could not delete %s", full)
     end_session(resp)
     log.warning("All data erased by %s", me.get("email"))
     return {"ok": True}
