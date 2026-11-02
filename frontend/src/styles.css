@@ -35,8 +35,8 @@ h1,h2,h3{letter-spacing:-.012em}
 .msbtn:focus-visible{outline:2px solid var(--pri);outline-offset:2px}
 .msbtn:disabled{opacity:.6;cursor:default}
 .msbtn img{display:block;width:20px;height:20px;flex:none}
-.logo{display:inline-flex;align-items:center;background:#fff;border-radius:10px;padding:7px 12px;box-shadow:0 1px 2px rgba(0,0,0,.15)}
-.logo img{display:block;height:38px;width:auto}
+.logo{display:inline-flex;align-items:center;flex:none}
+.logo img{display:block;height:44px;width:44px;border-radius:10px}
 .brand.stack{flex-direction:column;align-items:flex-start;gap:8px}
 .brand b{display:block;font-size:15px;letter-spacing:-.01em}
 .brand small{display:block;font-size:12px;color:var(--side-ink)}

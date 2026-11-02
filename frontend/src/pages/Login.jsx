@@ -49,13 +49,13 @@ export default function Login({ boot, message, onSignedIn }) {
     run(() => api.post('/api/auth/login', { email: email.trim(), password: pw }));
   };
 
-  const group = (boot && boot.group) || 'Ankit Group';
+  const group = (boot && boot.group) || 'Aequm Group';
   const n = (boot && boot.companies) || 0;
   return (
     <div className="login">
       <div className="art">
-        <div className="brand stack" style={{ padding: 0 }}>
-          <span className="logo"><img src="/ankit-logo.png" alt="Ankit Group" /></span>
+        <div className="brand" style={{ padding: 0 }}>
+          <span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span>
           <div><b>{group} HR</b><small>{n} {n === 1 ? 'company' : 'companies'}</small></div>
         </div>
         <div>

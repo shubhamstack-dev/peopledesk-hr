@@ -43,9 +43,9 @@ export default function Shell({ resolved, onSignOut, onSwitchCompany, children }
   return (
     <div className={`shell${menuOpen ? ' open' : ''}`} id="shell">
       <aside className="side" aria-label="Menu">
-        <div className="brand stack">
-          <span className="logo"><img src="/ankit-logo.png" alt="Ankit Group" /></span>
-          <div><b>{S.group.name || 'Ankit Group'}</b><small>{co ? co.name : ''}</small></div>
+        <div className="brand">
+          <span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span>
+          <div><b>{S.group.name || 'Aequm Group'}</b><small>{co ? co.name : ''}</small></div>
         </div>
         {cos.length > 1 && (
           <select className="cosw" aria-label="Company" value={CO || ''} onChange={(e) => onSwitchCompany(e.target.value)}>

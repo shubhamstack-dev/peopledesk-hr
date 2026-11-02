@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import * as E from '../engine/engine.js';
 
 export default function Setup({ onSignedIn }) {
-  const [f, setF] = useState({ group: 'Ankit Group', coName: '', coCode: '', state: '29', name: '', email: '', pw: '' });
+  const [f, setF] = useState({ group: 'Aequm Group', coName: '', coCode: '', state: '29', name: '', email: '', pw: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -24,7 +24,7 @@ export default function Setup({ onSignedIn }) {
   return (
     <div className="login">
       <div className="art">
-        <div className="brand stack" style={{ padding: 0 }}><span className="logo"><img src="/ankit-logo.png" alt="Ankit Group" /></span><div><b>Ankit Group HR</b><small>First-time setup</small></div></div>
+        <div className="brand" style={{ padding: 0 }}><span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span><div><b>Aequm Group HR</b><small>First-time setup</small></div></div>
         <div>
           <h1>Set up your group and first company.</h1>
           <p>More companies can be added later; each has its own policies, payroll and statutory registrations. Employees are then brought in from Google Workspace.</p>
@@ -33,7 +33,7 @@ export default function Setup({ onSignedIn }) {
       </div>
       <form onSubmit={submit} noValidate>
         <h2>Create the group administrator</h2>
-        <label className="field">Group name<input className="inp" value={f.group} onChange={set('group')} placeholder="e.g. Ankit Group" autoFocus /></label>
+        <label className="field">Group name<input className="inp" value={f.group} onChange={set('group')} placeholder="e.g. Aequm Group" autoFocus /></label>
         <label className="field">First company<input className="inp" value={f.coName} onChange={set('coName')} placeholder="Legal name of the company" /></label>
         <div className="form" style={{ gridTemplateColumns: '1fr 1fr' }}>
           <label className="field">Company code<input className="inp" value={f.coCode} onChange={set('coCode')} maxLength={6} placeholder="e.g. ANKIT" /></label>

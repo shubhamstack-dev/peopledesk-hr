@@ -31,7 +31,7 @@ export default function Settings({ onSignedOut, onWiped }) {
 
   const backup = async () => {
     setBusy(true);
-    try { await E.sync.flush(); const data = await api.get('/api/admin/backup'); E.downloadText(`ankit-hr-backup-${E.todayISO()}.json`, JSON.stringify(data), 'application/json'); }
+    try { await E.sync.flush(); const data = await api.get('/api/admin/backup'); E.downloadText(`aequm-hr-backup-${E.todayISO()}.json`, JSON.stringify(data), 'application/json'); }
     catch (x) { E.toast(x.message); } finally { setBusy(false); }
   };
 

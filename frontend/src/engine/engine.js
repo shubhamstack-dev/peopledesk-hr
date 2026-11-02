@@ -1334,7 +1334,7 @@ VIEWS.masters = () => {
 const CO_FIELDS = [
   { k: 'name', label: 'Company name', req: true }, { k: 'code', label: 'Company code', req: true, help: 'Used in employee numbers and as the SAP company code' }, { k: 'legalName', label: 'Legal name' },
   { k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES) }, { k: 'address', label: 'Registered address', wide: true },
-  { k: 'domain', label: 'E-mail domain (Google / Microsoft)', help: 'e.g. ankitgroup.com. Users from this domain join this company' },
+  { k: 'domain', label: 'E-mail domain (Google / Microsoft)', help: 'e.g. aequmindia.in. Users from this domain join this company' },
   { k: 'pan', label: 'PAN' }, { k: 'tan', label: 'TAN (for TDS)' }, { k: 'pfCode', label: 'PF establishment code' }, { k: 'esiCode', label: 'ESI employer code' }, { k: 'ptRegNo', label: 'PT registration' },
   { k: 'timeMode', label: 'Working pattern', type: 'select', opts: [['shift', 'Shift-based: shifts, rosters and overtime'], ['time', 'Time management only: no shifts, no overtime']] },
   { k: 'leaveYearStart', label: 'Leave year starts in', type: 'select', opts: [[1, 'January'], [4, 'April']] },
@@ -2265,7 +2265,7 @@ function slipHtml(run, r) {
   const e = empById(r.empId), co = coById(run.companyId);
   const rowsE = r.earnings.map((x) => `<tr><td>${esc(x.name)}</td><td class="r">${inr(x.full || x.amount)}</td><td class="r">${inr(x.amount)}</td></tr>`).join('');
   const rowsD = r.deductions.map((x) => `<tr><td>${esc(x.name)}</td><td class="r">${inr(x.amount)}</td></tr>`).join('');
-  return `<div class="slip" style="page-break-after:always"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/ankit-logo.png" alt="" style="height:44px;width:auto"><div><h2 style="margin:0">${esc(co.legalName || co.name)}</h2><div class="fine">${esc(co.address || '')}</div></div></div><div style="text-align:right"><b>Payslip for ${monthName(run.month)}</b></div></div><hr>
+  return `<div class="slip" style="page-break-after:always"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/aequm-mark.png" alt="" style="height:44px;width:44px;border-radius:8px"><div><h2 style="margin:0">${esc(co.legalName || co.name)}</h2><div class="fine">${esc(co.address || '')}</div></div></div><div style="text-align:right"><b>Payslip for ${monthName(run.month)}</b></div></div><hr>
     <div class="cols"><table><tr><td>Name</td><td><b>${esc(fullName(e))}</b></td></tr><tr><td>Employee number</td><td>${esc(e.empNo)}</td></tr><tr><td>Designation</td><td>${esc((desig(e.desigId) || {}).name || '')}</td></tr><tr><td>Department</td><td>${esc((dept(e.deptId) || {}).name || '')}</td></tr><tr><td>Date of joining</td><td>${dmy(e.doj)}</td></tr></table>
       <table><tr><td>PAN</td><td>${esc(e.pan || '—')}</td></tr><tr><td>UAN</td><td>${esc(e.uan || '—')}</td></tr><tr><td>Bank account</td><td>${e.bankAcc ? '••••' + esc(String(e.bankAcc).slice(-4)) : '—'}</td></tr><tr><td>Paid days</td><td>${num(r.paidDays)} of ${r.days}</td></tr><tr><td>Loss of pay</td><td>${num(r.lop)} days</td></tr></table></div>
     <div class="cols"><table><tr><th>Earnings</th><th class="r">Rate</th><th class="r">Amount</th></tr>${rowsE}<tr><td><b>Gross earnings</b></td><td></td><td class="r"><b>${inr(r.gross)}</b></td></tr></table>
@@ -2318,7 +2318,7 @@ function tdsCertHtml(emp, fy) {
   const balance = Math.round((t.tax || 0) - y.tds);
   const row = (l, v, b) => `<tr><td>${b ? `<b>${l}</b>` : l}</td><td class="r">${b ? `<b>${v}</b>` : v}</td></tr>`;
   return `<div style="page-break-after:always">
-    <div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/ankit-logo.png" alt="" style="height:44px;width:auto"><div><h2 style="margin:0">${esc(co.legalName || co.name || '')}</h2><div class="fine">${esc(co.address || '')}</div></div></div>
+    <div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/aequm-mark.png" alt="" style="height:44px;width:44px;border-radius:8px"><div><h2 style="margin:0">${esc(co.legalName || co.name || '')}</h2><div class="fine">${esc(co.address || '')}</div></div></div>
       <div style="text-align:right"><b>${name}: statement of salary and tax deducted</b><div class="fine">Tax year ${esc(fy)} (1 April ${fy.slice(0, 4)} to 31 March ${+fy.slice(0, 4) + 1})</div></div></div><hr>
     ${y.missing.length ? `<p style="background:#FFF4D6;padding:8px 10px;border-radius:6px">No payroll from this system for ${y.missing.map(monthName).join(', ')}. Salary for those months, and tax already deducted on it, is not included here.</p>` : ''}
     ${y.complete ? '' : `<p style="background:#FFF4D6;padding:8px 10px;border-radius:6px"><b>Provisional.</b> Payroll is locked up to ${monthName(y.lastMonth)}; the tax shown is projected for the full year. Issue the final certificate after March is locked.</p>`}
