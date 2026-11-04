@@ -57,7 +57,9 @@ def set_google_sub(conn, emp_id: str, sub: str):
 # ---------------------------------------------------------------- sessions
 def start_session(resp: Response, emp_id: str):
     now = int(time.time())
-    token = jwt.encode({"sub": emp_id, "iat": now, "exp": now + int(SESSION_HOURS * 3600)}, JWT_SECRET, algorithm="HS256")
+    from . import tenants
+    # "t": the company (tenant) this session belongs to; the session only ever opens that company's database
+    token = jwt.encode({"sub": emp_id, "t": tenants.current_id.get(), "iat": now, "exp": now + int(SESSION_HOURS * 3600)}, JWT_SECRET, algorithm="HS256")
     resp.set_cookie(COOKIE_NAME, token, httponly=True, secure=COOKIE_SECURE, samesite="lax", max_age=int(SESSION_HOURS * 3600), path="/")
 
 
@@ -83,6 +85,10 @@ def current_user(request: Request, _=Depends(require_csrf)) -> dict:
     try:
         claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError:
+        raise HTTPException(401, "Your session has ended. Sign in again.")
+    from . import tenants
+    tid = tenants.current_id.get()
+    if not tid or claims.get("t", (tenants.main_tenant() or {}).get("id")) != tid:
         raise HTTPException(401, "Your session has ended. Sign in again.")
     with repo.engine.connect() as conn:
         emp = repo.get_records(conn, "employees", [claims["sub"]]).get(claims["sub"])

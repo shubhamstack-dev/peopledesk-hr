@@ -4,13 +4,20 @@ export class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
+/* The company (tenant) this browser signs in to: its code is kept here and sent before signing in.
+   A link like https://…/?org=acme sets it. */
+const ORG_KEY = 'pd-org';
+export function getOrg() { try { return localStorage.getItem(ORG_KEY) || ''; } catch { return ''; } }
+export function setOrg(v) { try { if (v) localStorage.setItem(ORG_KEY, v.trim().toLowerCase()); else localStorage.removeItem(ORG_KEY); } catch { /* private mode */ } }
+try { const q = new URLSearchParams(window.location.search).get('org'); if (q) setOrg(q); } catch { /* ignore */ }
+
 async function request(method, path, body) {
   let res;
   try {
     res = await fetch(path, {
       method,
       credentials: 'same-origin',
-      headers: { 'x-peopledesk': '1', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      headers: { 'x-peopledesk': '1', 'x-pd-org': getOrg(), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (e) {

@@ -13,6 +13,8 @@ WORKDIR /app
 COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend/ backend/
+# the schema creates the database of each newly registered company
+COPY database/schema.sql database/schema.sql
 COPY --from=web /web/dist frontend/dist
 WORKDIR /app/backend
 EXPOSE 8000

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { api } from './api.js';
+import { api, setOrg } from './api.js';
 import * as E from './engine/engine.js';
 import { useHash } from './useHash.js';
 import Shell from './components/Shell.jsx';
@@ -26,6 +26,7 @@ export default function App() {
       const b = await api.get('/api/bootstrap');
       setBoot(b); setMessage(msg);
       setPhase(b.needsSetup ? 'setup' : 'login');
+      if (b.unknownOrg) setMessage('No company is registered with that code. Check it, or register your company.');
     } catch (e) { setMessage(e.message); setPhase('down'); }
   }, []);
 
@@ -70,6 +71,7 @@ export default function App() {
         const b = await api.get('/api/bootstrap');
         setBoot(b);
         if (b.needsSetup) { setPhase('setup'); return; }
+        if (b.needOrg) { setPhase('login'); if (b.unknownOrg) setMessage('No company is registered with that code. Check it, or register your company.'); return; }
         await enter(false);
       } catch (e) { setMessage(e.message); setPhase('down'); }
     })();
@@ -104,8 +106,8 @@ export default function App() {
     <div className="boot"><div className="card" style={{ maxWidth: 460 }}><h2>The server is not answering</h2>
       <p className="sub">{message}</p><button className="btn pri" onClick={() => window.location.reload()}>Try again</button></div></div>
   );
-  if (phase === 'setup') return <Setup onSignedIn={() => enter(true)} onSignIn={() => setPhase('login')} />;
-  if (phase === 'login' || !resolved) return <Login boot={boot} message={message} onSignedIn={() => enter(true)} onSetup={boot && boot.needsSetup ? () => setPhase('setup') : null} />;
+  if (phase === 'setup' || phase === 'register') return <Setup existing={phase === 'setup' && boot && boot.needsSetup ? boot.org : null} onSignedIn={() => enter(true)} onSignIn={() => { setMessage(''); setPhase('login'); }} />;
+  if (phase === 'login' || !resolved) return <Login boot={boot} message={message} onSignedIn={() => enter(true)} onOrg={(code) => { setOrg(code); toSignIn(); }} onSetup={() => setPhase(boot && boot.needsSetup ? 'setup' : 'register')} />;
 
   let page;
   if (resolved.page === 'home') page = <Home />;

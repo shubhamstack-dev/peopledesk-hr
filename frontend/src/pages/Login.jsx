@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { api, getOrg } from '../api.js';
 import * as E from '../engine/engine.js';
 
-export default function Login({ boot, message, onSignedIn, onSetup }) {
+export default function Login({ boot, message, onSignedIn, onSetup, onOrg }) {
+  const org = (boot && boot.org) || null;          // the company this page signs in to
+  const [code, setCode] = useState(getOrg());
+  const chooseOrg = (e) => { if (e) e.preventDefault(); const c = code.trim().toLowerCase(); if (!c) { setErr('Enter your company code.'); return; } onOrg(c); };
   const s = (boot && boot.settings) || {};
   const googleOK = !!s.googleClientId && /^https?:/.test(window.location.protocol);
   const msOK = !!(s.msClientId && s.msTenantId) && /^https?:/.test(window.location.protocol);
@@ -49,7 +52,7 @@ export default function Login({ boot, message, onSignedIn, onSetup }) {
     run(() => api.post('/api/auth/login', { email: email.trim(), password: pw }));
   };
 
-  const group = (boot && boot.group) || 'Aequm India Private Limited';
+  const group = (boot && boot.group) || (org && org.name) || 'PeopleDesk HR';
   const n = (boot && boot.companies) || 0;
   return (
     <div className="login">
@@ -65,9 +68,20 @@ export default function Login({ boot, message, onSignedIn, onSetup }) {
         <p className="fine" style={{ color: '#6F8C83' }}>Personnel, leave, time and shifts, performance and payroll</p>
       </div>
 
+      {!org ? (
+      <form onSubmit={chooseOrg} noValidate>
+        <h2>Sign in</h2>
+        <p className="fine" style={{ margin: '-6px 0 4px', textAlign: 'center' }}>Enter the company code your administrator gave you.</p>
+        <label className="field">Company code<input className="inp" value={code} onChange={(e) => setCode(e.target.value)} placeholder="e.g. aequm" autoFocus autoCapitalize="none" spellCheck={false} /></label>
+        <button className="btn pri lg">Continue</button>
+        <p className="err" role="alert">{err}</p>
+        <div className="or">new here?</div>
+        <button type="button" className="btn lg" onClick={onSetup}>Register your company</button>
+      </form>
+      ) : (
       <form onSubmit={submit} noValidate>
         <h2>Sign in</h2>
-        {onSetup && <p className="note warn" style={{ margin: 0 }}>No company is registered on this server yet, so there is no account to sign in to. Register first.</p>}
+        <p className="fine" style={{ margin: '-6px 0 4px', textAlign: 'center' }}>to <b>{group}</b> · <a href="#" onClick={(e) => { e.preventDefault(); onOrg(''); }}>change company</a></p>
         {googleOK ? <div ref={gRef} /> : s.googleClientId ? <p className="note warn">Google sign-in works when this page is opened from a web address (https).</p> : null}
         {msOK && (
           <button type="button" className="msbtn" disabled={busy} onClick={microsoft}>
@@ -85,13 +99,10 @@ export default function Login({ boot, message, onSignedIn, onSetup }) {
           </>
         )}
         <p className="err" role="alert">{err}</p>
-        {onSetup && (
-          <>
-            <div className="or">new here?</div>
-            <button type="button" className="btn lg" onClick={onSetup}>Register</button>
-          </>
-        )}
+        <div className="or">new here?</div>
+        <button type="button" className="btn lg" onClick={onSetup}>Register your company</button>
       </form>
+      )}
     </div>
   );
 }
