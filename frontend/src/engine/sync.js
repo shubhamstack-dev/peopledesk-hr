@@ -29,6 +29,9 @@ function snapshot(S) {
   return snap;
 }
 
+let sharedOK = false;   // set when the group administrator signs in
+export function allowShared(v) { sharedOK = !!v; }
+
 function diff(base, snap, S) {
   const body = { upsert: {}, delete: {}, singletons: {}, rosterSet: [], rosterDel: [], audit: [] };
   let n = 0;
@@ -40,7 +43,9 @@ function diff(base, snap, S) {
     if (up.length) { body.upsert[c] = up; n += up.length; }
     if (del.length) { body.delete[c] = del; n += del.length; }
   }
-  for (const k of SINGLETONS) if (base.single[k] !== snap.single[k]) { body.singletons[k] = JSON.parse(snap.single[k]); n++; }
+  // group, sign-in settings and statutory rates are shared by every company: only the group administrator sends them
+  const shared = sharedOK ? [] : ['group', 'settings', 'stat'];
+  for (const k of SINGLETONS) if (!shared.includes(k) && base.single[k] !== snap.single[k]) { body.singletons[k] = JSON.parse(snap.single[k]); n++; }
   snap.roster.forEach((v, key) => { if (base.roster.get(key) !== v) { const [empId, date] = key.split('|'); body.rosterSet.push({ empId, date, value: v }); n++; } });
   base.roster.forEach((_v, key) => { if (!snap.roster.has(key)) { const [empId, date] = key.split('|'); body.rosterDel.push({ empId, date }); n++; } });
   for (const a of S.audit || []) if (!base.audit.has(a.id)) { body.audit.push(a); n++; }

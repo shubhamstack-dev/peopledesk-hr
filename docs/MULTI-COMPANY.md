@@ -1,35 +1,15 @@
-# Multiple companies (SaaS)
+# Companies registering on the platform
 
-Any company can register at the sign-in page (**Register your company**). Each registered company gets its own
-MySQL database; nothing is shared between companies.
+One database holds every company. Sign-in is by e-mail and password (or Microsoft / Google), as before.
 
-* `pd_tenants` (in the configured database, `peopledesk`) lists the registered companies: code, name, database.
-* The first company to register uses the configured database itself. Every later company gets `peopledesk_<code>`.
-* A database that already holds a company when this version first starts is registered automatically; its code is
-  its short company code in lower case (for example `aipl`).
-* People sign in with the company code, their e-mail and password (or Microsoft / Google). A link
-  `https://<site>/?org=<code>` fills the code in. E-mails from the app include it.
-* A session belongs to one company and only ever opens that company's database. Uploaded files are stored per
-  company under `uploads/<company id>/`.
-
-## One-time database permission
-
-New companies need the database user to be allowed to create their databases. Run once as root:
-
-```sql
-GRANT ALL PRIVILEGES ON `peopledesk\_%`.* TO 'peopledesk'@'%';
-FLUSH PRIVILEGES;
-```
-
-## Settings
-
-* `MAX_TENANTS` (default 100): the most companies that can register.
-* Registrations are limited to 5 an hour from one network address.
-
-## Backups
-
-Back up every company's database, for example:
-
-```sh
-docker exec pd-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --databases $(mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e "SHOW DATABASES LIKE \"peopledesk%\"")' > peopledesk-all.sql
-```
+* **Register your company** (sign-in page): the company gets its own records (a general shift, leave types, pay
+  components) and an administrator for that company. Each company is private: only its own people see its data.
+* The company set up first (Aequm India Private Limited) keeps its group administrator, who manages Aequm's own group
+  companies (added under Companies). Companies that registered themselves are outside that group: the group
+  administrator does not see or change them.
+* A company administrator manages everything in their company and can download a backup of their company from
+  **Settings and data**. Platform-wide settings (group name, Google and Microsoft sign-in IDs, statutory rates and tax
+  slabs) are changed only by the group administrator.
+* While other companies are registered, the group administrator cannot restore a backup or erase all data, since that
+  would affect those companies too.
+* E-mail addresses and short codes are unique across the platform. Registrations are limited to 5 an hour from one network address.

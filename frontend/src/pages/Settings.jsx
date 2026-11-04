@@ -58,14 +58,14 @@ export default function Settings({ onSignedOut, onWiped }) {
 
   return (
     <>
-      <form className="card" onSubmit={saveSettings}>
+      {sup && <form className="card" onSubmit={saveSettings}>
         <h2>App settings</h2>
         <div className="form">
           <label className="field">Group name<input className="inp" value={f.group} onChange={(e) => setF({ ...f, group: e.target.value })} /></label>
           <label className="field">Sign out after minutes without activity<input className="inp" type="number" min={5} value={f.idleMin} onChange={(e) => setF({ ...f, idleMin: e.target.value })} /></label>
         </div>
         <div className="btns" style={{ justifyContent: 'flex-start' }}><button className="btn pri">Save</button></div>
-      </form>
+      </form>}
 
       <form className="card" onSubmit={changePw}>
         <h2>Your back-up password</h2>
@@ -83,15 +83,17 @@ export default function Settings({ onSignedOut, onWiped }) {
         <h2>Data</h2>
         <p className="sub">Everything is stored in the MySQL database on the server and saved as you work. {sup
           ? 'A backup is one JSON file with every company, employee and record, including sign-in data, so keep it safe. A backup from the earlier browser-only version can be restored here too.'
-          : 'Backups, restores and erasing are done by the group administrator.'}</p>
+          : 'A backup is one JSON file with your company, its employees and records. Keep it safe.'}</p>
+        <div className="tools">
+          <button className="btn" disabled={busy} onClick={backup}>Download backup</button>
         {sup && (
-          <div className="tools">
-            <button className="btn" disabled={busy} onClick={backup}>Download backup</button>
+          <>
             <button className="btn" disabled={busy} onClick={() => fileRef.current.click()}>Restore from backup</button>
             <input ref={fileRef} type="file" accept=".json" hidden onChange={restore} />
             <button className="btn danger" disabled={busy} onClick={wipe}>Erase all data</button>
-          </div>
+          </>
         )}
+        </div>
       </div>
 
       <div className="card">

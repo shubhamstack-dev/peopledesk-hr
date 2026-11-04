@@ -62,8 +62,9 @@ MANAGER_MAY = {"exit", "history", "status"}
 class Ctx:
     me: dict
     emps: dict                       # id -> employee
-    hr_scope: set | None = None      # None means every company (group administrator)
+    hr_scope: set | None = None      # None means every company of the group (group administrator)
     line: set = field(default_factory=set)
+    private: set = field(default_factory=set)   # companies that registered themselves: outside the group administrator's reach
 
     @property
     def id(self):
@@ -75,7 +76,7 @@ class Ctx:
 
     def is_hr_for(self, company_id) -> bool:
         if self.is_super:
-            return True
+            return company_id not in self.private
         return bool(self.hr_scope) and company_id in self.hr_scope
 
     @property
@@ -83,7 +84,7 @@ class Ctx:
         return self.is_super or bool(self.hr_scope)
 
 
-def make_ctx(me: dict, emps: dict) -> Ctx:
+def make_ctx(me: dict, emps: dict, private: set | None = None) -> Ctx:
     role = me.get("role")
     scope = None if role == "super" else ({me.get("companyId"), *(me.get("hrCompanies") or [])} if role == "hr" else set())
     scope = None if scope is None else {x for x in scope if x}
@@ -97,13 +98,55 @@ def make_ctx(me: dict, emps: dict) -> Ctx:
             if r not in line:
                 line.add(r)
                 stack.append(r)
-    return Ctx(me=me, emps=emps, hr_scope=scope, line=line)
+    return Ctx(me=me, emps=emps, hr_scope=scope, line=line, private=set(private or ()) - {me.get("companyId")})
 
 
 # ---------------------------------------------------------------- reading
+def _isolate(st: dict, ctx: Ctx):
+    """Each registered company sees only itself. Only the group administrator (the platform company) sees all.
+    A record belongs to its companyId, or to the company of the employee it is about."""
+    from .collections import COLLS
+    emp_co = {e["id"]: e.get("companyId") for e in st.get("employees", [])}
+    if ctx.is_super:
+        mine = {c.get("id") for c in st.get("companies", [])} - ctx.private
+    else:
+        mine = {ctx.me.get("companyId"), *(ctx.hr_scope or set())} - {None}
+    req_co = {r.get("id"): r.get("companyId") for r in st.get("reqs", [])}
+    app_co = {a.get("id"): a.get("companyId") or req_co.get(a.get("reqId")) for a in st.get("apps", [])}
+    cand_co: dict = {}
+    for a in st.get("apps", []):
+        if a.get("candId"):
+            cand_co.setdefault(a["candId"], set()).add(app_co.get(a.get("id")))
+
+    def owner(coll, x):
+        if coll == "companies":
+            return x.get("id")
+        if x.get("companyId"):
+            return x["companyId"]
+        for k in ("empId", "to", "from", "by", "createdBy"):
+            if x.get(k) in emp_co:
+                return emp_co[x[k]]
+        if coll == "apps":
+            return req_co.get(x.get("reqId"))
+        if coll == "interviews":
+            return app_co.get(x.get("appId"))
+        return None
+
+    for c in COLLS:
+        if c.name == "cands":
+            st[c.name] = [x for x in st.get(c.name, []) if owner(c.name, x) in mine or (cand_co.get(x.get("id"), set()) & mine)]
+        else:
+            st[c.name] = [x for x in st.get(c.name, []) if owner(c.name, x) in mine]
+    st["roster"] = {k: v for k, v in (st.get("roster") or {}).items() if emp_co.get(k) in mine}
+    st["audit"] = [a for a in st.get("audit", []) if emp_co.get(a.get("by")) in mine]
+
+
 def redact_state(st: dict, ctx: Ctx) -> dict:
     if ctx.is_super:
+        if ctx.private:
+            _isolate(st, ctx)
         return st
+    _isolate(st, ctx)
     emp_co = {e["id"]: e.get("companyId") for e in st["employees"]}
     sees_all = lambda emp_id: emp_id == ctx.id or ctx.is_hr_for(emp_co.get(emp_id))  # noqa: E731
 
@@ -162,9 +205,17 @@ def record_company(conn, coll: str, rec: dict, ctx: Ctx):
 
 def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
     """Returns the record to store, or raises Rejected."""
-    if ctx.is_super:
-        return new
     co_new, co_old = record_company(conn, coll, new, ctx), record_company(conn, coll, old, ctx)
+    if ctx.is_super:
+        if ctx.private and ({co_new, co_old} & ctx.private or (coll == "employees" and set(new.get("hrCompanies") or []) & ctx.private)):
+            raise Rejected("this belongs to another company")
+        return new
+    if old and co_old is None and coll != "companies":
+        raise Rejected("this record belongs to another company")
+    if co_new is None and coll != "companies":
+        # a record that names no company belongs to the writer's company, so other companies never see it
+        new = {**new, "companyId": ctx.me.get("companyId")}
+        co_new = new["companyId"]
     hr_ok = all(c is None or ctx.is_hr_for(c) for c in (co_new, co_old)) and ctx.is_hr
 
     if coll == "employees":
@@ -382,10 +433,14 @@ def _employee(new: dict, old: dict | None, ctx: Ctx, hr_ok: bool) -> dict:
 
 
 def check_delete(conn, coll: str, old: dict, ctx: Ctx):
-    if ctx.is_super:
-        return
     co = record_company(conn, coll, old, ctx)
-    if ctx.is_hr and (co is None or ctx.is_hr_for(co)):
+    if ctx.is_super:
+        if co in ctx.private:
+            raise Rejected("this belongs to another company")
+        return
+    if co is None and coll != "companies":
+        raise Rejected("this record belongs to another company")
+    if ctx.is_hr and ctx.is_hr_for(co):
         if coll == "employees" and old.get("role") == "super":
             raise Rejected("only the group administrator can remove a group administrator")
         return
@@ -412,12 +467,13 @@ def check_delete(conn, coll: str, old: dict, ctx: Ctx):
 def check_singleton(k: str, ctx: Ctx):
     if k == "seq":
         return
-    if not ctx.is_hr:
-        raise Rejected("only HR can change settings")
+    # group name, sign-in settings and statutory rates are shared by every company: only the group administrator
+    if not ctx.is_super:
+        raise Rejected("only the group administrator can change these settings")
 
 
 def check_roster(emp_id: str, ctx: Ctx):
     e = ctx.emps.get(emp_id)
-    if ctx.is_super or (e and ctx.is_hr_for(e.get("companyId"))) or emp_id in ctx.line:
+    if (e and ctx.is_hr_for(e.get("companyId"))) or emp_id in ctx.line:
         return
     raise Rejected("you can only roster your own team")

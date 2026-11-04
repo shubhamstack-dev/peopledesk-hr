@@ -9,50 +9,7 @@ from sqlalchemy.engine import Connection
 from .collections import BY_NAME, COLLS, SINGLETONS, column_values
 from .config import DATABASE_URL
 
-# ---------------------------------------------------------------- one database per registered company
-# The configured database (DATABASE_URL) holds the list of registered companies (pd_tenants) and is also the
-# first company's database. Every other company gets its own database. The tenant middleware in main.py picks
-# the database for each request; everything else uses `engine` and so only ever sees that company's data.
-import contextvars
-import threading
-
-from sqlalchemy.engine import make_url
-
-_BASE_URL = make_url(DATABASE_URL)
-MAIN_DB = _BASE_URL.database
-current_db: contextvars.ContextVar = contextvars.ContextVar("pd_db", default=None)
-_engines: dict = {}
-_engines_lock = threading.Lock()
-
-
-def engine_for(db: str):
-    e = _engines.get(db)
-    if e is None:
-        with _engines_lock:
-            e = _engines.get(db)
-            if e is None:
-                e = create_engine(_BASE_URL.set(database=db), pool_pre_ping=True, pool_recycle=1800, future=True,
-                                  pool_size=3, max_overflow=5)
-                _engines[db] = e
-    return e
-
-
-main_engine = engine_for(MAIN_DB)
-
-
-NO_TENANT = "\u0000none"   # a request that has not chosen a company must not reach any company's data
-
-
-class _TenantEngine:
-    """Stands in for the engine of the company this request belongs to."""
-    def __getattr__(self, name):
-        db = current_db.get() or MAIN_DB
-        if db == NO_TENANT:
-            raise RuntimeError("No company selected for this request")
-        return getattr(engine_for(db), name)
-
-
-engine = _TenantEngine()
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800, future=True)
 
 AUDIT_KEEP = 1000
 
@@ -120,6 +77,11 @@ def records_where(conn: Connection, coll_name: str, col: str, value) -> list:
     if col not in c.extra and col not in ("company_id", "emp_id"):
         raise ValueError(f"{col} is not an indexed column of {c.table}")
     return [loads(d) for d in conn.execute(text(f"SELECT data FROM {c.table} WHERE {col}=:v"), {"v": value}).scalars()]
+
+
+def registered_companies(conn: Connection) -> set:
+    """Companies that registered themselves on the platform: each is private to itself."""
+    return {r[0] for r in conn.execute(text("SELECT id FROM companies WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.source'))='register'"))}
 
 
 def get_singleton(conn: Connection, k: str):

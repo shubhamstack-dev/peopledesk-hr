@@ -994,6 +994,22 @@ function buildSetupState(f) {
   S.employees.push(emp);
   return { state: JSON.parse(JSON.stringify(S)), adminId: emp.id };
 }
+/* Another company registering on the platform: its company record, its starting masters and its administrator
+   (an HR administrator for that company only). Built on a blank state, then the signed-in state is left as it was. */
+function buildRegisterRecords(f) {
+  const saved = S; S = blank();
+  try {
+    const name = f.coName.trim();
+    const co = newCompany({ name, legalName: name, code: f.coCode.trim().toUpperCase(), state: f.state, domain: f.email.split('@')[1] || '' });
+    const [first, ...rest] = f.name.trim().split(/\s+/);
+    const emp = { id: uid(), companyId: co.id, empNo: `${co.code}-00001`, firstName: first, lastName: rest.join(' '), email: f.email.trim().toLowerCase(), role: 'hr', status: 'active',
+      doj: todayISO(), gender: '', shiftId: S.shifts.find((x) => x.companyId === co.id).id, salaryHist: [], history: [{ date: todayISO(), type: 'Hire', note: 'Company administrator' }], source: 'register', attGroup: 'regular' };
+    S.employees.push(emp);
+    const records = {};
+    Object.entries(S).forEach(([k, v]) => { if (Array.isArray(v) && v.length && k !== 'audit') records[k] = v; });
+    return { records: JSON.parse(JSON.stringify(records)), adminId: emp.id };
+  } finally { S = saved; }
+}
 /* A company comes with sensible defaults: a general shift, leave types and pay components */
 function newCompany(f) {
   const co = Object.assign({ id: uid(), code: '', name: '', legalName: '', state: '29', address: '', pan: '', tan: '', pfCode: '', esiCode: '', ptRegNo: '', domain: '',
@@ -3052,7 +3068,7 @@ ACT.candEdit = (b) => {
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.email)) { $('#cde').textContent = 'Enter a valid e-mail.'; return; }
     const dup = S.cands.find((x) => x !== c && (x.email.toLowerCase() === d.email.toLowerCase() || x.phone.replace(/\D/g, '').slice(-10) === d.phone.replace(/\D/g, '').slice(-10)));
     if (dup) { $('#cde').textContent = `${dup.name} already has this e-mail or phone. Open that candidate instead.`; return; }
-    let rec = c; if (!rec) { rec = { id: uid(), createdAt: Date.now(), createdBy: me.id }; S.cands.push(rec); }
+    let rec = c; if (!rec) { rec = { id: uid(), companyId: CO, createdAt: Date.now(), createdBy: me.id }; S.cands.push(rec); }
     Object.assign(rec, d, { cv }); const ex = exEmployeeFor(rec); rec.exEmpId = ex ? ex.id : ''; if (ex && !c) rec.source = 'Former employee';
     if (b.dataset.req) { const a = { id: uid(), reqId: b.dataset.req, candId: rec.id, stage: 'sourced', history: [], followups: [], notes: [], createdAt: Date.now() }; setStage(a, 'sourced', `Assigned to ${reqById(b.dataset.req).no}`); S.apps.push(a); }
     saveNow(); closeDlg(); toast(ex && !c ? `Saved. ${rec.name} is a former employee.` : 'Candidate saved'); route(); };
@@ -3347,6 +3363,10 @@ VIEWS.google = () => {
       <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save</button></div></form>
     <p class="fine">Every sync shows what will change before anything is saved. Existing employees are matched by e-mail and updated; others are added.</p>` ,
     after: () => {
+      if (!isSuper()) {   // sign-in settings are shared by every company on the platform
+        ['#gcf', '#mcf', '#pwf'].forEach((sel) => { const f = $(sel); if (!f) return; f.querySelectorAll('input:not([type=file]), select').forEach((x) => { x.disabled = true; }); f.querySelectorAll('button:not([type=button])').forEach((x) => { x.style.display = 'none'; }); });
+        const n = document.createElement('div'); n.className = 'note'; n.textContent = 'Sign-in settings (Google and Microsoft IDs, passwords) are managed by the platform administrator. You can still import your users from a CSV export.'; const g = $('#gcf'); if (g) g.parentNode.insertBefore(n, g);
+      }
       const done = () => { if (!s.allowPassword && !s.googleClientId && !(s.msClientId && s.msTenantId)) { s.allowPassword = true; toast('Keep back-up passwords until Google or Microsoft sign-in is set up'); } saveNow(); toast('Saved'); route(); };
       $('#gcf').onsubmit = (e) => { e.preventDefault(); s.googleClientId = e.target.elements.googleClientId.value.trim(); done(); };
       $('#mcf').onsubmit = (e) => { e.preventDefault();
@@ -6804,7 +6824,7 @@ function loadDemo() {
 /* ---------------------------------------------------------------- used by the React components */
 export {
   hooks, sync, ACT, VIEWS, MENU, BOTTOM, ROLES, STATES, R,
-  getS, getMe, getCO, loadServerState, clearSession, switchCompany, resolvePage, buildSetupState, buildDemoState,
+  getS, getMe, getCO, loadServerState, clearSession, switchCompany, resolvePage, buildSetupState, buildRegisterRecords, buildDemoState,
   itemShown, itemOn, itemHref, companiesForMe, company, isHR, isSuper, isManager, pendingForMe,
   empById, nameOf, fullName, initials, coEmployees, leaveTypesFor, leaveBalance, ltById,
   shiftFor, punchOf, leaveOn, holidayOn, todayISO, addDays, D, ymAdd, monthName, yearsBetween,

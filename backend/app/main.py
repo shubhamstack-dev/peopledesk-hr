@@ -28,8 +28,6 @@ import time
 import uuid
 from typing import Any
 
-import jwt as pyjwt
-
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response as RawResponse
@@ -37,9 +35,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import doctemplates, mailer, migrate, policy, repo, tenants, training
+from . import doctemplates, mailer, migrate, policy, repo, training
 from .collections import BY_NAME, SINGLETONS
-from .config import APP_URL, COOKIE_NAME, CORS_ORIGINS, FRONTEND_DIST, JWT_SECRET, MAX_UPLOAD_MB, UPLOAD_DIR
+from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
                        set_google_sub, set_pw_hash, start_session, verify_password)
 
@@ -51,55 +49,7 @@ app = FastAPI(title="PeopleDesk HR API", version="2.0")
 
 @app.on_event("startup")
 def _migrate():
-    tenants.ensure_registry()
-    done = set()
-    for db in [repo.MAIN_DB] + [t["db"] for t in tenants.all_tenants()]:
-        if db not in done:
-            done.add(db)
-            migrate.run(repo.engine_for(db))
-
-
-# ---------------------------------------------------------------- which company (tenant) a request belongs to
-# A signed-in request belongs to the company in its session. Before signing in, the browser names the company
-# with the x-pd-org header (the company code). A request that names no company reaches no company's data.
-ENTRY_PATHS = {"/api/bootstrap", "/api/auth/login", "/api/auth/google", "/api/auth/microsoft", "/api/setup", "/api/register"}
-
-
-@app.middleware("http")
-async def tenant_middleware(request: Request, call_next):
-    path = request.url.path
-    if not path.startswith("/api/") or path == "/api/health":
-        return await call_next(request)
-    org = (request.headers.get("x-pd-org") or "").strip().lower()
-    claims = None
-    tok = request.cookies.get(COOKIE_NAME)
-    if tok:
-        try:
-            claims = pyjwt.decode(tok, JWT_SECRET, algorithms=["HS256"])
-        except pyjwt.PyJWTError:
-            claims = None
-    if path in ENTRY_PATHS and org:
-        t = tenants.by_slug(org)
-    elif claims is not None:
-        t = tenants.by_id(claims["t"]) if claims.get("t") else tenants.main_tenant()
-        if t and org and t["slug"] != org:
-            # signed in to one company while the page asks for another: sign in again
-            return JSONResponse({"detail": "You are signed in to another company. Sign in again."}, status_code=401)
-    else:
-        t = tenants.by_slug(org) if org else None
-    tenants.use(t)
-    return await call_next(request)
-
-
-def _app_link():
-    """The app's address for e-mails, naming the company so the link opens its sign-in page."""
-    t = tenants.by_id(tenants.current_id.get()) or {}
-    return f"{APP_URL}/?org={t['slug']}" if t.get("slug") else f"{APP_URL}/"
-
-
-def _need_tenant():
-    if not tenants.current_id.get():
-        raise HTTPException(400, "Enter your company code first.")
+    migrate.run(repo.engine)
 if CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                        allow_methods=["GET", "POST"], allow_headers=["content-type", "x-peopledesk"])
@@ -156,7 +106,7 @@ class SyncBody(BaseModel):
 
 # ---------------------------------------------------------------- helpers
 def _ctx(conn, me) -> policy.Ctx:
-    return policy.make_ctx(me, repo.employees_index(conn))
+    return policy.make_ctx(me, repo.employees_index(conn), repo.registered_companies(conn))
 
 
 def _public_settings(conn) -> dict:
@@ -185,15 +135,10 @@ def _validate_state(st: dict):
 
 # ---------------------------------------------------------------- sign-in and setup
 @app.get("/api/bootstrap")
-def bootstrap(request: Request):
-    org = (request.headers.get("x-pd-org") or "").strip().lower()
-    tid = tenants.current_id.get()
-    if not tid:
-        return {"needOrg": True, "unknownOrg": bool(org), "canRegister": True}
-    t = tenants.by_id(tid) or {}
+def bootstrap():
     with repo.engine.connect() as conn:
         if repo.is_empty(conn):
-            return {"needsSetup": True, "org": {"slug": t.get("slug"), "name": t.get("name")}, "canRegister": True}
+            return {"needsSetup": True}
         s = _public_settings(conn)
         group = repo.get_singleton(conn, "group") or {}
         n_co = conn.execute(text("SELECT COUNT(*) FROM companies")).scalar()
@@ -205,13 +150,11 @@ def bootstrap(request: Request):
                 ({"id": e["id"], "name": f"{e.get('firstName', '')} {e.get('lastName', '')}".strip(), "role": e.get("role"), "manager": e["id"] in mgrs}
                  for e in emps.values() if active_employee(e)),
                 key=lambda x: (x["role"] != "super", x["name"]))
-        return {"needsSetup": False, "group": group.get("name", ""), "companies": n_co, "settings": s, "demo": demo,
-                "org": {"slug": t.get("slug"), "name": t.get("name")}, "canRegister": True}
+        return {"needsSetup": False, "group": group.get("name", ""), "companies": n_co, "settings": s, "demo": demo, "canRegister": True}
 
 
 @app.post("/api/setup", dependencies=[Depends(require_csrf)])
 def setup(body: SetupBody, resp: Response):
-    _need_tenant()
     _validate_state(body.state)
     admin = next((e for e in body.state["employees"] if e.get("id") == body.adminId), None)
     if not admin or admin.get("role") != "super" or not EMAIL.match(admin.get("email", "")):
@@ -226,46 +169,72 @@ def setup(body: SetupBody, resp: Response):
         return _signed_in(resp, conn, admin, "setup")
 
 
-class RegisterBody(SetupBody):
-    org: str = Field(min_length=3, max_length=30)
+class RegisterBody(BaseModel):
+    records: dict
+    adminId: str
+    password: str = Field(min_length=10, max_length=200)
 
 
 _REG_TIMES: dict = {}
+SHORT_CODE = re.compile(r"^[A-Z0-9]{2,6}$")
 
 
 @app.post("/api/register", dependencies=[Depends(require_csrf)])
 def register(body: RegisterBody, request: Request, resp: Response):
-    """A new company registers: it gets its own database, then is set up like a first-time setup."""
-    ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "").split(",")[0].strip()
+    """Another company registers on the platform: its company record, its starting masters (shift, leave types,
+    pay components) and its administrator, who manages only that company. Everything must belong to the new company."""
+    ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")).split(",")[0].strip()
     now = time.time()
     recent = [x for x in _REG_TIMES.get(ip, []) if now - x < 3600]
     if len(recent) >= 5:
         raise HTTPException(429, "Too many registrations from this network. Try again in an hour.")
-    _validate_state(body.state)
-    admin = next((e for e in body.state["employees"] if e.get("id") == body.adminId), None)
-    if not admin or admin.get("role") != "super" or not EMAIL.match(admin.get("email", "")):
-        raise HTTPException(400, "The administrator is missing from the registration data.")
-    group = (body.state.get("group") or {}).get("name") or ""
-    try:
-        t = tenants.create(body.org, group)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except LookupError as e:
-        raise HTTPException(409, str(e))
-    except PermissionError as e:
-        raise HTTPException(403, str(e))
-    except RuntimeError as e:
-        log.error("Registration failed: %s", e.__cause__ or e)
-        raise HTTPException(503, str(e))
-    _REG_TIMES[ip] = recent + [now]
-    tenants.use(t)
+    recs = body.records or {}
+    cos = recs.get("companies") or []
+    if len(cos) != 1 or not isinstance(cos[0], dict):
+        raise HTTPException(400, "Registration needs exactly one company.")
+    co = cos[0]
+    cid = str(co.get("id") or "")
+    code = str(co.get("code") or "").strip().upper()
+    if not cid or not SHORT_CODE.match(code) or not str(co.get("name") or "").strip():
+        raise HTTPException(400, "Enter the company name and a short code of 2 to 6 letters or digits.")
+    emps = recs.get("employees") or []
+    if len(emps) != 1 or emps[0].get("id") != body.adminId:
+        raise HTTPException(400, "Registration needs exactly one administrator.")
+    admin = emps[0]
+    email = str(admin.get("email") or "").strip().lower()
+    if not EMAIL.match(email):
+        raise HTTPException(400, "Enter a valid e-mail address.")
+    for coll, items in recs.items():
+        if coll not in BY_NAME or not isinstance(items, list):
+            raise HTTPException(400, f"Unknown data: {coll}")
+        for r in items:
+            if not isinstance(r, dict) or not r.get("id"):
+                raise HTTPException(400, "Malformed registration data.")
+            owner = r.get("id") if coll == "companies" else r.get("companyId")
+            if owner != cid or (r.get("empId") and r.get("empId") != body.adminId):
+                raise HTTPException(400, "Registration data may only describe the new company.")
     with repo.engine.begin() as conn:
-        repo.import_state(conn, body.state, body.adminId)
+        if repo.is_empty(conn):
+            raise HTTPException(409, "The platform is not set up yet.")
+        if conn.execute(text("SELECT COUNT(*) FROM companies WHERE UPPER(code)=:c"), {"c": code}).scalar():
+            raise HTTPException(409, "That short code is already used by another company. Choose another.")
+        if _find_by_email(conn, email):
+            raise HTTPException(409, "An account with this e-mail already exists. Sign in instead.")
+        for coll, items in recs.items():
+            if repo.get_records(conn, coll, [r["id"] for r in items]):
+                raise HTTPException(409, "Registration data clashes with existing records. Try again.")
+        co.update({"code": code, "registeredAt": int(now * 1000), "registeredBy": body.adminId, "source": "register"})
+        admin.update({"email": email, "role": "hr", "hrCompanies": [], "status": "active", "blocked": False, "managerId": "", "companyId": cid})
+        for coll, items in recs.items():
+            repo.upsert(conn, coll, items, body.adminId)
+        seq = repo.get_singleton(conn, "seq") or {}
+        seq[f"emp-{cid}"] = max(int(seq.get(f"emp-{cid}") or 0), 1)
+        repo.set_singleton(conn, "seq", seq)
         set_pw_hash(conn, body.adminId, hash_password(body.password))
-        repo.audit_add(conn, "Company registered", f"{t['slug']}: {admin.get('email')}", body.adminId)
+        repo.audit_add(conn, "Company registered", f"{co.get('name')} ({code}): {email}", body.adminId)
         repo.bump_rev(conn)
-        out = _signed_in(resp, conn, admin, "register")
-    out["org"] = {"slug": t["slug"], "name": t["name"]}
+        out = _signed_in(resp, conn, admin, "registration")
+    _REG_TIMES[ip] = recent + [now]
     return out
 
 
@@ -283,7 +252,6 @@ def setup_demo(body: StateBody):
 
 @app.post("/api/auth/login", dependencies=[Depends(require_csrf)])
 def login(body: LoginBody, resp: Response):
-    _need_tenant()
     time.sleep(0.3)   # slows down password guessing
     bad = HTTPException(401, "E-mail or password is incorrect. Employees added from Google or Microsoft sign in with Google or Microsoft.")
     with repo.engine.begin() as conn:
@@ -304,7 +272,6 @@ def login(body: LoginBody, resp: Response):
 
 @app.post("/api/auth/google", dependencies=[Depends(require_csrf)])
 def login_google(body: GoogleBody, resp: Response):
-    _need_tenant()
     from google.auth.transport import requests as grequests
     from google.oauth2 import id_token
 
@@ -336,7 +303,6 @@ _MS_KEYS: dict = {}
 
 @app.post("/api/auth/microsoft", dependencies=[Depends(require_csrf)])
 def login_microsoft(body: MicrosoftBody, resp: Response):
-    _need_tenant()
     """Microsoft Entra ID (Azure AD): the browser gets an ID token with MSAL, it is verified here."""
     import jwt
     with repo.engine.begin() as conn:
@@ -396,7 +362,7 @@ def change_password(body: PasswordBody, me=Depends(current_user)):
 def get_state(me=Depends(current_user)):
     with repo.engine.connect() as conn:
         st = repo.load_state(conn)
-        ctx = policy.make_ctx(me, {e["id"]: e for e in st["employees"]})
+        ctx = policy.make_ctx(me, {e["id"]: e for e in st["employees"]}, {c["id"] for c in st["companies"] if c.get("source") == "register"})
         rev = repo.rev(conn)
     return {"state": policy.redact_state(st, ctx), "me": me["id"], "rev": rev}
 
@@ -446,8 +412,10 @@ def sync(body: SyncBody, me=Depends(current_user)):
             if k not in SINGLETONS:
                 raise HTTPException(400, f"Unknown setting: {k}")
             policy.check_singleton(k, ctx)
-            if k == "settings" and not ctx.is_hr:
-                continue
+            if k == "seq" and not ctx.is_super:
+                # counters only go up, and one company cannot reset another's
+                old = repo.get_singleton(conn, "seq") or {}
+                v = {**old, **{n: max(int(old.get(n) or 0), int(x or 0)) for n, x in (v or {}).items() if isinstance(x, (int, float)) or str(x).isdigit()}}
             repo.set_singleton(conn, k, v)
         for e in body.rosterSet + body.rosterDel:
             policy.check_roster(e.get("empId"), ctx)
@@ -467,10 +435,16 @@ def _require_super(me):
 
 @app.get("/api/admin/backup")
 def backup(me=Depends(current_user)):
-    _require_super(me)
     with repo.engine.connect() as conn:
         st = repo.load_state(conn)
-        st["_auth"] = {i: {"pw": h, "google": g} for i, h, g in conn.execute(text("SELECT employee_id, pw_hash, google_sub FROM auth_credentials"))}
+        ctx = policy.make_ctx(me, {e["id"]: e for e in st["employees"]}, {c["id"] for c in st["companies"] if c.get("source") == "register"})
+        if not ctx.is_hr:
+            raise HTTPException(403, "Only an administrator can download a backup.")
+        if ctx.is_super and not ctx.private:
+            st["_auth"] = {i: {"pw": h, "google": g} for i, h, g in conn.execute(text("SELECT employee_id, pw_hash, google_sub FROM auth_credentials"))}
+        else:
+            # only this administrator's companies, without sign-in data
+            policy._isolate(st, ctx)
         repo.audit_add(conn, "Backup downloaded", "", me["id"])
         conn.commit()
     return st
@@ -479,6 +453,9 @@ def backup(me=Depends(current_user)):
 @app.post("/api/admin/restore")
 def restore(body: StateBody, resp: Response, me=Depends(current_user)):
     _require_super(me)
+    with repo.engine.connect() as conn:
+        if repo.registered_companies(conn):
+            raise HTTPException(409, "Other companies have registered on this server, and a restore would replace their data too.")
     _validate_state(body.state)
     auth = body.state.pop("_auth", None) or {}
     with repo.engine.begin() as conn:
@@ -503,6 +480,9 @@ def restore(body: StateBody, resp: Response, me=Depends(current_user)):
 @app.post("/api/admin/wipe")
 def wipe(resp: Response, me=Depends(current_user)):
     _require_super(me)
+    with repo.engine.connect() as conn:
+        if repo.registered_companies(conn):
+            raise HTTPException(409, "Other companies have registered on this server, and erasing would delete their data too.")
     with repo.engine.begin() as conn:
         repo.wipe(conn)
         # uploaded files go too (receipts, letters, TDS certificates, training content): nothing refers to them any more
@@ -528,7 +508,7 @@ ALLOWED_MIME = ("image/", "application/pdf")
 def _store_file(data: bytes, filename: str, mime: str, company_id, owner_emp) -> str:
     fid = uuid.uuid4().hex
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "file")[-100:]
-    sub = os.path.join(UPLOAD_DIR, tenants.current_id.get() or "_", fid[:2])   # each company's files in its own folder
+    sub = os.path.join(UPLOAD_DIR, fid[:2])
     os.makedirs(sub, exist_ok=True)
     path = os.path.join(sub, f"{fid}_{safe}")
     with open(path, "wb") as fh:
@@ -567,7 +547,7 @@ def get_file(fid: str, me=Depends(current_user)):
         r = conn.execute(text("SELECT name, mime, path, company_id, owner_emp FROM files WHERE id=:i"), {"i": fid}).fetchone()
         if not r:
             raise HTTPException(404, "File not found")
-        allowed = r.owner_emp == me["id"] or me.get("role") == "super" or (me.get("role") == "hr" and r.company_id in {me.get("companyId"), *(me.get("hrCompanies") or [])})
+        allowed = r.owner_emp == me["id"] or (me.get("role") == "super" and r.company_id not in repo.registered_companies(conn)) or (me.get("role") == "hr" and r.company_id in {me.get("companyId"), *(me.get("hrCompanies") or [])})
         if not allowed:
             allowed = _file_visible(conn, fid, me)
     if not allowed:
@@ -597,7 +577,7 @@ def _file_visible(conn, fid: str, me: dict) -> bool:
             return True
     rows = hit("leave_requests")
     if rows:
-        ctx = policy.make_ctx(me, repo.employees_index(conn))
+        ctx = policy.make_ctx(me, repo.employees_index(conn), repo.registered_companies(conn))
         for emp, d in rows:
             rec = repo.loads(d)
             if emp == me["id"] or emp in ctx.line or any(me["id"] in (st or {}).get("approverIds", []) for st in rec.get("steps") or []):
@@ -628,19 +608,20 @@ def notify(body: NotifyBody, me=Depends(current_user)):
         emp = emps.get(r.get("empId")) or {}
         co = r.get("companyId")
         name = f"{emp.get('firstName', '')} {emp.get('lastName', '')}".strip()
-        is_hr = me.get("role") == "super" or (me.get("role") == "hr" and co in {me.get("companyId"), *(me.get("hrCompanies") or [])})
+        private = repo.registered_companies(conn)
+        is_hr = (me.get("role") == "super" and co not in private) or (me.get("role") == "hr" and co in {me.get("companyId"), *(me.get("hrCompanies") or [])})
         if body.event == "submitted":
             if r.get("by") != me["id"]:
                 raise HTTPException(403, "Only the person who raised the request can announce it.")
             to = [e.get("email") for e in emps.values() if e.get("status") != "exited" and e.get("id") != me["id"] and (
-                e.get("role") == "super" or (e.get("role") == "hr" and co in {e.get("companyId"), *(e.get("hrCompanies") or [])}))]
+                (e.get("role") == "super" and co not in private) or (e.get("role") == "hr" and co in {e.get("companyId"), *(e.get("hrCompanies") or [])}))]
             mask = lambda k, v: ("XXXX XXXX " + str(v)[-4:]) if k == "aadhaar" and v else (v or "—")  # noqa: E731
             lines = [f"- {STAT_LABELS.get(k, k)}: {mask(k, (r.get('old') or {}).get(k))} -> {mask(k, v)}" for k, v in (r.get("changes") or {}).items()]
             subject = f"Approval needed: statutory details change for {name} ({r.get('no')})"
             text_ = (f"{name} has asked to change their statutory details:\n\n" + "\n".join(lines) +
                      f"\n\n{len(r.get('documents') or [])} supporting document(s) attached in PeopleDesk." +
                      (f"\nNote: {r.get('reason')}" if r.get("reason") else "") +
-                     f"\n\nReview and approve: {_app_link()}#/request/{r['id']}\n\nThe change applies only after HR approves it.")
+                     f"\n\nReview and approve: {APP_URL}/#/request/{r['id']}\n\nThe change applies only after HR approves it.")
         elif body.event == "decided":
             if not is_hr:
                 raise HTTPException(403, "Only HR can announce a decision.")
@@ -650,7 +631,7 @@ def notify(body: NotifyBody, me=Depends(current_user)):
             subject = f"Your statutory details change was {'approved' if ok else 'not approved'} ({r.get('no')})"
             text_ = (f"Dear {emp.get('firstName', '')},\n\nHR has {'approved' if ok else 'not approved'} your request to change: "
                      f"{', '.join(STAT_LABELS.get(k, k) for k in (r.get('changes') or {}))}." + (f"\n\nNote from HR: {note}" if note else "") +
-                     f"\n\nSee it in PeopleDesk: {_app_link()}#/request/{r['id']}")
+                     f"\n\nSee it in PeopleDesk: {APP_URL}/#/request/{r['id']}")
         else:
             raise HTTPException(400, "Unknown event.")
         to = [t for t in to if t]
@@ -683,16 +664,16 @@ def comp_notify(body: CompNotifyBody, me=Depends(current_user)):
     everyone on the budget for a comment, and every budget holder when HR opens planning."""
     with repo.engine.begin() as conn:
         emps = repo.employees_index(conn)
-        ctx = policy.make_ctx(me, emps)
+        ctx = policy.make_ctx(me, emps, repo.registered_companies(conn))
         cycle = repo.get_records(conn, "compCycles", [body.cycleId]).get(body.cycleId)
         if not cycle:
             raise HTTPException(404, "That salary plan is not saved yet.")
         pools = repo.records_where(conn, "compBudgets", "cycle_id", body.cycleId)
         co = cycle.get("companyId")
         hr_ids = [e["id"] for e in emps.values() if e.get("status") != "exited" and (
-            e.get("role") == "super" or (e.get("role") == "hr" and co in {e.get("companyId"), *(e.get("hrCompanies") or [])}))]
+            (e.get("role") == "super" and co not in ctx.private) or (e.get("role") == "hr" and co in {e.get("companyId"), *(e.get("hrCompanies") or [])}))]
         nm = lambda i: f"{(emps.get(i) or {}).get('firstName', '')} {(emps.get(i) or {}).get('lastName', '')}".strip()  # noqa: E731
-        link = f"{_app_link()}#/compplan?c={cycle['id']}"
+        link = f"{APP_URL}/#/compplan?c={cycle['id']}"
         if body.event == "launched":
             if not ctx.is_hr_for(co):
                 raise HTTPException(403, "Only HR opens salary planning.")
@@ -762,7 +743,7 @@ def _training_for(conn, tid: str, me: dict, need_manage: bool):
     t = repo.get_records(conn, "trainings", [tid]).get(tid)
     if not t:
         raise HTTPException(404, "That training is not saved yet.")
-    ctx = policy.make_ctx(me, repo.employees_index(conn))
+    ctx = policy.make_ctx(me, repo.employees_index(conn), repo.registered_companies(conn))
     manage = ctx.is_hr_for(t.get("companyId")) or training.is_trainer(t, me["id"])
     if need_manage and not manage:
         raise HTTPException(403, "Only HR and the trainer can do this.")
@@ -816,7 +797,7 @@ def training_report_mail(body: TrainerReportBody, me=Depends(current_user)):
     Participants' names are never included."""
     with repo.engine.begin() as conn:
         emps = repo.employees_index(conn)
-        ctx = policy.make_ctx(me, emps)
+        ctx = policy.make_ctx(me, emps, repo.registered_companies(conn))
         st = repo.load_state(conn)
         trs = [t for t in st["trainings"] if ctx.is_hr_for(t.get("companyId"))]
         if not trs:
@@ -909,7 +890,7 @@ def _doc_prepare(conn, body: DocGenBody, me):
         raise HTTPException(404, "That employee does not exist.")
     if not ctx.is_hr_for(emp.get("companyId")):
         raise HTTPException(403, "You are not HR for this employee's company.")
-    if tpl.get("companyId") and tpl["companyId"] != emp.get("companyId"):
+    if (tpl.get("companyId") and tpl["companyId"] != emp.get("companyId")) or (not tpl.get("companyId") and not ctx.is_super):
         raise HTTPException(400, "This template belongs to another company.")
     on = body.date if body.date and ISO_DAY.match(body.date) else None
     dtype = repo.get_records(conn, "docTypes", [tpl.get("typeId")]).get(tpl.get("typeId")) or {}
