@@ -47,3 +47,5 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", "") or SMTP_USER
 SMTP_TLS = os.getenv("SMTP_TLS", "starttls").lower()          # starttls | ssl | none
 APP_URL = os.getenv("APP_URL", "").rstrip("/")                 # e.g. https://peopledeskhr.example.com, for links in e-mails
+# Time zone of the business: shift-change notice and attendance locks are worked out in it
+APP_TZ = os.getenv("APP_TZ", "Asia/Kolkata")

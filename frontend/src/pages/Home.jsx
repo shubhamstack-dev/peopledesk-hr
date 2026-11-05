@@ -23,7 +23,8 @@ export default function Home() {
     .sort((a, b) => (a.date < b.date ? -1 : 1)).slice(0, 4);
   const md = (iso) => (iso ? iso.slice(5) : '');
   const soon = (iso) => { if (!iso) return false; for (let i = 0; i < 7; i++) if (md(E.addDays(t, i)) === md(iso)) return true; return false; };
-  const cel = E.coEmployees(me.companyId).filter((e) => soon(e.dob) || (soon(e.doj) && e.doj.slice(0, 4) < t.slice(0, 4)));
+  const cel = E.coEmployees(me.companyId).filter((e) => soon(e.dob) || (soon(e.doj) && e.doj.slice(0, 4) < t.slice(0, 4)) || (e.shareAnniversary !== false && soon(e.anniversary)));
+  const notices = E.myNotices();
   const posts = [
     ...S.posts.filter((x) => x.companyId === me.companyId).map((x) => ({ ...x, kind: 'post' })),
     ...S.feedback.filter((f) => f.type === 'kudos' && !f.private && (E.empById(f.to) || {}).companyId === me.companyId).map((f) => ({ ...f, kind: 'kudos' })),
@@ -35,7 +36,7 @@ export default function Home() {
     const emps = E.coEmployees(); const ym = t.slice(0, 7); const last = E.ymAdd(ym, -1);
     const joiners = emps.filter((e) => (e.doj || '').startsWith(ym)).length;
     const leavers = S.employees.filter((e) => e.companyId === CO && e.exit && (e.exit.lwd || '').startsWith(ym)).length;
-    const run = S.payRuns.find((r) => r.companyId === CO && r.month === last);
+    const run = S.payRuns.find((r) => r.companyId === CO && r.month === last && E.runReg(r) === 'own');
     hr = (
       <div className="grid g4" style={{ marginBottom: 16 }}>
         <div className="kpi"><span>Headcount, {E.company().code}</span><b>{emps.length}</b><small>{joiners} joined, {leavers} leaving this month</small></div>
@@ -121,6 +122,16 @@ export default function Home() {
         </div>
 
         <div>
+          {notices.length > 0 && (
+            <div className="card notices"><h2>For you</h2>
+              {notices.map((n, i) => (
+                <div key={i} className={`notice ${n.kind}`}>
+                  <span className="notice-ic" aria-hidden="true">{n.icon}</span>
+                  <div><b>{n.link ? <a href={n.link}>{n.title}</a> : n.title}</b><div className="fine">{n.text}</div></div>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="card"><h2>Upcoming holidays</h2>
             {up.length ? up.map((h) => (
               <div key={h.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--rule)' }}>
@@ -132,10 +143,13 @@ export default function Home() {
             {cel.length ? cel.map((e) => (
               <div key={e.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0' }}>
                 <div className="av">{E.initials(E.fullName(e))}</div>
-                <div><b>{E.fullName(e)}</b><div className="fine">{soon(e.dob) ? `Birthday, ${E.dShort(`${t.slice(0, 4)}-${md(e.dob)}`)}`
-                  : `${E.yearsBetween(e.doj, E.addDays(t, 7))} years with us, ${E.dShort(`${t.slice(0, 4)}-${md(e.doj)}`)}`}</div></div>
+                <div><b>{E.fullName(e)}</b><div className="fine">{[
+                  soon(e.dob) && `Birthday, ${E.dShort(`${t.slice(0, 4)}-${md(e.dob)}`)}`,
+                  e.shareAnniversary !== false && soon(e.anniversary) && `Wedding anniversary, ${E.dShort(`${t.slice(0, 4)}-${md(e.anniversary)}`)}`,
+                  soon(e.doj) && e.doj.slice(0, 4) < t.slice(0, 4) && `${E.yearsBetween(e.doj, E.addDays(t, 7))} years with us, ${E.dShort(`${t.slice(0, 4)}-${md(e.doj)}`)}`,
+                ].filter(Boolean).join('; ')}</div></div>
               </div>
-            )) : <p className="mut">No birthdays or work anniversaries this week.</p>}
+            )) : <p className="mut">No birthdays or anniversaries this week.</p>}
           </div>
           <div className="card"><h2>Quick links</h2>
             <div className="tools"><a className="btn sm" href="#/payslips">Latest payslip</a><a className="btn sm" href="#/performance">My goals</a><a className="btn sm" href="#/attendance">My attendance</a><a className="btn sm" href="#/org">Organisation chart</a></div>

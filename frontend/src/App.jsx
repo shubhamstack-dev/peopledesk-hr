@@ -39,7 +39,10 @@ export default function App() {
 
   // After signing in, start at Home (as the original did); on a page reload, stay where you were
   const enter = useCallback(async (fromSignIn = true) => {
-    try { await loadState(); setPhase('app'); refresh(); if (fromSignIn || !window.location.hash) window.location.hash = '#/home'; }
+    try {
+      await loadState(); setPhase('app'); refresh(); if (fromSignIn || !window.location.hash) window.location.hash = '#/home';
+      setTimeout(() => E.showLoginNotices(), 400);   // birthday, anniversary and shift-change greetings, once a day
+    }
     catch (e) { await toSignIn(e.status === 401 ? '' : e.message); }
   }, [loadState, toSignIn]);
 

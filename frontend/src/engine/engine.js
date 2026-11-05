@@ -100,6 +100,7 @@ function blank() {
     requests: [], expenseCats: [], expenseClaims: [], perfTemplates: [], onboardings: [], onboardTemplates: [], assets: [], docTypes: [], docTemplates: [],
     compCycles: [], compBudgets: [], compRecs: [],
     trainings: [], trainingEnrols: [], trainingFeedback: [], trainingNeeds: [],
+    contractors: [], masterItems: [],
   };
 }
 /* Storage: the MySQL database behind the Python API. Changes are sent as they happen (see sync.js). */
@@ -510,7 +511,7 @@ const attGroup = (e) => (e && e.attGroup === 'shift' && ((coById(e.companyId) ||
 const GROUPS = { regular: 'Regular', shift: 'Shift' };
 /* Companies choose shift-based working or time management only. Without shifts there is no rostering and no overtime. */
 const shiftBased = (coId = CO) => ((coById(coId) || {}).timeMode || 'shift') === 'shift';
-const otEligibleOf = (e) => !!e && shiftBased(e.companyId) && attGroup(e) === 'shift' && e.otEligible !== false;
+const otEligibleOf = (e) => !!e && shiftBased(e.companyId) && attGroup(e) === 'shift' && (e.otEligible !== undefined ? e.otEligible !== false : catOf(e) !== 'shift');
 const OT_TYPES = { working: 'Working day', weeklyoff: 'Weekly off', holiday: 'Holiday' };
 const otRecOf = (empId, iso) => S.otRecs.find((x) => x.empId === empId && x.date === iso && x.status !== 'cancelled');
 function quarterOf(iso) { const m = +iso.slice(5, 7); const s = `${iso.slice(0, 4)}-${pad(Math.floor((m - 1) / 3) * 3 + 1)}-01`; return { start: s, end: addDays(`${ymAdd(s.slice(0, 7), 3)}-01`, -1), label: `Q${Math.floor((m - 1) / 3) + 1} ${iso.slice(0, 4)}` }; }
@@ -818,6 +819,9 @@ const MENU = [
     { page: 'people', label: 'Employee directory', show: HR },
     { page: 'org', label: 'Organisation chart' },
     { page: 'masters', label: 'Departments, designations and grades', show: HR },
+    { page: 'masterdata', label: 'Standard lists: institutions, qualifications, employers', show: HR },
+    { page: 'contractors', label: 'Contractors (third party)', show: HR },
+    { page: 'greetings', label: 'Greetings and notifications', show: HR },
     { page: 'reporting', label: 'Reporting structure', show: MGR },
     { page: 'onboarding', label: 'Employee enrolment', show: () => isHR() || onboardTasksFor(me.id).length > 0 || S.onboardings.some((o) => o.empId === me.id) },
     { page: 'onbsetup', label: 'Enrolment checklists', show: HR },
@@ -850,12 +854,15 @@ const MENU = [
     { page: 'attendance', label: 'My attendance' },
     { page: 'team', label: 'Team today', show: MGR },
     { page: 'roster', tab: 'roster', label: 'Shift roster', show: () => MGR() && shiftBased() },
+    { page: 'shiftchange', label: 'Change team shifts', show: () => MGR() && shiftBased() && (isHR() || shiftPol().mgrChange !== false) },
     { page: 'roster', tab: 'patterns', label: 'Rotation patterns', show: () => MGR() && shiftBased() },
     { page: 'roster', tab: 'shifts', label: 'Shift definitions', show: () => HR() && shiftBased() },
     { page: 'overtime', label: 'Overtime', show: () => MGR() && shiftBased() },
     { page: 'otpolicy', tab: 'rules', label: 'Overtime and shift policy', show: () => HR() && shiftBased() },
+    { page: 'shiftpolicy', label: 'Rotation and shift change policy', show: () => HR() && shiftBased() },
     { page: 'timemode', label: 'Shifts or time management', show: HR },
-    { page: 'register', label: 'Attendance register', show: MGR },
+    { page: 'register', tab: 'own', label: 'Attendance register: own employees', show: MGR },
+    { page: 'register', tab: 'contract', label: 'Attendance register: contract workers', show: () => MGR() && hasContract() },
   ] },
   { grp: 'perf', label: 'Performance Management', items: [
     { page: 'performance', label: 'My goals and reviews' },
@@ -866,7 +873,8 @@ const MENU = [
   ] },
   { grp: 'pay', label: 'Payroll', items: [
     { page: 'payslips', label: 'My payslips and tax' },
-    { page: 'payroll', label: 'Payroll runs', show: HR },
+    { page: 'payroll', tab: 'own', label: 'Payroll runs: own employees', show: HR },
+    { page: 'payroll', tab: 'contract', label: 'Payroll runs: contract workers', show: () => HR() && hasContract() },
     { page: 'form130', label: 'TDS certificates (Form 130 / 16)', show: HR },
     { page: 'esi', label: 'ESI', show: HR },
     { page: 'statreg', tab: 'pf', label: 'PF register', show: HR },
@@ -902,7 +910,9 @@ const MENU = [
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
     { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
-const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf', training: 'mine' };
+const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf', training: 'mine', register: 'own', payroll: 'own', masterdata: 'review' };
+/* contract workers or contractors in the company being worked on */
+const hasContract = () => S.contractors.some((c) => c.companyId === CO) || S.employees.some((e) => e.companyId === CO && catOf(e) === 'contract');
 const itemShown = (it) => !it.show || it.show();
 const itemOn = (it) => (R.page === it.page && (!it.tab || (R.q.get('tab') || DEFAULT_TAB[it.page]) === it.tab)) || ({ exit: 'exits', req: 'reqs', app: 'reqs', course: 'training' }[R.page] === it.page && (!it.tab || it.tab === (R.page === 'course' ? 'calendar' : it.tab)));
 const itemHref = (it) => `#/${it.page}${it.tab ? '?tab=' + it.tab : ''}`;
@@ -1014,7 +1024,8 @@ function buildRegisterRecords(f) {
 function newCompany(f) {
   const co = Object.assign({ id: uid(), code: '', name: '', legalName: '', state: '29', address: '', pan: '', tan: '', pfCode: '', esiCode: '', ptRegNo: '', domain: '',
     leaveYearStart: 1, attendanceSource: 'punch', latePenaltyCount: 3, latePenaltyDays: 0.5, hrApprovalDays: 5, otAfterMin: 30, otRate: 2,
-    pfRestrict: true, esiEnabled: true, esiOnCodeWages: true, ptEnabled: true, lwfEnabled: true, roundNet: true, gratuityInCTC: false, gratuityYears: 5, punchNeedsLocation: false }, f);
+    pfRestrict: true, esiEnabled: true, esiOnCodeWages: true, ptEnabled: true, lwfEnabled: true, roundNet: true, gratuityInCTC: false, gratuityYears: 5, punchNeedsLocation: false,
+    shiftPolicy: { rotationMode: 'manual', weeksAhead: 4, defaultPatternId: '', rules: [], noticeHrs: 24, hrOverride: true, mgrChange: true } }, f);
   S.companies.push(co);
   seedCompany(co);
   return co;
@@ -1094,9 +1105,9 @@ VIEWS.people = () => {
       <select class="inp" data-ch="pplSt">${[['active', 'Active and on notice'], ['notice', 'On notice'], ['exited', 'Exited'], ['all', 'Everyone']].map(([v, l]) => `<option value="${v}" ${v === st ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select class="inp" data-ch="pplDept"><option value="">All departments</option>${S.depts.filter((d) => d.companyId === CO).map((d) => `<option value="${d.id}" ${d.id === dp ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
       <button class="btn" data-act="pplExport">Download Excel</button><button class="btn pri" data-act="empNew">Add employee</button></div></div>
-    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Number</th><th>Designation</th><th>Department</th><th>Location</th><th>Attendance</th><th>Manager</th><th>Joined</th><th>Status</th></tr></thead><tbody>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Number</th><th>Designation</th><th>Department</th><th>Location</th><th>Category</th><th>Manager</th><th>Joined</th><th>Status</th></tr></thead><tbody>
       ${list.map((e) => `<tr class="click" data-act="openEmp" data-id="${e.id}"><td><div class="tools" style="flex-wrap:nowrap"><div class="av">${esc(initials(fullName(e)))}</div><div><b>${esc(fullName(e))}</b><div class="fine">${esc(e.email)}</div></div></div></td>
-        <td class="mono">${esc(e.empNo)}</td><td>${esc((desig(e.desigId) || {}).name || '')}</td><td>${esc((dept(e.deptId) || {}).name || '')}</td><td>${esc((loc(e.locationId) || {}).name || '')}</td><td>${GROUPS[attGroup(e)]}${otEligibleOf(e) ? ' <span class="fine">OT</span>' : ''}</td><td>${esc(nameOf(e.managerId))}</td>
+        <td class="mono">${esc(e.empNo)}</td><td>${esc((desig(e.desigId) || {}).name || '')}</td><td>${esc((dept(e.deptId) || {}).name || '')}</td><td>${esc((loc(e.locationId) || {}).name || '')}</td><td>${esc(catLabel(e))}<div class="fine">${GROUPS[attGroup(e)]}${otEligibleOf(e) ? ', overtime' : ''}</div></td><td>${esc(nameOf(e.managerId))}</td>
         <td>${dmy(e.doj)}</td><td>${statusBadge(e)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No employees match.</div>'}</div>` };
 };
 const statusBadge = (e) => e.status === 'exited' ? '<span class="badge">Left</span>' : e.status === 'notice' ? `<span class="badge warn">Leaving ${dShort(e.exit && e.exit.lwd)}</span>` : e.probationEnd && e.probationEnd > todayISO() ? '<span class="badge info">On probation</span>' : '<span class="badge ok">Active</span>';
@@ -1107,7 +1118,7 @@ ACT.openEmp = (b) => go('#/profile/' + b.dataset.id);
 ACT.pplExport = () => writeBook(`Employees_${company().code}.xlsx`, { Employees: S.employees.filter((e) => e.companyId === CO).map((e) => ({
   'Employee number': e.empNo, 'First name': e.firstName, 'Last name': e.lastName, Email: e.email, Gender: e.gender, 'Date of birth': e.dob, 'Date of joining': e.doj,
   Department: (dept(e.deptId) || {}).name, Designation: (desig(e.desigId) || {}).name, Grade: (grade(e.gradeId) || {}).name, Location: (loc(e.locationId) || {}).name,
-  Manager: nameOf(e.managerId), Status: e.status, PAN: e.pan, UAN: e.uan, 'ESI number': e.esiNo, 'Annual CTC': (salaryAt(e, todayISO()) || {}).ctc || '', Source: e.source })) });
+  Manager: nameOf(e.managerId), Category: CATS[catOf(e)], Contractor: catOf(e) === 'contract' ? conName(e.contractorId) : '', Status: e.status, PAN: e.pan, UAN: e.uan, 'ESI number': e.esiNo, 'Annual CTC': (salaryAt(e, todayISO()) || {}).ctc || '', Source: e.source })) });
 
 /* ---------------------------------------------------------------- profile */
 const EMP_FIELDS = {
@@ -1118,6 +1129,8 @@ const EMP_FIELDS = {
     { k: 'managerId', label: 'Reports to', type: 'select', opts: () => empOpts(CO)(), blank: 'No one' }, { k: 'shiftId', label: 'Default shift', type: 'select', opts: coOpts('shifts') },
     { k: 'doj', label: 'Date of joining', type: 'date', req: true }, { k: 'probationEnd', label: 'Probation ends', type: 'date' },
     { k: 'empType', label: 'Employment type', type: 'select', opts: [['permanent', 'Permanent'], ['probation', 'Probation'], ['contract', 'Fixed-term contract'], ['intern', 'Intern']] },
+    { k: 'workerCategory', label: 'Employee category', type: 'select', opts: () => Object.entries(CATS), help: 'Sets the attendance group and overtime below; you can still change those' },
+    { k: 'contractorId', label: 'Contractor (for contract workers)', type: 'select', opts: () => S.contractors.filter((c) => c.companyId === CO && c.active !== false).map((c) => [c.id, `${c.name} (${c.code})`]), blank: 'Choose the contractor' },
     { k: 'role', label: 'Access in this app', type: 'select', opts: () => Object.entries(ROLES).filter(([k]) => k !== 'super' || isSuper()) },
     { k: 'attGroup', label: 'Attendance group', type: 'select', opts: [['regular', 'Regular: general shift, fixed weekly offs'], ['shift', 'Shift: rostered shifts and rotations']] },
     { k: 'otEligible', label: 'Eligible for overtime (shift staff are unless unticked)', type: 'check' },
@@ -1125,6 +1138,7 @@ const EMP_FIELDS = {
   personal: [
     { k: 'firstName', label: 'First name', req: true }, { k: 'lastName', label: 'Last name' }, { k: 'gender', label: 'Gender', type: 'select', opts: [['M', 'Male'], ['F', 'Female'], ['O', 'Other']], blank: 'Not stated' },
     { k: 'dob', label: 'Date of birth', type: 'date' }, { k: 'marital', label: 'Marital status', type: 'select', opts: [['single', 'Single'], ['married', 'Married'], ['divorcee', 'Divorcee'], ['widowed', 'Widowed'], ['other', 'Other']], blank: '—' },
+    { k: 'anniversary', label: 'Wedding anniversary', type: 'date', help: 'For a greeting on the day' }, { k: 'shareAnniversary', label: 'Colleagues may see my wedding anniversary (day and month only)', type: 'check' },
     { k: 'phone', label: 'Mobile' }, { k: 'personalEmail', label: 'Personal e-mail', type: 'email' }, { k: 'blood', label: 'Blood group', type: 'select', opts: () => BLOOD_GROUPS.map((b) => [b, b]), blank: 'Not known' },
     { k: 'address', label: 'Address: house, street and area', type: 'textarea', wide: true },
     { k: 'addrCountry', label: 'Country', type: 'select', opts: () => COUNTRIES.map((c) => [c, c]) }, { k: 'addrState', label: 'State or union territory', type: 'select', opts: () => [...IN_STATES.map((x) => [x, x]), ['Outside India', 'Outside India']], blank: 'Choose' },
@@ -1146,10 +1160,10 @@ VIEWS.profile = () => {
   if (!e) return { title: 'Profile', html: '<div class="empty">That employee does not exist.</div>' };
   const mine = e.id === me.id, hr = isHR(e.companyId), mgr = allReportees(me.id).includes(e.id) || (e.matrixManagerIds || []).includes(me.id);
   if (!mine && !hr && !mgr) return { title: 'Profile', html: '<div class="empty">You cannot see this profile.</div>' };
-  const tabs = [['personal', 'Personal'], ['family', 'Family'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'], ['documents', 'Documents'],
+  const tabs = [['personal', 'Personal'], ['family', 'Family'], ['background', 'Background'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'], ['documents', 'Documents'],
     ['career', 'Career'], ['job', 'Job'], ['reporting', 'Reporting'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['performance', 'Performance'], ['training', 'Training'],
     ['history', 'History'], ['activity', 'Activity log']]
-    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance', 'training'].includes(k)) && (k !== 'activity' || hr));
+    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance', 'training', 'background'].includes(k)) && (k !== 'activity' || hr));
   // Opens on the first tab this person may see (Personal for oneself and HR, Career for a manager)
   const tab = tabs.some(([k]) => k === R.q.get('tab')) ? R.q.get('tab') : tabs[0][0];
   const base = `#/profile/${e.id}?tab=`;
@@ -1204,7 +1218,7 @@ VIEWS.profile = () => {
 ACT.empEdit = (b) => {
   const e = empById(b.dataset.id), tab = b.dataset.tab, fields = EMP_FIELDS[tab];
   const prev = CO; CO = e.companyId;
-  const v = { pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', payMode: 'bank', empType: 'permanent', attGroup: 'regular', ...e };
+  const v = { pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', payMode: 'bank', empType: 'permanent', attGroup: 'regular', shareAnniversary: true, ...e, workerCategory: catOf(e) };
   if (tab === 'job' && e.otEligible === undefined) v.otEligible = otEligibleOf(e);
   if (tab === 'personal') { v.addrCountry = v.addrCountry || 'India'; if (!v.emergencyName && v.emergency) v.emergencyName = v.emergency; if (v.addrCity && !cityState(v.addrCity)) { v.addrCityOther = v.addrCity; v.addrCity = '__other'; } }
   if (tab === 'bank' && v.bankName && !BANKS.some((x) => x[0] === v.bankName)) v.bankName = '__other';
@@ -1213,10 +1227,12 @@ ACT.empEdit = (b) => {
   CO = prev;
   if (tab === 'personal') wireAddress($('#ef'));
   if (tab === 'bank') wireBank($('#ef'), e);
+  if (tab === 'job') wireCategory($('#ef'));
+  if (tab === 'personal') wireAnniversary($('#ef'));
   $('#ef').onsubmit = (ev) => {
     ev.preventDefault();
     const d = readForm(ev.target, fields);
-    const extra = tab === 'personal' ? checkPersonal(d) : tab === 'bank' ? checkBank(d, ev.target) : '';
+    const extra = tab === 'personal' ? checkPersonal(d) : tab === 'bank' ? checkBank(d, ev.target) : tab === 'job' ? checkCategory(d, e) : '';
     if (extra) { $('#ee').textContent = extra; return; }
     const miss = fields.find((f) => f.req && !d[f.k]); if (miss) { $('#ee').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
     if (d.email && S.employees.some((x) => x.id !== e.id && (x.email || '').toLowerCase() === d.email.toLowerCase())) { $('#ee').textContent = 'Another employee has this e-mail.'; return; }
@@ -1237,14 +1253,16 @@ ACT.empEdit = (b) => {
 };
 ACT.empNew = () => {
   const fields = [...EMP_FIELDS.personal.slice(0, 4), ...EMP_FIELDS.job.filter((f) => !['otEligible', 'probationEnd'].includes(f.k)), { k: 'ctc', label: 'Annual CTC (₹)', type: 'number', min: 0 }];
-  const v = { empNo: nextNoPreview(), doj: todayISO(), role: 'employee', empType: 'probation', shiftId: (S.shifts.find((s) => s.companyId === CO) || {}).id };
+  const v = { empNo: nextNoPreview(), doj: todayISO(), role: 'employee', empType: 'probation', workerCategory: 'staff', attGroup: 'regular', shiftId: (S.shifts.find((s) => s.companyId === CO) || {}).id };
   openDlg(`<form class="dlg" id="nf" novalidate><h2>Hire: add an employee to ${esc(company().name)}</h2><p class="fine" style="margin:0">Usually employees arrive from Google Workspace. Add someone here who has no Google account yet; the e-mail links them once synced.</p>
     <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="ne"></p>
     <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add employee</button></div></form>`, true);
+  wireCategory($('#nf'));
   $('#nf').onsubmit = (ev) => {
     ev.preventDefault();
     const d = readForm(ev.target, fields);
     const miss = fields.find((f) => f.req && !d[f.k]); if (miss) { $('#ne').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
+    const catErr = checkCategory(d); if (catErr) { $('#ne').textContent = catErr; return; }
     if (S.employees.some((x) => (x.email || '').toLowerCase() === d.email.toLowerCase())) { $('#ne').textContent = 'An employee with this e-mail exists.'; return; }
     if (S.employees.some((x) => x.companyId === CO && x.empNo === d.empNo)) { $('#ne').textContent = 'That employee number is in use.'; return; }
     const ctc = +d.ctc || 0; delete d.ctc;
@@ -1506,6 +1524,7 @@ ACT.leaveApply = (b) => {
     if (f.reason.trim().length < 3) return err('Give a short reason.');
     const clash = S.leaveReqs.find((r) => r.empId === emp.id && ['approved', 'pending', 'pending-hr'].includes(r.status) && r.from <= f.to && r.to >= f.from && !(half && r.half && r.half !== half && r.from === r.to));
     if (clash) return err(`This overlaps your ${ltById(clash.typeId).name} from ${dmy(clash.from)}.`);
+    if (lockErr(emp, f.from, f.to)) return err(lockErr(emp, f.from, f.to));
     if (lt.credit !== 'none' && !lt.allowNegative && d > b.available + 1e-9) return err(`Only ${num(b.available)} days of ${lt.name} are available.`);
     if (+lt.maxPerRequest && d > +lt.maxPerRequest) return err(`${lt.name} is limited to ${lt.maxPerRequest} days at a time.`);
     if (+lt.minNotice && f.from < addDays(todayISO(), +lt.minNotice) && emp.id === me.id) return err(`${lt.name} needs ${lt.minNotice} days' notice.`);
@@ -1525,6 +1544,7 @@ ACT.leaveApply = (b) => {
 ACT.leaveDecide = async (b) => {
   const r = S.leaveReqs.find((x) => x.id === b.dataset.id); if (!r || !leaveApproverOK(r)) return;
   const ok = b.dataset.ok === '1';
+  { const le = lockErr(empById(r.empId), r.from, r.to); if (le) { toast(le); return; } }
   const note = ok ? '' : await askText('Reject this leave?', 'Reason, shown to the employee', 'Reject');
   if (!ok && note === null) return;
   if (r.steps) {
@@ -1540,6 +1560,7 @@ ACT.leaveDecide = async (b) => {
 };
 ACT.leaveCancel = async (b) => {
   const r = S.leaveReqs.find((x) => x.id === b.dataset.id);
+  { const le = lockErr(empById(r.empId), r.from, r.to); if (le) { toast(le); return; } }
   if (!(await confirmBox('Cancel this leave?', `${ltById(r.typeId).name} from ${dmy(r.from)}. The days go back to your balance.`, 'Cancel leave'))) return;
   r.status = 'cancelled'; saveNow(); route();
 };
@@ -1609,6 +1630,7 @@ ACT.punch = async (b) => {
   const t = todayISO(); const co = coById(me.companyId);
   let p = punchOf(me.id, t);
   if (p && p.out) { toast('You have already punched out today'); return; }
+  if (lockErr(me, t)) { toast(lockErr(me, t)); return; }
   b.disabled = true;
   let pos = null;
   try { pos = await getPosition(); } catch (e) { if (co.punchNeedsLocation) { toast(e.message + ' Punching needs your location.'); b.disabled = false; return; } }
@@ -1645,7 +1667,7 @@ VIEWS.attendance = () => {
       <div class="kpi"><span>Overtime</span><b>${num(a.ot, 1)} h</b><small>${otEligibleOf(emp) ? `worked; ${num(S.otRecs.filter((x) => x.empId === emp.id && x.status === 'approved' && x.date.startsWith(ym)).reduce((s, x) => s + (+x.approvedHrs || 0), 0), 1)} h approved` : 'not eligible'}. ${GROUPS[attGroup(emp)]} staff</small></div></div>
     <div class="card"><div class="hd"><div><h2>${monthName(ym)}</h2><p class="sub">${co.attendanceSource === 'leave' ? 'This company pays on leave records: days without leave count as present.' : 'A working day without a punch counts as absent. Select a day to correct it.'}</p></div>
       <div class="tools"><input type="month" class="inp" value="${ym}" data-ch="attMonth">${emp.id === me.id ? '<button class="btn" data-act="regNew">Correct attendance</button>' : ''}</div></div>
-      ${monthGrid(emp, ym, 'attDay')}
+      ${lockNote(emp.companyId, regOf(emp), ym)}${monthGrid(emp, ym, 'attDay')}
       <p class="fine" style="margin-top:10px">${Object.entries(ST_LABEL).map(([k, v]) => `<span class="st ${k}">${k}</span> ${v}`).join(' &nbsp; ')} &nbsp; <span class="st LT">Late</span> late mark</p></div>
     ${punchesCard(emp, ym)}
     ${myOtCard(emp, ym)}
@@ -1673,6 +1695,7 @@ ACT.regNew = (b) => {
     if (!f.date || f.date > todayISO()) { $('#rge').textContent = 'Choose a date up to today.'; return; }
     if (f.out && toMin(f.out) <= toMin(f.in) && !(shiftFor(me, f.date).shift || {}).night) { $('#rge').textContent = 'Time out must be after time in.'; return; }
     if (f.reason.trim().length < 4) { $('#rge').textContent = 'Give a reason.'; return; }
+    if (lockErr(me, f.date)) { $('#rge').textContent = lockErr(me, f.date); return; }
     if (S.regs.some((r) => r.empId === me.id && r.date === f.date && r.status === 'pending')) { $('#rge').textContent = 'A correction for that day is already waiting.'; return; }
     const r = newReg({ type: 'time', date: f.date, in: f.in, out: f.out, prevIn: p0 && p0.in ? hm(p0.in) : '', prevOut: p0 && p0.out ? hm(p0.out) : '', reason: f.reason.trim() });
     saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Correction recorded' : `Correction sent to ${stepNow(r).label.toLowerCase()}`); route(); };
@@ -1685,6 +1708,7 @@ function setPunch(empId, iso, inT, outT, source) {
 }
 ACT.regDecide = async (b) => {
   const r = S.regs.find((x) => x.id === b.dataset.id); if (!r) return; const ok = b.dataset.ok === '1';
+  { const le = lockErr(empById(r.empId), r.date, r.to); if (le) { toast(le); return; } }
   const note = ok ? '' : await askText('Reject this correction?', 'Reason, shown to the employee', 'Reject'); if (!ok && note === null) return;
   if (r.steps) {
     decide(r, ok, note || ''); if (!ok) r.note = note; r.decidedBy = me.id; r.decidedAt = Date.now();
@@ -1698,6 +1722,7 @@ ACT.regDecide = async (b) => {
 };
 ACT.hrPunch = (b) => {
   const emp = empById(b.dataset.emp), iso = b.dataset.d, p = punchOf(emp.id, iso);
+  if (lockErr(emp, iso)) { toast(lockErr(emp, iso)); return; }
   openDlg(`<form class="dlg" id="hpf"><h2>Set punches: ${esc(fullName(emp))}, ${dmy(iso)}</h2><div class="form"><label class="field">In<input type="time" class="inp" name="in" value="${p && p.in ? hm(p.in) : '09:30'}"></label>
     <label class="field">Out<input type="time" class="inp" name="out" value="${p && p.out ? hm(p.out) : '18:30'}"></label></div>
     <div class="btns">${p ? '<button type="button" class="btn danger" id="hpDel">Remove punches</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`);
@@ -1728,13 +1753,14 @@ VIEWS.roster = () => {
     const grp = R.q.get('g') || 'shift';
     const emps = visibleEmps().filter((e) => e.companyId === CO && (grp === 'all' || attGroup(e) === grp));
     const shifts = S.shifts.filter((s) => s.companyId === CO);
-    body = `<div class="card"><div class="hd"><div><h2>Shift roster</h2><p class="sub">Two weeks from ${dmy(start)}. Change a cell to roster a shift or a weekly off for that day; empty cells follow the employee's default shift. ${grp === 'shift' ? 'Showing shift staff; regular staff work the general shift.' : ''}</p></div>
+    const pol = shiftPol(CO);
+    body = `<div class="card"><div class="hd"><div><h2>Shift roster</h2><p class="sub">${noticeAppliesTo(CO) ? `Shifts can be changed up to ${num(+pol.noticeHrs, 1)} hours before they start, so days before ${dShort(firstChangeable(CO))} are fixed. ` : ''}${pol.rotationMode === 'auto' ? 'Rotations are applied automatically. ' : ''}Two weeks from ${dmy(start)}. Change a cell to roster a shift or a weekly off for that day; empty cells follow the employee's default shift. ${grp === 'shift' ? 'Showing shift staff; regular staff work the general shift.' : ''}</p></div>
       <div class="tools"><select class="inp" data-ch="rosterGrp">${[['shift', 'Shift staff'], ['regular', 'Regular staff'], ['all', 'Everyone']].map(([v, l]) => `<option value="${v}" ${v === grp ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <button class="btn sm" data-act="rosterWeek" data-w="${addDays(start, -7)}">Previous week</button><button class="btn sm" data-act="rosterWeek" data-w="${addDays(start, 7)}">Next week</button>
         <button class="btn" data-act="rotation">Assign rotation</button></div></div>
       <div class="scroll"><table class="reg"><thead><tr><th class="nm">Employee</th>${days.map((d) => `<th>${D(d).toLocaleDateString('en-IN', { weekday: 'narrow' })}<br>${+d.slice(8)}</th>`).join('')}</tr></thead><tbody>
       ${emps.map((e) => `<tr><td class="nm">${esc(fullName(e))}<div class="fine">${esc((shiftById(e.shiftId) || {}).code || '')} default</div></td>${days.map((d) => { const r = (S.roster[e.id] || {})[d] || ''; const sf = shiftFor(e, d); const hol = holidayOn(e, d);
-        return `<td class="${sf.off || hol ? 'WO' : ''}" title="${esc(hol ? hol.name : '')}"><select data-ch="rosterSet" data-emp="${e.id}" data-d="${d}" aria-label="${esc(fullName(e))} ${d}"><option value="">${sf.off && !r ? 'off' : esc((shiftById(e.shiftId) || {}).code || '')}</option>
+        return `<td class="${sf.off || hol ? 'WO' : ''}" title="${esc(hol ? hol.name : rosterFrozen(e, d))}"><select ${rosterFrozen(e, d) ? 'disabled' : ''} data-ch="rosterSet" data-emp="${e.id}" data-d="${d}" aria-label="${esc(fullName(e))} ${d}"><option value="">${sf.off && !r ? 'off' : esc((shiftById(e.shiftId) || {}).code || '')}</option>
           ${shifts.map((s) => `<option value="${s.id}" ${r === s.id ? 'selected' : ''}>${esc(s.code)}</option>`).join('')}<option value="WO" ${r === 'WO' ? 'selected' : ''}>WO</option></select></td>`; }).join('')}</tr>`).join('')}</tbody></table></div></div>`;
   }
   if (tab === 'patterns') body = patternsCard();
@@ -1743,14 +1769,16 @@ VIEWS.roster = () => {
 ACT.rosterWeek = (b) => { const p = new URLSearchParams(R.q); p.set('w', b.dataset.w); go('#/roster?' + p); };
 ACT.rosterGrp = (el) => { const p = new URLSearchParams(R.q); p.set('g', el.value); go('#/roster?' + p); };
 ACT.rotPick = (el) => { const x = S.shiftPatterns.find((p) => p.id === el.value); if (x) $('#rof [name=pattern]').value = x.sequence; };
-ACT.rosterSet = (el) => { const m = S.roster[el.dataset.emp] = S.roster[el.dataset.emp] || {}; if (el.value) m[el.dataset.d] = el.value; else delete m[el.dataset.d]; save(); toast('Roster updated'); };
+ACT.rosterSet = (el) => { const e = empById(el.dataset.emp); const er = rosterChangeErr(e, el.dataset.d, el.value); if (er) { el.value = (S.roster[e.id] || {})[el.dataset.d] || ''; toast(er); return; }
+  const m = S.roster[el.dataset.emp] = S.roster[el.dataset.emp] || {}; if (el.value) m[el.dataset.d] = el.value; else delete m[el.dataset.d]; save(); toast('Roster updated'); };
 ACT.rotation = () => {
   const shifts = S.shifts.filter((s) => s.companyId === CO);
   openDlg(`<form class="dlg" id="rof" novalidate><h2>Apply a rotation</h2><p class="fine" style="margin:0">Repeat a pattern of shift codes and WO (weekly off) over a period, for example <span class="mono">MOR MOR MOR MOR MOR WO WO EVE EVE EVE EVE EVE WO WO</span>. Codes: ${shifts.map((s) => esc(s.code)).join(', ')}, WO.</p>
     <div class="form">${S.shiftPatterns.some((x) => x.companyId === CO) ? `<label class="field wide">Saved pattern<select class="inp" name="patternId" data-ch="rotPick"><option value="">Type a pattern below</option>${S.shiftPatterns.filter((x) => x.companyId === CO).map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>` : ''}
       <label class="field wide">Pattern<input class="inp" name="pattern" placeholder="${esc(shifts.map((s) => s.code).slice(0, 2).join(' '))} WO"></label>
-      <label class="field">From<input type="date" class="inp" name="from" value="${todayISO()}"></label><label class="field">To<input type="date" class="inp" name="to" value="${addDays(todayISO(), 27)}"></label></div>
-    <fieldset style="border:1px solid var(--rule);border-radius:9px;max-height:220px;overflow:auto"><legend class="fine">Employees (shift staff first)</legend>${visibleEmps().filter((e) => e.companyId === CO).sort((a, b) => (attGroup(b) === 'shift') - (attGroup(a) === 'shift')).map((e) => `<label class="chk"><input type="checkbox" name="emp" value="${e.id}"> ${esc(fullName(e))} <span class="fine">${GROUPS[attGroup(e)]}</span></label>`).join('')}</fieldset>
+      <label class="field">From<input type="date" class="inp" name="from" value="${firstChangeable(CO)}"></label><label class="field">To<input type="date" class="inp" name="to" value="${addDays(firstChangeable(CO), 27)}"></label></div>
+    ${noticeAppliesTo(CO) ? `<p class="fine">Days before ${dShort(firstChangeable(CO))} are within the ${num(+shiftPol(CO).noticeHrs, 1)} hours’ notice and are left as they are.</p>` : ''}
+    <fieldset style="border:1px solid var(--rule);border-radius:9px;max-height:220px;overflow:auto"><legend class="fine">Employees (shift staff first)</legend>${lineEmps(CO).sort((a, b) => (attGroup(b) === 'shift') - (attGroup(a) === 'shift')).map((e) => `<label class="chk"><input type="checkbox" name="emp" value="${e.id}"> ${esc(fullName(e))} <span class="fine">${GROUPS[attGroup(e)]}</span></label>`).join('')}</fieldset>
     <p class="err" id="roe"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Apply</button></div></form>`, true);
   $('#rof').onsubmit = (e) => {
     e.preventDefault(); const fd = new FormData(e.target); const emps = fd.getAll('emp'); const pat = String(fd.get('pattern')).trim().toUpperCase().split(/[\s,]+/).filter(Boolean);
@@ -1759,11 +1787,13 @@ ACT.rotation = () => {
     if (!pat.length || bad) { $('#roe').textContent = bad ? `${bad} is not a shift code.` : 'Enter a pattern.'; return; }
     if (!emps.length) { $('#roe').textContent = 'Choose the employees.'; return; }
     if (!from || !to || to < from) { $('#roe').textContent = 'Check the dates.'; return; }
-    let n = 0;
+    let n = 0, skipped = 0;
     const pid = fd.get('patternId') || '';
-    emps.forEach((id) => { const emp = empById(id); emp.patternId = pid; emp.patternFrom = from; if (attGroup(emp) !== 'shift') { emp.attGroup = 'shift'; emp.history.push({ date: from, type: 'Attendance group', note: 'Moved to shift staff with a rotation', by: me.id }); }
-      const m = S.roster[id] = S.roster[id] || {}; let i = 0; for (let d = from; d <= to; d = addDays(d, 1), i++) { const c = pat[i % pat.length]; m[d] = c === 'WO' ? 'WO' : shifts.find((s) => s.code.toUpperCase() === c).id; n++; } });
-    saveNow(); closeDlg(); toast(`${n} roster entries set`); route();
+    emps.forEach((id) => { const emp = empById(id); emp.patternId = pid; emp.patternFrom = from; if (pid) emp.rotFilledTo = to;
+      if (attGroup(emp) !== 'shift' && isHR(emp.companyId)) { emp.attGroup = 'shift'; emp.history.push({ date: from, type: 'Attendance group', note: 'Moved to shift staff with a rotation', by: me.id }); }
+      const m = S.roster[id] = S.roster[id] || {}; let i = 0; for (let d = from; d <= to; d = addDays(d, 1), i++) { const c = pat[i % pat.length]; const v = c === 'WO' ? 'WO' : shifts.find((s) => s.code.toUpperCase() === c).id;
+        if (rosterChangeErr(emp, d, v)) { skipped++; continue; } m[d] = v; n++; } });
+    saveNow(); closeDlg(); toast(`${n} roster entries set${skipped ? `; ${skipped} days left as they were (too soon or locked)` : ''}`); route();
   };
 };
 
@@ -1771,20 +1801,25 @@ ACT.rotation = () => {
 VIEWS.register = () => {
   const ym = R.q.get('m') || todayISO().slice(0, 7); const days = daysInMonth(ym);
   const grp = R.q.get('g') || 'all';
-  const emps = visibleEmps().filter((e) => e.companyId === CO && (grp === 'all' || attGroup(e) === grp));
+  const reg = R.q.get('tab') === 'contract' ? 'contract' : 'own', con = R.q.get('con') || '';
+  const emps = visibleEmps().filter((e) => e.companyId === CO && regOf(e) === reg && (!con || e.contractorId === con) && (grp === 'all' || attGroup(e) === grp));
   const upTo = ym === todayISO().slice(0, 7) ? todayISO() : undefined;
-  return { title: 'Attendance register', html: `<div class="card"><div class="hd"><div><h2>${monthName(ym)}</h2><p class="sub">Daily status for each employee and the loss-of-pay days payroll will use (absent, half days, unpaid leave and late-mark penalties).</p></div>
-    <div class="tools"><input type="month" class="inp" value="${ym}" data-ch="regMonth"><select class="inp" data-ch="regGrp">${[['all', 'Everyone'], ['regular', 'Regular staff'], ['shift', 'Shift staff']].map(([v, l]) => `<option value="${v}" ${v === grp ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn" data-act="regExport" data-m="${ym}">Download Excel</button>${isHR() ? '<button class="btn" data-act="punchImport">Import biometric punches</button>' : ''}</div></div>
+  const lk = attLockOf(CO, reg, ym);
+  return { title: `Attendance register: ${REGS[reg].toLowerCase()}`, html: `<div class="card"><div class="hd"><div><h2>${monthName(ym)}, ${esc(REGS[reg].toLowerCase())}</h2><p class="sub">${reg === 'contract' ? 'Contract workers supplied by contractors: this register feeds the contract workers’ payroll and each contractor’s bill. ' : 'Your own employees; contract workers have their own register. '}Daily status and the loss-of-pay days payroll will use (absent, half days, unpaid leave and late-mark penalties).</p></div>
+    <div class="tools"><input type="month" class="inp" value="${ym}" data-ch="regMonth">${reg === 'contract' ? `<select class="inp" data-ch="regCon"><option value="">All contractors</option>${S.contractors.filter((c) => c.companyId === CO).map((c) => `<option value="${c.id}" ${c.id === con ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}${isHR() && !lk && ym <= todayISO().slice(0, 7) ? `<button class="btn" data-act="attLockFor" data-m="${ym}" data-reg="${reg}">Lock for payroll</button>` : ''}<select class="inp" data-ch="regGrp">${[['all', 'Everyone'], ['regular', 'Regular staff'], ['shift', 'Shift staff']].map(([v, l]) => `<option value="${v}" ${v === grp ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn" data-act="regExport" data-m="${ym}" data-reg="${reg}" data-con="${con}">Download Excel</button>${isHR() ? '<button class="btn" data-act="punchImport">Import biometric punches</button>' : ''}</div></div>
+    ${lockNote(CO, reg, ym)}${emps.length ? '' : `<div class="empty">${reg === 'contract' ? 'No contract workers here. Set a person’s category to Contract worker on the Job tab of their profile.' : 'Nobody here.'}</div>`}
     <div class="scroll"><table class="reg"><thead><tr><th class="nm">Employee</th>${Array.from({ length: days }, (_, i) => `<th>${i + 1}</th>`).join('')}<th>Paid days</th><th>LOP</th><th>Late</th><th>OT worked</th><th>OT approved</th></tr></thead><tbody>
-    ${emps.map((e) => { const a = monthAttendance(e, ym, upTo); return `<tr><td class="nm"><a href="#/attendance?emp=${e.id}&m=${ym}">${esc(fullName(e))}</a> <span class="fine">${attGroup(e) === 'shift' ? 'Shift' : ''}</span></td>${Array.from({ length: days }, (_, i) => { const s = dayStatus(e, `${ym}-${pad(i + 1)}`);
+    ${emps.map((e) => { const a = monthAttendance(e, ym, upTo); return `<tr><td class="nm"><a href="#/attendance?emp=${e.id}&m=${ym}">${esc(fullName(e))}</a> <span class="fine">${esc(reg === 'contract' ? conName(e.contractorId) : CAT_SHORT[catOf(e)])}</span></td>${Array.from({ length: days }, (_, i) => { const s = dayStatus(e, `${ym}-${pad(i + 1)}`);
       return `<td>${s.code ? `<span class="st ${s.code}" ${s.late > 0 ? 'style="box-shadow:inset 0 -2px 0 var(--mari-strong)"' : ''}>${s.code === 'L' ? esc(ltById(s.leave.typeId).code) : s.code}</span>` : ''}</td>`; }).join('')}
       <td><b>${num(a.paidDays)}</b></td><td>${num(a.lop)}</td><td>${a.lateMarks}</td><td>${num(a.ot, 1)}</td><td>${num(S.otRecs.filter((x) => x.empId === e.id && x.status === 'approved' && x.date.startsWith(ym)).reduce((s, x) => s + (+x.approvedHrs || 0), 0), 1)}</td></tr>`; }).join('')}</tbody></table></div></div>` };
 };
 ACT.regMonth = (el) => { const p = new URLSearchParams(R.q); p.set('m', el.value); go('#/register?' + p); };
+ACT.regCon = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('con', el.value) : p.delete('con'); go('#/register?' + p); };
 ACT.regGrp = (el) => { const p = new URLSearchParams(R.q); p.set('g', el.value); go('#/register?' + p); };
 ACT.regExport = (b) => {
   const ym = b.dataset.m, days = daysInMonth(ym);
-  writeBook(`Attendance_${company().code}_${ym}.xlsx`, { Register: visibleEmps().filter((e) => e.companyId === CO).map((e) => { const a = monthAttendance(e, ym); const row = { 'Employee number': e.empNo, Employee: fullName(e) };
+  const reg = b.dataset.reg || 'own', con = b.dataset.con || '';
+  writeBook(`Attendance_${reg === 'contract' ? 'contract_' : ''}${company().code}_${ym}.xlsx`, { Register: visibleEmps().filter((e) => e.companyId === CO && regOf(e) === reg && (!con || e.contractorId === con)).map((e) => { const a = monthAttendance(e, ym); const row = { 'Employee number': e.empNo, Employee: fullName(e), Category: CATS[catOf(e)], ...(reg === 'contract' ? { Contractor: conName(e.contractorId) } : {}) };
     for (let i = 1; i <= days; i++) { const s = dayStatus(e, `${ym}-${pad(i)}`); row[pad(i)] = s.code === 'L' ? ltById(s.leave.typeId).code : s.code; }
     return Object.assign(row, { Group: GROUPS[attGroup(e)], Present: a.P, 'Half days': a.HD, Absent: a.A, Leave: a.L, 'Late marks': a.lateMarks, 'Late penalty': a.latePenalty, 'LOP days': a.lop, 'Paid days': a.paidDays, 'OT hours worked': a.ot,
       'OT hours approved': S.otRecs.filter((x) => x.empId === e.id && x.status === 'approved' && x.date.startsWith(ym)).reduce((s, x) => s + (+x.approvedHrs || 0), 0) }); }),
@@ -1808,8 +1843,9 @@ ACT.punchImportGo = async () => {
       if (!e || !/^\d{4}-\d{2}-\d{2}$/.test(d) || !tm) { bad++; return; }
       (groups[e.id + '|' + d] = groups[e.id + '|' + d] || []).push(`${pad(tm[1])}:${tm[2]}`);
     });
-    Object.entries(groups).forEach(([k, times]) => { const [id, d] = k.split('|'); times.sort(); setPunch(id, d, times[0], times.length > 1 ? times[times.length - 1] : '', 'device'); });
-    saveNow(); closeDlg(); toast(`${Object.keys(groups).length} days imported${bad ? `, ${bad} rows skipped` : ''}`); route();
+    let locked = 0;
+    Object.entries(groups).forEach(([k, times]) => { const [id, d] = k.split('|'); if (lockErr(empById(id), d)) { locked++; return; } times.sort(); setPunch(id, d, times[0], times.length > 1 ? times[times.length - 1] : '', 'device'); });
+    saveNow(); closeDlg(); toast(`${Object.keys(groups).length - locked} days imported${bad ? `, ${bad} rows skipped` : ''}${locked ? `, ${locked} days skipped because attendance is locked for payroll` : ''}`); route();
   } catch (e) { $('#pie').textContent = e.message; }
 };
 
@@ -2141,14 +2177,15 @@ ACT.kudosNew = () => {
 /* =====================================================================
    Payroll: runs, inputs, statutory files, payslips, declarations, setup, SAP HR export
    ===================================================================== */
-const runOf = (coId, ym) => S.payRuns.find((r) => r.companyId === coId && r.month === ym);
+const runOf = (coId, ym, reg = 'own') => S.payRuns.find((r) => r.companyId === coId && r.month === ym && runReg(r) === reg);
 function computeRun(run) {
   run.results = {}; run.skipped = [];
   const ymEnd = `${run.month}-${pad(daysInMonth(run.month))}`;
-  S.employees.filter((e) => e.companyId === run.companyId && e.doj <= ymEnd && !(e.exit && e.exit.lwd && e.exit.lwd < `${run.month}-01`)).forEach((e) => {
+  S.employees.filter((e) => e.companyId === run.companyId && regOf(e) === runReg(run) && e.doj <= ymEnd && !(e.exit && e.exit.lwd && e.exit.lwd < `${run.month}-01`)).forEach((e) => {
     const res = payEmployee(e, run.month);
     if (res.skip) run.skipped.push({ empId: e.id, reason: res.skip }); else run.results[e.id] = res;
   });
+  if (runReg(run) === 'contract') run.bills = contractBills(run);
   run.computedAt = Date.now(); run.by = me.id;
 }
 const totals = (run) => Object.values(run.results).reduce((t, r) => { t.n++; t.gross += r.gross; t.ded += r.totalDed; t.net += r.net; t.pf += r.pf.ee + r.pf.vpf + r.pf.epf + r.pf.eps; t.esi += r.esi.ee + r.esi.er; t.pt += r.pt; t.tds += r.tds; t.er += r.employer.reduce((s, x) => s + x.amount, 0); return t; },
@@ -2156,26 +2193,36 @@ const totals = (run) => Object.values(run.results).reduce((t, r) => { t.n++; t.g
 
 VIEWS.payroll = () => {
   if (R.arg) return runView(R.arg);
-  const runs = S.payRuns.filter((r) => r.companyId === CO).sort((a, b) => (a.month < b.month ? 1 : -1));
+  const reg = R.q.get('tab') === 'contract' ? 'contract' : 'own'; const con = reg === 'contract';
+  const runs = S.payRuns.filter((r) => r.companyId === CO && runReg(r) === reg).sort((a, b) => (a.month < b.month ? 1 : -1));
   const next = runs.length ? ymAdd(runs[0].month, 1) : ymAdd(todayISO().slice(0, 7), -1);
-  return { title: 'Payroll runs', html: `<div class="card"><div class="hd"><div><h2>Payroll for ${esc(company().name)}</h2><p class="sub">Each month: enter one-time inputs, run payroll, review, then lock. Locked months feed year-to-date tax, payslips and statutory returns. To run payroll in SAP instead, use the SAP HR export.</p></div>
-    <div class="tools"><input type="month" class="inp" id="newRunM" value="${next}"><button class="btn pri" data-act="runNew">Run payroll</button></div></div>
-    ${runs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Month</th><th>Status</th><th class="r">Employees</th><th class="r">Gross</th><th class="r">Deductions</th><th class="r">Net pay</th><th class="r">Employer cost</th><th>Run</th></tr></thead><tbody>
-      ${runs.map((r) => { const t = totals(r); return `<tr class="click" data-act="openRun" data-id="${r.id}"><td><b>${monthName(r.month)}</b></td><td>${r.status === 'locked' ? '<span class="badge ok">Locked</span>' : '<span class="badge warn">Draft</span>'}</td>
-        <td class="r">${t.n}</td><td class="r">${inr0(t.gross)}</td><td class="r">${inr0(t.ded)}</td><td class="r"><b>${inr0(t.net)}</b></td><td class="r">${inr0(t.er)}</td><td class="fine">${dt(r.computedAt)}</td></tr>`; }).join('')}</tbody></table></div>`
-      : '<div class="empty">No payroll yet. Choose a month and run it.</div>'}</div>` };
+  const due = con ? r2(runs.filter((r) => r.status === 'locked').reduce((s, r) => s + runDue(r), 0)) : 0;
+  return { title: `Payroll runs: ${REGS[reg].toLowerCase()}`, html: `${con ? `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Outstanding to contractors</span><b>${inr0(due)}</b><small>${runs.filter((r) => r.status === 'locked' && runDue(r) > 0.5).length} ${runs.filter((r) => r.status === 'locked' && runDue(r) > 0.5).length === 1 ? 'month' : 'months'} with a bill to pay</small></div>
+      <div class="kpi"><span>Contract workers</span><b>${coEmployees().filter((e) => regOf(e) === 'contract').length}</b><small>${S.contractors.filter((c) => c.companyId === CO && c.active !== false).length} contractors</small></div></div>` : ''}
+    <div class="card"><div class="hd"><div><h2>${con ? 'Contract workers’ payroll' : 'Payroll'} for ${esc(company().name)}</h2><p class="sub">${con ? 'Third-party contract workers are paid in this separate payroll from their own attendance register. Locking a month makes each contractor’s bill final; record the company’s payment against it and the bill is knocked off.' : 'Your own employees. Each month: enter one-time inputs, run payroll, review, then lock. Locked months feed year-to-date tax, payslips and statutory returns. To run payroll in SAP instead, use the SAP HR export.'} Running or locking payroll locks that month’s attendance for this register.</p></div>
+    <div class="tools"><input type="month" class="inp" id="newRunM" value="${next}"><button class="btn pri" data-act="runNew" data-reg="${reg}">Run payroll</button></div></div>
+    ${runs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Month</th><th>Status</th><th>Attendance</th><th class="r">${con ? 'Workers' : 'Employees'}</th><th class="r">Gross</th><th class="r">Net pay</th>${con ? '<th class="r">Contractor bills</th><th class="r">Outstanding</th>' : '<th class="r">Deductions</th><th class="r">Employer cost</th>'}<th>Run</th></tr></thead><tbody>
+      ${runs.map((r) => { const t = totals(r); const lk = attLockOf(CO, reg, r.month); return `<tr class="click" data-act="openRun" data-id="${r.id}"><td><b>${monthName(r.month)}</b></td><td>${con ? contractRunBadge(r) : r.status === 'locked' ? '<span class="badge ok">Locked</span>' : '<span class="badge warn">Draft</span>'}</td>
+        <td class="fine">${lk ? `Locked to ${dShort(lk.upTo)}` : 'Open'}</td><td class="r">${t.n}</td><td class="r">${inr0(t.gross)}</td><td class="r"><b>${inr0(t.net)}</b></td>${con ? `<td class="r">${inr0(runBillTotal(r))}</td><td class="r">${r.status === 'locked' ? inr0(runDue(r)) : '—'}</td>` : `<td class="r">${inr0(t.ded)}</td><td class="r">${inr0(t.er)}</td>`}<td class="fine">${dt(r.computedAt)}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">No payroll yet. Choose a month and run it.${con && !coEmployees().some((e) => regOf(e) === 'contract') ? ' First add contract workers: set their category to Contract worker on the Job tab of their profile.' : ''}</div>`}</div>` };
 };
-ACT.openRun = (b) => go('#/payroll/' + b.dataset.id);
-ACT.runNew = () => {
-  const ym = $('#newRunM').value; if (!ym) return;
-  let run = runOf(CO, ym);
+ACT.openRun = (b) => { const r = S.payRuns.find((x) => x.id === b.dataset.id); go(`#/payroll/${b.dataset.id}${runReg(r) === 'contract' ? '?tab=contract' : ''}`); };
+/* the run for a month and register, created if needed (an earlier unlocked month must be locked first) */
+function ensureRun(coId, reg, ym) {
+  let run = runOf(coId, ym, reg);
   if (!run) {
-    const prevOpen = S.payRuns.find((r) => r.companyId === CO && r.month < ym && r.status !== 'locked');
-    if (prevOpen) { toast(`Lock ${monthName(prevOpen.month)} first, so this month gets the right year-to-date figures.`); return; }
-    run = { id: uid(), companyId: CO, month: ym, status: 'draft', results: {}, skipped: [] }; S.payRuns.push(run);
+    const prevOpen = S.payRuns.find((r) => r.companyId === coId && runReg(r) === reg && r.month < ym && r.status !== 'locked');
+    if (prevOpen) { toast(`Lock ${monthName(prevOpen.month)} first, so this month gets the right year-to-date figures.`); return null; }
+    run = { id: uid(), companyId: coId, month: ym, register: reg, status: 'draft', results: {}, skipped: [] }; S.payRuns.push(run);
   }
-  if (run.status === 'locked') { go('#/payroll/' + run.id); return; }
-  computeRun(run); audit('Payroll run', `${company().code} ${ym}`); saveNow(); go('#/payroll/' + run.id);
+  return run;
+}
+ACT.runNew = (b) => {
+  const ym = $('#newRunM').value; if (!ym) return; const reg = (b && b.dataset.reg) || 'own';
+  const run = ensureRun(CO, reg, ym); if (!run) return;
+  const q = reg === 'contract' ? '?tab=contract' : '';
+  if (run.status === 'locked') { go('#/payroll/' + run.id + q); return; }
+  computeRun(run); audit('Payroll run', `${company().code} ${ym}${reg === 'contract' ? ' (contract workers)' : ''}`); saveNow(); go('#/payroll/' + run.id + q);
 };
 function runView(id) {
   const run = S.payRuns.find((r) => r.id === id);
@@ -2186,12 +2233,15 @@ function runView(id) {
   const early = !locked && `${run.month}-${pad(daysInMonth(run.month))}` > todayISO();
   const warn = res.filter((r) => !empById(r.empId).bankAcc && empById(r.empId).payMode !== 'cash').length;
   const noUan = res.filter((r) => r.pf.wage && !empById(r.empId).uan).length;
-  return { title: `Payroll: ${monthName(run.month)}`, html: `
+  const reg = runReg(run), con = reg === 'contract'; const lk = attLockOf(run.companyId, reg, run.month);
+  const lockBar = `<div class="note ${lk ? 'ok' : ''}" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span style="flex:1;min-width:220px">${lk ? `<b>Attendance locked</b> up to ${dmy(lk.upTo)}${locked ? ' with the payroll' : ''}. Punches, corrections, leave and the roster for those days cannot change.` : '<b>Attendance is open.</b> Lock it while you check this payroll, so nobody changes punches, leave or the roster underneath it.'}</span>
+    ${locked ? '' : lk ? '<button class="btn sm" data-act="attUnlock">Unlock attendance</button>' : '<button class="btn sm pri" data-act="attLock">Lock attendance</button>'}</div>`;
+  return { title: `Payroll: ${monthName(run.month)}${con ? ', contract workers' : ''}`, html: `
     <div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Net pay</span><b>${inr0(t.net)}</b><small>${t.n} employees</small></div><div class="kpi"><span>Gross pay</span><b>${inr0(t.gross)}</b><small>deductions ${inr0(t.ded)}</small></div>
       <div class="kpi"><span>PF (all shares)</span><b>${inr0(t.pf)}</b><small>ceiling ${inr0(pfCeilingFor(run.month))} this month</small></div><div class="kpi"><span>TDS</span><b>${inr0(t.tds)}</b><small>ESI ${inr0(t.esi)}, PT ${inr0(t.pt)}</small></div></div>
     <div class="card"><div class="hd"><div><h2>${monthName(run.month)} <span class="badge ${locked ? 'ok' : 'warn'}">${locked ? 'Locked' : 'Draft'}</span></h2><p class="sub">Paid days come from the attendance register (loss of pay from absence, half days, unpaid leave and late-mark penalties). Select a row to see the full calculation.</p></div>
-      <div class="tools"><a class="btn" href="#/payroll">All runs</a>${locked ? '<button class="btn" data-act="runUnlock">Unlock</button>' : `<button class="btn" data-act="runInputs" data-m="${run.month}">One-time inputs (${inputs.length})</button><button class="btn" data-act="runRecalc">Recalculate</button><button class="btn pri" data-act="runLock">Lock payroll</button>`}</div></div>
-      ${early ? `<div class="note warn">${monthName(run.month)} has not ended yet. Working days after today are paid as present. Recalculate after the month ends, so that absence and unpaid leave on those days are counted, before you lock.</div>` : ''}
+      <div class="tools"><a class="btn" href="#/payroll${con ? '?tab=contract' : ''}">All runs</a>${locked ? '<button class="btn" data-act="runUnlock">Unlock</button>' : `<button class="btn" data-act="runInputs" data-m="${run.month}">One-time inputs (${inputs.length})</button><button class="btn" data-act="runRecalc">Recalculate</button><button class="btn pri" data-act="runLock">Lock payroll</button>`}</div></div>
+      ${lockBar}${early ? `<div class="note warn">${monthName(run.month)} has not ended yet. Working days after today are paid as present. Recalculate after the month ends, so that absence and unpaid leave on those days are counted, before you lock.</div>` : ''}
       ${warn || noUan || run.skipped.length ? `<div class="note warn">${[warn && `${warn} employees have no bank account`, noUan && `${noUan} PF members have no UAN`, run.skipped.length && `${run.skipped.length} not paid: ${run.skipped.map((s) => `${nameOf(s.empId)} (${s.reason})`).join(', ')}`].filter(Boolean).join('. ')}.</div>` : ''}
       <div class="scroll"><table class="t"><thead><tr><th>Employee</th><th class="r">Paid days</th><th class="r">LOP</th><th class="r">Gross</th><th class="r">PF</th><th class="r">ESI</th><th class="r">PT</th><th class="r">TDS</th><th class="r">Other</th><th class="r">Net pay</th></tr></thead><tbody>
       ${res.map((r) => { const other = r.totalDed - r.pf.ee - r.pf.vpf - r.esi.ee - r.pt - r.tds - r.lwf.ee; return `<tr class="click" data-act="runEmp" data-run="${run.id}" data-emp="${r.empId}"><td><b>${esc(nameOf(r.empId))}</b> <span class="fine">${esc(empById(r.empId).empNo)}</span></td>
@@ -2199,19 +2249,20 @@ function runView(id) {
       <tfoot>${(() => { const sum = (f) => res.reduce((a, r) => a + f(r), 0); const pfT = sum((r) => r.pf.ee + r.pf.vpf), esiT = sum((r) => r.esi.ee);
         const othT = sum((r) => Math.max(0, r.totalDed - r.pf.ee - r.pf.vpf - r.esi.ee - r.pt - r.tds));
         return `<tr><td>Total</td><td></td><td></td><td class="r">${inr(t.gross)}</td><td class="r">${inr0(pfT)}</td><td class="r">${inr0(esiT)}</td><td class="r">${inr0(t.pt)}</td><td class="r">${inr0(t.tds)}</td><td class="r">${othT > 0.5 ? inr0(othT) : ''}</td><td class="r">${inr(t.net)}</td></tr>`; })()}</tfoot></table></div></div>
-    <div class="card"><h2>Reports and statutory files</h2><p class="sub">${locked ? '' : 'Lock the payroll before filing returns. '}Files follow the formats of the EPFO and ESIC portals; check them against the portal before uploading.</p>
+    ${con ? billsCard(run) : ''}<div class="card" ${con ? 'hidden' : ''}><h2>Reports and statutory files</h2><p class="sub">${locked ? '' : 'Lock the payroll before filing returns. '}Files follow the formats of the EPFO and ESIC portals; check them against the portal before uploading.</p>
       <div class="tools">${[['repRegister', 'Salary register'], ['repBank', 'Bank transfer file'], ['repECR', 'PF ECR file (EPFO)'], ['repESI', 'ESI contribution file'], ['repPT', 'Professional tax'], ['repLWF', 'Labour welfare fund'], ['repTDS', 'TDS (for Form 24Q)'], ['repSlips', 'Print all payslips']]
         .map(([a, l]) => `<button class="btn" data-act="${a}" data-id="${run.id}">${l}</button>`).join('')}</div></div>` };
 }
 const curRun = () => S.payRuns.find((r) => r.id === R.arg);
 ACT.runRecalc = () => { const r = curRun(); computeRun(r); saveNow(); toast('Payroll recalculated'); route(); };
 ACT.runLock = async () => { const r = curRun(); const notOver = `${r.month}-${pad(daysInMonth(r.month))}` > todayISO(); if (!(await confirmBox(`Lock ${monthName(r.month)} payroll?`, `${notOver ? `${monthName(r.month)} has not ended: days after today are paid as present. ` : ''}Payslips become visible to employees and the figures are used for year-to-date tax. You can unlock it if something must change.`, 'Lock payroll'))) return;
-  computeRun(r); r.status = 'locked'; r.lockedAt = Date.now(); markOtPaid(r); audit('Payroll locked', `${company().code} ${r.month}`); saveNow(); toast('Payroll locked'); route(); };
+  computeRun(r); r.status = 'locked'; r.lockedAt = Date.now(); r.attLocked = true; r.attLockUpTo = r.attLockUpTo || lockUpToFor(r.month); markOtPaid(r); audit('Payroll locked', `${company().code} ${r.month}`); saveNow(); toast('Payroll locked'); route(); };
 /* overtime paid in a locked run is not paid again; unlocking releases it */
 function markOtPaid(run) { Object.values(run.results).forEach((x) => (x.ot && x.ot.ids || []).forEach((id) => { const rc = S.otRecs.find((o) => o.id === id); if (rc) rc.paidMonth = run.month; })); }
-ACT.runUnlock = async () => { const r = curRun(); const later = S.payRuns.find((x) => x.companyId === r.companyId && x.month > r.month && x.status === 'locked');
+ACT.runUnlock = async () => { const r = curRun(); const later = S.payRuns.find((x) => x.companyId === r.companyId && runReg(x) === runReg(r) && x.month > r.month && x.status === 'locked');
   if (later) { toast(`Unlock ${monthName(later.month)} first.`); return; }
-  if (!(await confirmBox('Unlock this payroll?', 'Employees will not see these payslips until it is locked again.', 'Unlock'))) return; r.status = 'draft'; S.otRecs.forEach((o) => { if (o.paidMonth === r.month && (empById(o.empId) || {}).companyId === r.companyId) o.paidMonth = ''; }); audit('Payroll unlocked', `${company().code} ${r.month}`); saveNow(); route(); };
+  if ((r.payments || []).length) { toast('Payments to contractors are recorded against this month. Remove them first.'); return; }
+  if (!(await confirmBox('Unlock this payroll?', 'Employees will not see these payslips until it is locked again. Attendance stays locked; unlock it separately if it must change.', 'Unlock'))) return; r.status = 'draft'; S.otRecs.forEach((o) => { if (o.paidMonth === r.month && (empById(o.empId) || {}).companyId === r.companyId) o.paidMonth = ''; }); audit('Payroll unlocked', `${company().code} ${r.month}`); saveNow(); route(); };
 ACT.runEmp = (b) => {
   const run = S.payRuns.find((x) => x.id === b.dataset.run), r = run.results[b.dataset.emp], e = empById(r.empId), a = r.att;
   openDlg(`<div class="dlg"><h2>${esc(fullName(e))}, ${monthName(run.month)}</h2>
@@ -2253,28 +2304,28 @@ ACT.inputImport = async (el) => {
 };
 
 /* ---------------------------------------------------------------- reports */
-const runRows = (id) => { const run = S.payRuns.find((r) => r.id === id); return { run, rows: Object.values(run.results).map((r) => ({ r, e: empById(r.empId) })) }; };
-ACT.repRegister = (b) => { const { run, rows } = runRows(b.dataset.id); const comps = compsFor(run.companyId);
+const runRows = (id, con) => { const run = S.payRuns.find((r) => r.id === id); return { run, rows: Object.values(run.results).map((r) => ({ r, e: empById(r.empId) })).filter(({ e }) => con === undefined || (e.contractorId || '') === con) }; };
+ACT.repRegister = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con); const comps = compsFor(run.companyId);
   writeBook(`Salary_register_${company().code}_${run.month}.xlsx`, { Register: rows.map(({ r, e }) => { const o = { 'Employee number': e.empNo, Employee: fullName(e), Department: (dept(e.deptId) || {}).name || '', 'Paid days': r.paidDays, 'LOP days': r.lop };
     comps.filter((c) => c.kind === 'earning').forEach((c) => { o[`${c.code} ${c.name}`] = (r.earnings.find((x) => x.code === c.code) || {}).amount || 0; }); o.Gross = r.gross;
     ['/3F1', '/3F2', '/3E1', '/3P1', '/3L1', '/460'].forEach((code) => { const d = r.deductions.find((x) => x.code === code); o[(d || { name: code }).name || code] = d ? d.amount : 0; });
     r.deductions.filter((d) => !d.code.startsWith('/')).forEach((d) => { o[d.name] = d.amount; }); o['Total deductions'] = r.totalDed; o['Net pay'] = r.net; r.employer.forEach((x) => { o[x.name] = x.amount; }); return o; }) }); };
-ACT.repBank = (b) => { const { run, rows } = runRows(b.dataset.id);
+ACT.repBank = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con);
   writeBook(`Bank_transfer_${company().code}_${run.month}.xlsx`, { Transfers: rows.filter(({ e }) => e.payMode !== 'cash' && e.payMode !== 'cheque').map(({ r, e }) => ({ 'Beneficiary name': fullName(e), 'Account number': e.bankAcc || '', IFSC: e.ifsc || '', Amount: r.net, Narration: `Salary ${run.month}`, 'Employee number': e.empNo, Email: e.email })) }); };
-ACT.repECR = (b) => { const { run, rows } = runRows(b.dataset.id); const ceil = pfCeilingFor(run.month);
+ACT.repECR = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con); const ceil = pfCeilingFor(run.month);
   const lines = rows.filter(({ r }) => r.pf.wage > 0).map(({ r, e }) => { const epsW = r.pf.eps ? Math.round(Math.min(r.pf.wage, ceil)) : 0;
     return [e.uan || 'UAN MISSING', fullName(e).toUpperCase(), Math.round(r.gross), Math.round(r.pf.base), epsW, Math.round(Math.min(r.pf.wage, ceil)), r.pf.ee + r.pf.vpf, r.pf.eps, r.pf.epf, r.pf.ncp, 0].join('#~#'); });
   if (rows.some(({ r, e }) => r.pf.wage > 0 && !e.uan)) toast('Some members have no UAN; fill these in before uploading.');
   downloadText(`ECR_${company().pfCode || company().code}_${run.month}.txt`, lines.join('\n')); };
-ACT.repESI = (b) => { const { run, rows } = runRows(b.dataset.id);
+ACT.repESI = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con);
   writeBook(`ESI_${company().code}_${run.month}.xlsx`, { Contribution: rows.filter(({ r }) => r.esi.covered).map(({ r, e }) => ({ 'IP Number': e.esiNo || '', 'IP Name': fullName(e), 'No of Days for which wages paid/payable during the month': Math.round(r.paidDays), 'Total Monthly Wages': Math.round(r.esi.wage),
     'Reason Code for Zero workings days': esiReasonCode(e, run.month, r), 'Last Working Day': e.exit && e.exit.lwd && e.exit.lwd.startsWith(run.month) ? dmy(e.exit.lwd).replace(/-/g, '/') : '', 'Employee contribution': r.esi.ee, 'Employer contribution': r.esi.er })) }); };
-ACT.repPT = (b) => { const { run, rows } = runRows(b.dataset.id);
+ACT.repPT = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con);
   writeBook(`PT_${company().code}_${run.month}.xlsx`, { 'Professional tax': rows.filter(({ r }) => r.pt).map(({ r, e }) => ({ 'Employee number': e.empNo, Employee: fullName(e), State: STATES[(loc(e.locationId) || {}).state || company().state] || '', Gross: r.gross, 'PT deducted': r.pt })) }); };
-ACT.repLWF = (b) => { const { run, rows } = runRows(b.dataset.id); const list = rows.filter(({ r }) => r.lwf.ee || r.lwf.er);
+ACT.repLWF = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con); const list = rows.filter(({ r }) => r.lwf.ee || r.lwf.er);
   if (!list.length) { toast('No labour welfare fund is due this month.'); return; }
   writeBook(`LWF_${company().code}_${run.month}.xlsx`, { LWF: list.map(({ r, e }) => ({ 'Employee number': e.empNo, Employee: fullName(e), 'Employee share': r.lwf.ee, 'Employer share': r.lwf.er })) }); };
-ACT.repTDS = (b) => { const { run, rows } = runRows(b.dataset.id);
+ACT.repTDS = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con);
   writeBook(`TDS_${company().code}_${run.month}.xlsx`, { 'TDS on salary': rows.map(({ r, e }) => ({ 'Employee number': e.empNo, Employee: fullName(e), PAN: e.pan || 'PANNOTAVBL', Regime: r.tax.regime, 'Taxable salary this month': r.taxableEarn, 'Projected annual income': r.tax.grossAnnual, Deductions: r.tax.deductions,
     'Taxable income': r.tax.taxable, 'Tax for the year': r.tax.tax, 'TDS deducted earlier': r.tax.ytdTds, 'TDS this month': r.tds, 'Section': '192', 'Date of payment': `${run.month}-${pad(daysInMonth(run.month))}` })) }); };
 function slipHtml(run, r) {
@@ -2282,14 +2333,14 @@ function slipHtml(run, r) {
   const rowsE = r.earnings.map((x) => `<tr><td>${esc(x.name)}</td><td class="r">${inr(x.full || x.amount)}</td><td class="r">${inr(x.amount)}</td></tr>`).join('');
   const rowsD = r.deductions.map((x) => `<tr><td>${esc(x.name)}</td><td class="r">${inr(x.amount)}</td></tr>`).join('');
   return `<div class="slip" style="page-break-after:always"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/aequm-mark.png" alt="" style="height:44px;width:44px;border-radius:8px"><div><h2 style="margin:0">${esc(co.legalName || co.name)}</h2><div class="fine">${esc(co.address || '')}</div></div></div><div style="text-align:right"><b>Payslip for ${monthName(run.month)}</b></div></div><hr>
-    <div class="cols"><table><tr><td>Name</td><td><b>${esc(fullName(e))}</b></td></tr><tr><td>Employee number</td><td>${esc(e.empNo)}</td></tr><tr><td>Designation</td><td>${esc((desig(e.desigId) || {}).name || '')}</td></tr><tr><td>Department</td><td>${esc((dept(e.deptId) || {}).name || '')}</td></tr><tr><td>Date of joining</td><td>${dmy(e.doj)}</td></tr></table>
+    <div class="cols"><table><tr><td>Name</td><td><b>${esc(fullName(e))}</b></td></tr><tr><td>Employee number</td><td>${esc(e.empNo)}</td></tr><tr><td>Designation</td><td>${esc((desig(e.desigId) || {}).name || '')}</td></tr><tr><td>Department</td><td>${esc((dept(e.deptId) || {}).name || '')}</td></tr><tr><td>Date of joining</td><td>${dmy(e.doj)}</td></tr>${regOf(e) === 'contract' ? `<tr><td>Employed through</td><td>${esc(conName(e.contractorId))}</td></tr>` : ''}</table>
       <table><tr><td>PAN</td><td>${esc(e.pan || '—')}</td></tr><tr><td>UAN</td><td>${esc(e.uan || '—')}</td></tr><tr><td>Bank account</td><td>${e.bankAcc ? '••••' + esc(String(e.bankAcc).slice(-4)) : '—'}</td></tr><tr><td>Paid days</td><td>${num(r.paidDays)} of ${r.days}</td></tr><tr><td>Loss of pay</td><td>${num(r.lop)} days</td></tr></table></div>
     <div class="cols"><table><tr><th>Earnings</th><th class="r">Rate</th><th class="r">Amount</th></tr>${rowsE}<tr><td><b>Gross earnings</b></td><td></td><td class="r"><b>${inr(r.gross)}</b></td></tr></table>
       <table><tr><th>Deductions</th><th class="r">Amount</th></tr>${rowsD}<tr><td><b>Total deductions</b></td><td class="r"><b>${inr(r.totalDed)}</b></td></tr></table></div>
     <h2 style="margin-top:12px;margin-bottom:2px">Net pay ${inr(r.net)}</h2><p style="margin:0 0 8px">${(() => { const w = inWords(r.net); return w.charAt(0).toUpperCase() + w.slice(1); })()} only</p><p class="fine">Tax regime: ${r.tax.regime === 'old' ? 'old' : 'new'}. Projected taxable income ${inr0(r.tax.taxable)}, tax for the year ${inr0(r.tax.tax)}. Employer contributions: ${r.employer.map((x) => `${esc(x.name)} ${inr0(x.amount)}`).join(', ') || 'none'}. This is a computer-generated payslip.</p></div>`;
 }
 ACT.slipPrint = (b) => { const run = S.payRuns.find((x) => x.id === b.dataset.run); printHtml('Payslip', slipHtml(run, run.results[b.dataset.emp])); };
-ACT.repSlips = (b) => { const run = S.payRuns.find((x) => x.id === b.dataset.id); printHtml(`Payslips ${run.month}`, Object.values(run.results).map((r) => slipHtml(run, r)).join('')); };
+ACT.repSlips = (b) => { const { run, rows } = runRows(b.dataset.id, b.dataset.con); printHtml(`Payslips ${run.month}`, rows.map(({ r }) => slipHtml(run, r)).join('')); };
 
 /* ---------------------------------------------------------------- annual TDS certificate for salary
    Form No. 130 (Income-tax Act, 2025 and Income-tax Rules, 2026) from tax year 2026-27; Form 16 for 2025-26 and earlier.
@@ -2812,8 +2863,8 @@ function fnfWith(e, x) {
 ACT.fnfApprove = () => { const x = curExit(); if (!clearancesDone(x)) return; x.fnf = { status: 'approved', approvedBy: me.id, approvedAt: Date.now(), amounts: fnfWith(empById(x.empId), x) }; xlog(x, `Full and final approved: ${inr0(x.fnf.amounts.net)} besides salary`); saveNow(); toast('Settlement approved'); route(); };
 ACT.fnfPostX = () => {
   const x = curExit(), e = empById(x.empId), ym = x.lwd.slice(0, 7);
-  const locked = S.payRuns.find((r) => r.companyId === e.companyId && r.month === ym && r.status === 'locked');
-  const month = locked ? S.payRuns.filter((r) => r.companyId === e.companyId && r.status === 'locked').map((r) => r.month).sort().map((m) => ymAdd(m, 1)).pop() : ym;
+  const locked = S.payRuns.find((r) => r.companyId === e.companyId && runReg(r) === regOf(e) && r.month === ym && r.status === 'locked');
+  const month = locked ? S.payRuns.filter((r) => r.companyId === e.companyId && runReg(r) === regOf(e) && r.status === 'locked').map((r) => r.month).sort().map((m) => ymAdd(m, 1)).pop() : ym;
   const f = fnfWith(e, x);
   S.payInputs = S.payInputs.filter((i) => !(i.empId === e.id && i.fnf));
   const add = (code, amount, note) => { if (amount) S.payInputs.push({ id: uid(), companyId: e.companyId, empId: e.id, month, code, amount, note, fnf: true }); };
@@ -4566,12 +4617,14 @@ function extPending() {
   statPending().forEach((x) => out.push(x));
   cpPending().forEach((x) => out.push(x));
   trPending().forEach((x) => out.push(x));
+  wfPending().forEach((x) => out.push(x));
   return out;
 }
 function extEnsureSchema() {
   S.employees.forEach((e) => { if (e.emergency && !e.emergencyName && !e.emergencyRelation) e.emergencyName = e.emergency; });
   S.companies.forEach((co) => { if (!co.timeMode) co.timeMode = 'shift'; });
   ['requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets', 'docTypes', 'docTemplates', 'compCycles', 'compBudgets', 'compRecs', 'trainings', 'trainingEnrols', 'trainingFeedback', 'trainingNeeds'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+  wfEnsureSchema();
 }
 
 
@@ -4663,6 +4716,9 @@ function wireAddress(form) {
 function checkPersonal(d) {
   if (d.addrCity === '__other' || d.addrCountry !== 'India') d.addrCity = (d.addrCityOther || '').trim();
   delete d.addrCityOther;
+  if (d.marital !== 'married') d.anniversary = '';
+  if (d.anniversary && d.anniversary > todayISO()) return 'The wedding anniversary is in the future.';
+  if (d.anniversary && d.dob && d.anniversary <= d.dob) return 'The wedding anniversary is before the date of birth.';
   if (d.addrCountry === 'India' && d.addrPin && !/^[1-9]\d{5}$/.test(d.addrPin)) return 'The PIN code has 6 digits and does not start with 0.';
   if (d.addrCountry === 'India' && d.addrCity && d.addrState && cityState(d.addrCity) && cityState(d.addrCity) !== d.addrState) return `${d.addrCity} is in ${cityState(d.addrCity)}.`;
   const phone = (p) => !p || /^\+?[\d\s-]{8,16}$/.test(p);
@@ -4678,7 +4734,7 @@ function personalRo(e) {
   const marital = { single: 'Single', married: 'Married', divorcee: 'Divorcee', widowed: 'Widowed', other: 'Other' }[e.marital];
   const oldEmergency = !e.emergencyName && e.emergency;
   return `<div class="form">${val('First name', e.firstName)}${val('Last name', e.lastName)}${val('Gender', { M: 'Male', F: 'Female', O: 'Other' }[e.gender])}${val('Date of birth', dmy(e.dob))}
-    ${val('Marital status', marital)}${val('Mobile', e.phone)}${val('Personal e-mail', e.personalEmail)}${val('Blood group', e.blood)}
+    ${val('Marital status', marital)}${e.marital === 'married' ? `${val('Wedding anniversary', e.anniversary && e.anniversary.slice(0, 4) !== '1900' ? dmy(e.anniversary) : e.anniversary ? D(e.anniversary).toLocaleDateString('en-IN', { day: 'numeric', month: 'long' }) : '')}${val('Shown to colleagues', e.anniversary ? (e.shareAnniversary === false ? 'No' : 'Day and month') : '')}` : ''}${val('Mobile', e.phone)}${val('Personal e-mail', e.personalEmail)}${val('Blood group', e.blood)}
     ${val('Address: house, street and area', e.address, true)}
     ${val('Country', e.addrCountry)}${val('State or union territory', e.addrState)}${val('City', e.addrCity)}${val('PIN code', e.addrPin)}
     ${oldEmergency ? val('Emergency contact', e.emergency, true)
@@ -4987,6 +5043,7 @@ function newReg(o) {
 function applyReg(r) {
   const e = empById(r.empId); if (!e || r.applied) return false;
   if (!(isHR(e.companyId) || allReportees(me.id).includes(e.id))) return false;
+  if (lockErr(e, r.date, r.to)) return false;
   if (r.type === 'shift') {
     const m = S.roster[e.id] = S.roster[e.id] || {};
     if (r.shiftId) m[r.date] = r.shiftId; else delete m[r.date];
@@ -5013,7 +5070,7 @@ function punchesCard(emp, ym) {
       <td>${s.shift && s.code !== 'WO' && !shiftFor(emp, d).off ? `${esc(s.shift.code)} ${esc(s.shift.start)}–${esc(s.shift.end)}` : 'Weekly off'}${rostered ? ' <span class="fine">rostered</span>' : ''}${ps ? ` <span class="badge warn">Change to ${esc(shiftLabel(ps.shiftId))} waiting</span>` : ''}</td>
       <td>${p && p.in ? hm(p.in) : '—'}</td><td>${p && p.out ? hm(p.out) : '—'}</td><td class="fine">${p ? esc(p.source || '') : ''}</td>
       <td class="r">${s.worked ? num(s.worked, 2) : ''}</td><td>${s.code ? `<span class="st ${s.code}">${esc(s.code)}</span>` : ''}${s.late > 0 ? ' <span class="st LT">Late</span>' : ''}${pt ? ` <span class="badge warn">Edit waiting: ${esc(pt.in)}–${esc(pt.out || '…')}</span>` : ''}</td>
-      <td class="r" style="white-space:nowrap">${mine && d <= t && !pt ? `<button class="btn sm" data-act="punchEdit" data-d="${d}">Edit times</button>` : ''} ${mine && canShift && !ps && d >= addDays(t, -31) ? `<button class="btn sm ghost" data-act="shiftReq" data-d="${d}">Change shift</button>` : ''}</td></tr>`;
+      <td class="r" style="white-space:nowrap">${lockedUpTo(emp, d) ? '<span class="fine">Locked for payroll</span>' : `${mine && d <= t && !pt ? `<button class="btn sm" data-act="punchEdit" data-d="${d}">Edit times</button>` : ''} ${mine && canShift && !ps && d >= addDays(t, -31) ? `<button class="btn sm ghost" data-act="shiftReq" data-d="${d}">Change shift</button>` : ''}`}</td></tr>`;
   });
   return `<div class="card"><div class="hd"><div><h2>Punches</h2><p class="sub">Punch-in and punch-out times from the attendance device and the app. ${mine ? 'Edit a time, or ask for another shift on a day: the change goes for approval through the workflow and applies once approved.' : ''}</p></div></div>
     ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Day</th><th>Shift</th><th>In</th><th>Out</th><th>From</th><th class="r">Hours</th><th>Status</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>` : '<div class="empty">No days yet this month.</div>'}</div>`;
@@ -5035,6 +5092,7 @@ ACT.punchEdit = (b) => {
     if (f.out && toMin(f.out) <= toMin(f.in) && !(sf.shift || {}).night) return err('Time out must be after time in.');
     if (f.in === pin && (f.out || '') === pout) return err('The times are the same as recorded.');
     if (f.reason.trim().length < 4) return err('Give a reason.');
+    if (lockErr(me, iso)) return err(lockErr(me, iso));
     const r = newReg({ type: 'time', date: iso, in: f.in, out: f.out, prevIn: pin, prevOut: pout, reason: f.reason.trim() });
     saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Recorded' : `Sent to ${stepNow(r).label.toLowerCase()} for approval`); route();
   };
@@ -5051,6 +5109,7 @@ ACT.shiftReq = (b) => {
   $('#shF').onsubmit = (ev) => {
     ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
     if (f.reason.trim().length < 4) { $('#shE').textContent = 'Give a reason.'; return; }
+    if (lockErr(me, iso)) { $('#shE').textContent = lockErr(me, iso); return; }
     const r = newReg({ type: 'shift', date: iso, shiftId: f.shift, prevShift: sf.off ? 'WO' : now, reason: f.reason.trim() });
     saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Recorded' : `Sent to ${stepNow(r).label.toLowerCase()} for approval`); route();
   };
@@ -6594,6 +6653,68 @@ function trainingDemo(co) {
     .filter(([e]) => e).forEach(([e, topic, category, priority, note]) => S.trainingNeeds.push({ id: uid(), companyId: co.id, empId: e.id, topic, category, priority, note, status: 'open', by: e.managerId || kir.id, at: Date.now(), source: 'manager', targetDate: addDays(t0, 90) }));
 }
 
+
+/* ---------------------------------------------------------------- demo data for 2.7 */
+function workforceDemo(A, B, emps, { dWh, lPUN, P2, genB, DB, gr }) {
+  const con = { id: uid(), companyId: B.id, name: 'Sahyadri Manpower Services', code: 'SMS', legalName: 'Sahyadri Manpower Services LLP', licenceNo: 'CLA/PUN/2025/0412', licenceTo: addDays(todayISO(), 20), maxWorkers: 25,
+    pan: 'ACXFS4321Q', gstin: '27ACXFS4321Q1Z8', pfCode: 'PUPUN0098765000', esiCode: '33000987650001099', servicePct: 8, serviceOn: 'cost', gstPct: 18, gstOn: 'service', contactName: 'Vinayak Kale', phone: '9822012345', email: 'billing@sahyadrimanpower.example', address: 'Bhosari MIDC, Pune 411026', active: true };
+  S.contractors.push(con);
+  B.shiftPolicy = { rotationMode: 'auto', weeksAhead: 4, defaultPatternId: '', rules: [{ deptId: dWh.id, locationId: '', category: '', patternId: P2.id }], noticeHrs: 24, hrOverride: true, mgrChange: true };
+  [['Santosh', 'Gaikwad', 'M', '1994-02-10', 216000], ['Vaishali', 'Kamble', 'F', '1997-06-21', 204000], ['Imran', 'Shaikh', 'M', '1992-09-03', 216000]].forEach(([fn, ln, g, dob, ctc], i) => {
+    const e = { id: uid(), companyId: B.id, empNo: nextNo('emp-' + B.id, B.code + '-'), firstName: fn, lastName: ln, email: `${fn}.${ln}@contract.nilgiriretail.example`.toLowerCase(), gender: g, dob, doj: '2026-06-01',
+      deptId: dWh.id, desigId: DB['Warehouse associate'].id, gradeId: gr(B.id, 'G1'), locationId: lPUN.id, shiftId: genB.id, role: 'employee', status: 'active', empType: 'contract', workerCategory: 'contract', contractorId: con.id,
+      attGroup: 'shift', otEligible: true, uan: String(101500000000 + i * 7771), esiNo: String(3519876500 + i), pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', payMode: 'bank', bankName: 'Bank of Maharashtra', bankAcc: String(60200011000 + i * 17), ifsc: 'MAHB0001234',
+      marital: 'single', salaryHist: [{ effective: '2026-06-01', ctc, reason: 'On joining' }], history: [{ date: '2026-06-01', type: 'Hire', note: 'Contract worker through Sahyadri Manpower Services' }], source: 'manual', managerId: emps[12].id,
+      patternId: P2.id, patternFrom: '2026-06-01' };
+    S.employees.push(e); emps.push(e);
+    fillPattern(e, P2, '2026-06-01', addDays(todayISO(), 21), false); e.rotFilledTo = addDays(todayISO(), 21);
+  });
+  // categories for everyone else: store staff are blue collar, the warehouse associate on the general shift is staff
+  emps.forEach((e) => { if (!e.workerCategory) e.workerCategory = catOf(e); });
+  const shift = emps.find((e) => e.firstName === 'Ganesh'); if (shift) { shift.workerCategory = 'shift'; shift.attGroup = 'shift'; shift.otEligible = false; shift.patternId = emps[13].patternId; shift.patternFrom = '2026-04-01'; }
+  emps.filter((e) => e.companyId === B.id && e.attGroup === 'shift').forEach((e) => { e.rotFilledTo = e.rotFilledTo || '2026-12-31'; });
+}
+function workforcePayDemo(B, emps) {
+  const save = me; me = emps[11];
+  for (let m = '2026-06'; m <= '2026-09'; m = ymAdd(m, 1)) {
+    const run = { id: uid(), companyId: B.id, month: m, register: 'contract', status: 'draft', results: {}, skipped: [] }; S.payRuns.push(run); computeRun(run);
+    Object.assign(run, { status: 'locked', lockedAt: Date.now(), attLocked: true, attLockUpTo: monthEnd(m) }); markOtPaid(run);
+    const cid = Object.keys(run.bills)[0]; const tot = run.bills[cid].total;
+    if (m < '2026-09') run.payments = [{ id: uid(), contractorId: cid, amount: tot, date: `${ymAdd(m, 1)}-07`, mode: 'NEFT', ref: `UTR26${m.replace('-', '')}0042`, paidBy: B.legalName, challans: true, by: emps[11].id, at: Date.now() }];
+    else run.payments = [{ id: uid(), contractorId: cid, amount: Math.round(tot * 0.6), date: '2026-10-08', mode: 'NEFT', ref: 'UTR262610080117', paidBy: B.legalName, challans: false, note: 'Part payment; balance after the October attendance review', by: emps[11].id, at: Date.now() }];
+    if (m < '2026-09') run.settledAt = Date.now();
+  }
+  me = save;
+}
+function backgroundDemo(A, B, emps) {
+  STARTER.institution.forEach(([name, type, city]) => [A, B].forEach((c) => S.masterItems.push({ id: uid(), companyId: c.id, kind: 'institution', name, type, ...(city ? { city } : {}), status: 'approved', source: 'starter', proposedBy: emps[0].id, proposedAt: Date.now(), decidedBy: emps[0].id, decidedAt: Date.now() })));
+  STARTER.qualification.concat(STARTER.employer.map((x) => [x[0], 'employer'])).forEach(([name, k]) => [A, B].forEach((c) => S.masterItems.push({ id: uid(), companyId: c.id, kind: k === 'employer' ? 'employer' : 'qualification', name, status: 'approved', source: 'starter', proposedBy: emps[0].id, proposedAt: Date.now(), decidedBy: emps[0].id, decidedAt: Date.now() })));
+  const mi = (co, kind, name) => S.masterItems.find((x) => x.companyId === co.id && x.kind === kind && x.name === name) || {};
+  const [anita, , vikram, divya, arjun] = emps; const pooja = emps[11], priya = emps[14];
+  // Divya: a full background, partly checked by HR
+  const fromEmp = mi(A, 'employer', 'Infosys'); const tcs = mi(A, 'employer', 'Tata Consultancy Services');
+  divya.prevJobs = [{ id: uid(), employer: fromEmp.name, employerId: fromEmp.id, designation: 'Senior systems engineer', location: 'Mysuru', from: '2016-07', to: '2019-12', lastCtc: 1250000, reason: 'Wanted product work', contact: 'hr.verify@infosys.example', verify: { status: 'verified', at: '2020-01-20', how: 'email', spoke: 'Background verification desk', note: 'Dates and designation confirmed.', by: emps[1].id } },
+    { id: uid(), employer: tcs.name, employerId: tcs.id, designation: 'Intern', location: 'Bengaluru', from: '2016-01', to: '2016-06', reason: 'Internship ended' }];
+  const vtu = mi(A, 'institution', 'Visvesvaraya Technological University'), be = mi(A, 'qualification', 'B.E.'), cbse = mi(A, 'institution', 'Central Board of Secondary Education (CBSE)');
+  // a college that is not on the list: proposed for HR to review
+  const sjce = { id: uid(), companyId: A.id, kind: 'institution', name: 'Sri Jayachamarajendra College of Engineering, Mysuru', status: 'proposed', proposedBy: divya.id, proposedAt: Date.now() - 2 * 86400000 };
+  S.masterItems.push(sjce);
+  divya.education = [{ id: uid(), level: 'Graduate', qualification: be.name, qualificationId: be.id, specialisation: 'Computer science', institution: sjce.name, institutionId: sjce.id, university: vtu.name, universityId: vtu.id, mode: 'full', fromYear: '2012', toYear: '2016', score: '8.4', scoreType: 'cgpa', verify: { status: 'pending', at: todayISO(), how: 'portal', by: emps[1].id } },
+    { id: uid(), level: 'Class 12', qualification: mi(A, 'qualification', 'Class 12 (HSC)').name, qualificationId: mi(A, 'qualification', 'Class 12 (HSC)').id, institution: 'Kendriya Vidyalaya, Mysuru', university: cbse.name, universityId: cbse.id, mode: 'full', toYear: '2012', score: '91.2', scoreType: 'pct' }];
+  divya.awards = [{ id: uid(), title: 'Best intern project', issuer: 'Tata Consultancy Services', date: '2016-06-20', category: 'Professional', description: 'Built a test-data generator used by three teams.' }];
+  divya.references = [{ id: uid(), kind: 'referral', referrerId: vikram.id }, { id: uid(), kind: 'reference', name: 'Ramesh Hegde', organisation: 'Infosys', designation: 'Delivery manager', relation: 'My manager for three years', phone: '9845011122', email: 'ramesh.hegde@example.com', years: 3, verify: { status: 'discrepancy', at: '2020-01-22', how: 'phone', spoke: 'Ramesh Hegde', note: 'Says Divya reported to him for two years, not three.', by: emps[1].id } }];
+  arjun.education = [{ id: uid(), level: 'Graduate', qualification: mi(A, 'qualification', 'B.Tech').name, qualificationId: mi(A, 'qualification', 'B.Tech').id, institution: mi(A, 'institution', 'National Institute of Technology Karnataka, Surathkal').name, institutionId: mi(A, 'institution', 'National Institute of Technology Karnataka, Surathkal').id, mode: 'full', toYear: '2017', score: '7.9', scoreType: 'cgpa' }];
+  arjun.prevJobs = [{ id: uid(), employer: 'Zentrix Software Labs', designation: 'Software engineer', location: 'Pune', from: '2017-08', to: '2022-06', reason: 'Relocated to Bengaluru' }];
+  S.masterItems.push({ id: uid(), companyId: A.id, kind: 'employer', name: 'Zentrix Software Labs', status: 'proposed', proposedBy: arjun.id, proposedAt: Date.now() - 86400000 });
+  arjun.prevJobs[0].employerId = S.masterItems[S.masterItems.length - 1].id;
+  priya.education = [{ id: uid(), level: 'Class 12', qualification: mi(B, 'qualification', 'Class 12 (HSC)').name, qualificationId: mi(B, 'qualification', 'Class 12 (HSC)').id, institution: 'Ruparel College, Mumbai', university: mi(B, 'institution', 'Maharashtra State Board of Secondary and Higher Secondary Education').name, mode: 'full', toYear: '2016', score: '68', scoreType: 'pct' }];
+  priya.references = [{ id: uid(), kind: 'referral', referrerId: emps[15].id }];
+  // wedding anniversaries: Anita's is today, so the greeting shows when she signs in; Pooja's is in two days
+  Object.assign(anita, { marital: 'married', anniversary: `2006-${todayISO().slice(5)}`, shareAnniversary: true });
+  Object.assign(pooja, { marital: 'married', anniversary: `2014-${addDays(todayISO(), 2).slice(5)}`, shareAnniversary: true });
+  Object.assign(vikram, { marital: 'married', anniversary: `2012-${addDays(todayISO(), 1).slice(5)}`, shareAnniversary: false });
+}
+
 /* ---------------------------------------------------------------- server state and session (used by the React app) */
 function loadServerState(state, meId) {
   S = hydrate(state);
@@ -6612,6 +6733,692 @@ function loadServerState(state, meId) {
 function clearSession() { me = null; closeDlg(); }
 function switchCompany(id) { CO = id; sessionStorage.setItem('pd.co', id); }
 const getS = () => S, getMe = () => me, getCO = () => CO;
+
+/* =====================================================================
+   PeopleDesk 2.7: workforce
+   - Employee categories: salaried staff, blue collar and shift workers, and third-party contract workers
+   - Background on the profile: previous jobs, education, awards and references, each checked by HR
+   - Standard lists of institutions, qualifications and employers, kept by HR. A name an employee types that is
+     not on a list is proposed; HR adds it, maps it to an existing entry, or keeps it off the list
+   - Wedding anniversary, and greetings and notifications when people sign in
+   - Contractors, a separate attendance register and payroll for contract workers, and contractor bills that are
+     knocked off when the company records its payment
+   - Rotation policy (assigned by managers, or applied by the organisation automatically), shift changes by
+     managers with the notice the company sets, and attendance locked for payroll
+   The server enforces the same rules (backend/app/workforce.py).
+   ===================================================================== */
+const CATS = { staff: 'Salaried: staff', blue: 'Salaried: blue collar', shift: 'Salaried: shift worker', contract: 'Contract worker (third party)' };
+const CAT_SHORT = { staff: 'Staff', blue: 'Blue collar', shift: 'Shift worker', contract: 'Contract' };
+const CAT_HELP = { staff: 'General shift and fixed weekly offs, no overtime', blue: 'Rostered shifts and rotations, with overtime', shift: 'Rostered shifts and rotations, overtime only if ticked', contract: 'Employed through a contractor; own register and payroll' };
+const CAT_DEFAULTS = { staff: { attGroup: 'regular', otEligible: false }, blue: { attGroup: 'shift', otEligible: true }, shift: { attGroup: 'shift', otEligible: false }, contract: { attGroup: 'shift', otEligible: true } };
+function catOf(e) { if (!e) return 'staff'; if (e.workerCategory) return e.workerCategory; if (e.contractorId) return 'contract'; return e.attGroup === 'shift' ? (e.otEligible === false ? 'shift' : 'blue') : 'staff'; }
+function regOf(e) { return catOf(e) === 'contract' ? 'contract' : 'own'; }
+const REGS = { own: 'Own employees', contract: 'Contract workers (third party)' };
+function runReg(r) { return (r && r.register) || 'own'; }
+function contractorById(id) { return S.contractors.find((c) => c.id === id); }
+const conName = (id) => (contractorById(id) || {}).name || 'No contractor set';
+const catLabel = (e) => `${CAT_SHORT[catOf(e)]}${catOf(e) === 'contract' && e.contractorId ? `, ${conName(e.contractorId)}` : ''}`;
+const monthEnd = (ym) => `${ym}-${pad(daysInMonth(ym))}`;
+const daysBetween = (a, b) => Math.round((D(b) - D(a)) / 86400000);
+
+function wfEnsureSchema() {
+  ['contractors', 'masterItems'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+  S.employees.forEach((e) => { if (!e.workerCategory) e.workerCategory = catOf(e); });
+}
+
+/* ---------------------------------------------------------------- attendance locked for payroll */
+/* A payroll run locks attendance for its month and register up to a day: up to the day before it was locked, or the
+   whole month once the month is over. Locking the payroll locks attendance; HR can also lock attendance before
+   running payroll, and unlock it on the run. */
+function attLockOf(coId, reg, ym) {
+  const runs = S.payRuns.filter((r) => r.companyId === coId && runReg(r) === reg && r.month === ym && (r.status === 'locked' || r.attLocked));
+  if (!runs.length) return null;
+  const upTo = runs.map((r) => (r.attLockUpTo && r.attLockUpTo <= monthEnd(ym) ? r.attLockUpTo : monthEnd(ym))).sort().pop();
+  return { run: runs[0], upTo };
+}
+function lockedUpTo(emp, iso) { if (!emp || !iso) return ''; const l = attLockOf(emp.companyId, regOf(emp), iso.slice(0, 7)); return l && iso <= l.upTo ? l.upTo : ''; }
+function lockErr(emp, from, to) {
+  if (!emp || !from) return '';
+  for (let d = from, i = 0; d <= (to && to >= from ? to : from) && i < 400; d = addDays(d, 1), i++) {
+    const u = lockedUpTo(emp, d); if (u) return `Attendance up to ${dmy(u)} is locked for payroll. HR unlocks it on the payroll run.`;
+  }
+  return '';
+}
+function lockUpToFor(ym) { const y = addDays(todayISO(), -1); return y < monthEnd(ym) ? y : monthEnd(ym); }
+function lockNote(coId, reg, ym) { const l = attLockOf(coId, reg, ym); return l ? `<div class="note warn">Attendance up to ${dmy(l.upTo)} is locked for payroll${l.run.status === 'locked' ? ' (payroll locked)' : ''}. Punches, corrections, leave and the roster for those days cannot change.${isHR(coId) ? ` <a href="#/payroll/${l.run.id}${reg === 'contract' ? '?tab=contract' : ''}">Payroll run</a>` : ''}</div>` : ''; }
+
+/* ---------------------------------------------------------------- rotation and shift-change policy */
+const SHIFT_POL = { rotationMode: 'manual', weeksAhead: 4, defaultPatternId: '', rules: [], noticeHrs: 0, hrOverride: true, mgrChange: true };
+const shiftPol = (coId = CO) => Object.assign({}, SHIFT_POL, (coById(coId) || {}).shiftPolicy || {});
+function effShift(emp, iso, val) {
+  if (val) return val;
+  const sh = shiftById(emp.shiftId);
+  return sh && (sh.weeklyOff || []).includes(D(iso).getDay()) ? 'WO' : emp.shiftId || '';
+}
+function dayStart(emp, iso, val) {
+  const v = effShift(emp, iso, val); if (v === 'WO') return tsAt(iso, '00:00');
+  const sh = shiftById(v); return sh ? tsAt(iso, sh.start) : tsAt(iso, '00:00');
+}
+function noticeAppliesTo(coId) { const p = shiftPol(coId); return +p.noticeHrs > 0 && !(isHR(coId) && p.hrOverride !== false); }
+/* first day whose work starts after the notice period, whatever the shift */
+function firstChangeable(coId = CO) {
+  const p = shiftPol(coId); if (!noticeAppliesTo(coId)) return todayISO();
+  const t = Date.now() + (+p.noticeHrs) * 3600000; let d = isoOf(new Date(t)); if (tsAt(d, '00:00') < t) d = addDays(d, 1);
+  return d;
+}
+function rosterChangeErr(emp, iso, val) {
+  const le = lockErr(emp, iso); if (le) return le;
+  if (!noticeAppliesTo(emp.companyId)) return '';
+  const old = (S.roster[emp.id] || {})[iso] || '';
+  if (effShift(emp, iso, old) === effShift(emp, iso, val)) return '';
+  const n = +shiftPol(emp.companyId).noticeHrs;
+  if (Math.min(dayStart(emp, iso, old), dayStart(emp, iso, val)) < Date.now() + n * 3600000) return `Shift changes need ${num(n, 1)} hours' notice before the shift starts. ${D(iso).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })} is too soon.`;
+  return '';
+}
+/* people whose roster this person may change: HR the company, managers their reporting line (not dotted lines) */
+function lineEmps(coId = CO) { return isHR(coId) ? coEmployees(coId) : allReportees(me.id).map(empById).filter((e) => e && active(e) && e.companyId === coId); }
+/* a roster cell that cannot be changed now: locked for payroll, or its shift starts within the notice period */
+function rosterFrozen(e, d) {
+  if (lockErr(e, d)) return 'Locked for payroll';
+  if (!noticeAppliesTo(e.companyId)) return '';
+  return dayStart(e, d, (S.roster[e.id] || {})[d] || '') < Date.now() + (+shiftPol(e.companyId).noticeHrs) * 3600000 ? 'Within the notice period for shift changes' : '';
+}
+function patternFor(e) {
+  const p = shiftPol(e.companyId);
+  const r = (p.rules || []).find((x) => x.patternId && (!x.deptId || x.deptId === e.deptId) && (!x.locationId || x.locationId === e.locationId) && (!x.category || x.category === catOf(e)));
+  return (r && r.patternId) || p.defaultPatternId || '';
+}
+/* writes a rotation pattern into the roster; keep: leave days already rostered alone */
+function fillPattern(e, pat, from, to, keep) {
+  const codes = String(pat.sequence || '').toUpperCase().split(/[\s,]+/).filter(Boolean); if (!codes.length) return 0;
+  const shifts = S.shifts.filter((s) => s.companyId === e.companyId); const base = e.patternFrom || from;
+  const m = S.roster[e.id] = S.roster[e.id] || {}; let n = 0;
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    if (keep && m[d]) continue; if (lockErr(e, d)) continue;
+    const c = codes[((daysBetween(base, d) % codes.length) + codes.length) % codes.length];
+    const v = c === 'WO' ? 'WO' : (shifts.find((s) => s.code.toUpperCase() === c) || {}).id; if (!v) continue;
+    if (m[d] !== v) { m[d] = v; n++; }
+  }
+  return n;
+}
+/* Automatic rotation: shift staff get the pattern their rules give them, and the roster is kept filled the set
+   number of weeks ahead, starting after the notice period. Days a manager changed by hand are left alone. */
+function autoRotate(coId, force) {
+  const p = shiftPol(coId); if ((p.rotationMode !== 'auto' && !force) || !shiftBased(coId)) return 0;
+  const scope = lineEmps(coId).filter((e) => e.id !== me.id || isHR(coId));
+  const start0 = firstChangeable(coId); const horizon = addDays(todayISO(), Math.max(1, +p.weeksAhead || 4) * 7); let n = 0;
+  scope.filter((e) => attGroup(e) === 'shift').forEach((e) => {
+    let pat = S.shiftPatterns.find((x) => x.id === e.patternId);
+    if (!pat) { const pid = patternFor(e); pat = S.shiftPatterns.find((x) => x.id === pid); if (!pat) return;
+      e.patternId = pat.id; e.patternFrom = (e.doj || '') > start0 ? e.doj : start0; e.rotFilledTo = ''; }
+    let from = e.rotFilledTo ? addDays(e.rotFilledTo, 1) : e.patternFrom || start0;
+    if (from < start0) from = start0; if ((e.doj || '') > from) from = e.doj;
+    if (from > horizon) return;
+    n += fillPattern(e, pat, from, horizon, true); e.rotFilledTo = horizon;
+  });
+  return n;
+}
+const ROT_RUN = {};
+function autoRotateSoon() {
+  if (!me || !(isHR() || isManager())) return;
+  const k = CO; if (Date.now() - (ROT_RUN[k] || 0) < 600000) return; ROT_RUN[k] = Date.now();
+  if (shiftPol(CO).rotationMode !== 'auto') return;
+  const n = autoRotate(CO); if (n) { setTimeout(saveNow, 0); }
+}
+
+/* ---------------------------------------------------------------- background: jobs, education, awards, references */
+const EDU_LEVELS = ['Class 10', 'Class 12', 'ITI', 'Diploma', 'Graduate', 'Post graduate', 'Doctorate', 'Professional (CA, CS, CMA)', 'Certification', 'Other'];
+const EDU_RANK = { Doctorate: 9, 'Post graduate': 8, 'Professional (CA, CS, CMA)': 7, Graduate: 6, Diploma: 5, ITI: 4, 'Class 12': 3, 'Class 10': 2, Certification: 1, Other: 0 };
+const VERIFY = { verified: ['Checked: confirmed', 'ok'], pending: ['Check in progress', 'info'], discrepancy: ['Checked: does not match', 'bad'], unreachable: ['Could not be reached', 'warn'] };
+const yearOpts = () => { const y = +todayISO().slice(0, 4); return Array.from({ length: 60 }, (_, i) => [String(y + 5 - i), String(y + 5 - i)]); };
+const BG = {
+  prevJobs: { title: 'Previous employment', one: 'previous job', sub: 'Employers before this one, latest first. HR confirms them with each employer.',
+    fields: [{ k: 'employer', label: 'Employer', master: 'employer', req: true }, { k: 'designation', label: 'Designation', req: true }, { k: 'location', label: 'City' },
+      { k: 'from', label: 'From', type: 'month', req: true }, { k: 'to', label: 'To', type: 'month', help: 'Leave empty for a job you still hold' }, { k: 'empCode', label: 'Employee number there' },
+      { k: 'lastCtc', label: 'Last annual CTC (₹)', type: 'number', min: 0, help: 'Seen only by you and HR' }, { k: 'reason', label: 'Reason for leaving', help: 'Seen only by you and HR' },
+      { k: 'duties', label: 'Main responsibilities', type: 'textarea', wide: true }, { k: 'contact', label: 'HR contact there (name, e-mail or phone)', wide: true }, { k: 'doc', label: 'Relieving or experience letter', type: 'file', wide: true }],
+    sort: (a, b) => String(b.from || '').localeCompare(String(a.from || '')),
+    row: (x) => [`<b>${esc(x.employer)}</b>${x.location ? `<div class="fine">${esc(x.location)}</div>` : ''}`, esc(x.designation), `${esc(monthLbl(x.from))} to ${x.to ? esc(monthLbl(x.to)) : 'now'}<div class="fine">${tenure(x.from, x.to)}</div>`] , head: ['Employer', 'Designation', 'Period'] },
+  education: { title: 'Education', one: 'qualification', sub: 'Schooling, degrees, diplomas and certifications, highest first.',
+    fields: [{ k: 'level', label: 'Level', type: 'select', opts: () => EDU_LEVELS.map((x) => [x, x]), req: true }, { k: 'qualification', label: 'Qualification', master: 'qualification', req: true, help: 'For example B.E., B.Com, MBA, ITI Fitter' },
+      { k: 'specialisation', label: 'Subject or specialisation' }, { k: 'institution', label: 'School, college or institute', master: 'institution', req: true },
+      { k: 'university', label: 'Board or university', master: 'institution' }, { k: 'mode', label: 'Mode', type: 'select', opts: [['full', 'Full time'], ['part', 'Part time'], ['distance', 'Distance or online']] },
+      { k: 'fromYear', label: 'From (year)', type: 'select', opts: yearOpts, blank: '—' }, { k: 'toYear', label: 'Passed in (year)', type: 'select', opts: yearOpts, blank: '—' },
+      { k: 'score', label: 'Result', help: 'For example 78.4, 8.2 or First class' }, { k: 'scoreType', label: 'Result as', type: 'select', opts: [['pct', 'Percentage'], ['cgpa', 'CGPA'], ['grade', 'Grade or class']] },
+      { k: 'doc', label: 'Certificate or mark sheet', type: 'file', wide: true }],
+    sort: (a, b) => (EDU_RANK[b.level] || 0) - (EDU_RANK[a.level] || 0) || String(b.toYear || '').localeCompare(String(a.toYear || '')),
+    row: (x) => [`<b>${esc(x.qualification)}</b>${x.specialisation ? `<div class="fine">${esc(x.specialisation)}</div>` : ''}<div class="fine">${esc(x.level)}</div>`, `${esc(x.institution)}${x.university ? `<div class="fine">${esc(x.university)}</div>` : ''}`,
+      `${esc(x.toYear || '')}${x.score ? `<div class="fine">${esc(x.score)}${x.scoreType === 'pct' ? '%' : x.scoreType === 'cgpa' ? ' CGPA' : ''}</div>` : ''}`], head: ['Qualification', 'Institution', 'Passed'] },
+  awards: { title: 'Awards and achievements', one: 'award', sub: 'Recognition before and outside this job: academic, professional, sports or community.',
+    fields: [{ k: 'title', label: 'Award or achievement', req: true }, { k: 'issuer', label: 'Given by', help: 'Organisation, institution or event' }, { k: 'date', label: 'Date', type: 'date' },
+      { k: 'category', label: 'Kind', type: 'select', opts: [['Professional', 'Professional'], ['Academic', 'Academic'], ['Sports', 'Sports'], ['Community', 'Community and social'], ['Other', 'Other']] },
+      { k: 'description', label: 'What it was for', type: 'textarea', wide: true }, { k: 'doc', label: 'Certificate or photo', type: 'file', wide: true }],
+    sort: (a, b) => String(b.date || '').localeCompare(String(a.date || '')),
+    row: (x) => [`<b>${esc(x.title)}</b>${x.description ? `<div class="fine">${esc(x.description)}</div>` : ''}`, `${esc(x.issuer || '')}<div class="fine">${esc(x.category || '')}</div>`, dmy(x.date)], head: ['Award', 'Given by', 'Date'] },
+  references: { title: 'References', one: 'reference', sub: 'Who referred you for this job, and people HR may contact to confirm your work. Seen only by you and HR.',
+    fields: [{ k: 'kind', label: 'This person', type: 'select', opts: [['reference', 'Can confirm my work (professional reference)'], ['referral', 'Referred me for this job']], req: true },
+      { k: 'referrerId', label: 'Referred by (an employee here)', type: 'select', opts: () => empOpts(CO)(), blank: 'Someone outside the company' },
+      { k: 'name', label: 'Name' }, { k: 'organisation', label: 'Organisation' }, { k: 'designation', label: 'Their designation' },
+      { k: 'relation', label: 'How they know you', help: 'For example former manager at Infosys' }, { k: 'phone', label: 'Phone' }, { k: 'email', label: 'E-mail', type: 'email' }, { k: 'years', label: 'Known for (years)', type: 'number', min: 0 }],
+    sort: (a, b) => (a.kind === 'referral' ? -1 : 0) - (b.kind === 'referral' ? -1 : 0),
+    row: (x) => [`<b>${esc(x.referrerId ? nameOf(x.referrerId) : x.name)}</b><div class="fine">${x.kind === 'referral' ? (x.referrerId ? 'Employee referral' : 'Referred by') : 'Professional reference'}</div>`,
+      `${esc([x.designation, x.organisation].filter(Boolean).join(', '))}${x.relation ? `<div class="fine">${esc(x.relation)}</div>` : ''}`, `${esc(x.phone || '')}${x.email ? `<div class="fine">${esc(x.email)}</div>` : ''}`], head: ['Name', 'Organisation', 'Contact'] },
+};
+const monthLbl = (ym) => (ym ? new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '');
+function tenure(from, to) { if (!from) return ''; const end = to || todayISO().slice(0, 7); const m = (+end.slice(0, 4) - +from.slice(0, 4)) * 12 + (+end.slice(5, 7) - +from.slice(5, 7)) + 1; if (m <= 0) return ''; const y = Math.floor(m / 12), r = m % 12; return [y && `${y} yr${y > 1 ? 's' : ''}`, r && `${r} mo`].filter(Boolean).join(' '); }
+const MASTER_FIELD = { employer: 'employerId', qualification: 'qualificationId', institution: 'institutionId', university: 'universityId' };
+const MASTER_KIND = { employer: 'employer', qualification: 'qualification', institution: 'institution', university: 'institution' };
+function verifyBadge(x) { const v = x.verify && VERIFY[x.verify.status]; return v ? `<span class="badge ${v[1]}">${v[0]}</span>` : '<span class="fine">Not checked yet</span>'; }
+function bgCard(e, k, { hr, mine }) {
+  const def = BG[k]; const list = (e[k] || []).slice().sort(def.sort); const can = hr || mine;
+  const masterNote = (x) => Object.entries(MASTER_FIELD).filter(([f, idk]) => x[f] && def.fields.some((d) => d.k === f) && (masterById(x[idk]) || {}).status === 'proposed').length
+    ? '<div class="fine">New name: waiting for HR to add it to the standard list</div>' : '';
+  return `<div class="card"><div class="hd"><div><h2>${esc(def.title)}</h2><p class="sub">${esc(def.sub)}</p></div>${can ? `<button class="btn ${list.length ? '' : 'pri'}" data-act="bgEdit" data-emp="${e.id}" data-k="${k}">Add ${esc(def.one)}</button>` : ''}</div>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr>${def.head.map((h) => `<th>${h}</th>`).join('')}<th>Check by HR</th><th></th></tr></thead><tbody>${list.map((x) => { const c = def.row(x);
+      return `<tr><td>${c[0]}${masterNote(x)}${x.docFileId ? `<div class="fine"><a href="/api/files/${x.docFileId}" target="_blank" rel="noopener">📎 ${esc(x.docName || 'Document')}</a></div>` : ''}</td><td>${c[1]}</td><td>${c[2]}</td>
+        <td>${verifyBadge(x)}${x.verify && x.verify.at ? `<div class="fine">${dmy(x.verify.at)}${hr && x.verify.by ? `, ${esc(nameOf(x.verify.by))}` : ''}</div>` : ''}${hr && x.verify && x.verify.note ? `<div class="fine">${esc(x.verify.note)}</div>` : ''}</td>
+        <td class="r" style="white-space:nowrap">${can ? `<button class="btn sm" data-act="bgEdit" data-emp="${e.id}" data-k="${k}" data-id="${x.id}">Edit</button>` : ''} ${hr ? `<button class="btn sm ${x.verify && x.verify.status === 'verified' ? 'ghost' : 'pri'}" data-act="bgCheck" data-emp="${e.id}" data-k="${k}" data-id="${x.id}">Check</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${can ? `Nothing added yet. Add each ${esc(def.one)} so HR can confirm it.` : 'Nothing added yet.'}</div>`}</div>`;
+}
+PROFILE_TABS.background = (e, { hr, mine }) => {
+  const all = BG_KEYS.flatMap((k) => (hr || mine || k !== 'references' ? (e[k] || []) : []));
+  const done = all.filter((x) => x.verify && x.verify.status === 'verified').length, bad = all.filter((x) => x.verify && x.verify.status === 'discrepancy').length;
+  const exp = (e.prevJobs || []).reduce((s, x) => { if (!x.from) return s; const end = x.to || (e.doj || todayISO()).slice(0, 7); return s + Math.max(0, (+end.slice(0, 4) - +x.from.slice(0, 4)) * 12 + (+end.slice(5, 7) - +x.from.slice(5, 7)) + 1); }, 0);
+  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Experience before joining</span><b>${exp ? `${Math.floor(exp / 12)} yr${exp % 12 ? ` ${exp % 12} mo` : ''}` : '—'}</b><small>${(e.prevJobs || []).length} employer${(e.prevJobs || []).length === 1 ? '' : 's'}</small></div>
+      <div class="kpi"><span>Highest qualification</span><b style="font-size:18px">${esc(((e.education || []).slice().sort(BG.education.sort)[0] || {}).qualification || '—')}</b><small>${esc(((e.education || []).slice().sort(BG.education.sort)[0] || {}).institution || '')}</small></div>
+      <div class="kpi"><span>Checked by HR</span><b>${done} of ${all.length}</b><small>${bad ? `${bad} do not match` : all.length ? 'entries confirmed' : 'nothing to check yet'}</small></div>
+      <div class="kpi"><span>Awards</span><b>${(e.awards || []).length}</b><small>${esc(((e.awards || []).slice().sort(BG.awards.sort)[0] || {}).title || '')}</small></div></div>
+    ${bad && hr ? `<div class="note bad">${bad} ${bad === 1 ? 'entry does' : 'entries do'} not match what was checked. See the notes below.</div>` : ''}
+    ${bgCard(e, 'prevJobs', { hr, mine })}${bgCard(e, 'education', { hr, mine })}${bgCard(e, 'awards', { hr, mine })}${hr || mine ? bgCard(e, 'references', { hr, mine }) : ''}`;
+};
+const BG_KEYS = ['prevJobs', 'education', 'awards', 'references'];
+const bgContent = (x) => JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'verify').sort()));
+function masterInput(f, v, kind, coId) {
+  const items = S.masterItems.filter((x) => x.companyId === coId && x.kind === kind && (x.status === 'approved' || (x.status === 'proposed' && x.proposedBy === me.id))).sort((a, b) => a.name.localeCompare(b.name));
+  return `<label class="field ${f.wide ? 'wide' : ''}">${esc(f.label)}<input class="inp" name="${f.k}" list="dl_${f.k}" value="${esc(v || '')}" autocomplete="off" ${f.req ? 'required' : ''}>
+    <datalist id="dl_${f.k}">${items.map((x) => `<option value="${esc(x.name)}">${esc([x.type, x.city].filter(Boolean).join(', '))}</option>`).join('')}</datalist><small>${esc(f.help || 'Choose from the list, or type the full name if it is not there')}</small></label>`;
+}
+const normKey = (s) => String(s || '').toLowerCase().replace(/[.,'’()&-]/g, ' ').replace(/\buniv\b/g, 'university').replace(/\s+/g, ' ').trim();
+const masterById = (id) => S.masterItems.find((x) => x.id === id);
+/* A name typed against a standard list: the matching entry, a name already proposed, or a new proposal for HR. */
+function masterFor(kind, name, coId, extra = {}) {
+  const n = String(name || '').replace(/\s+/g, ' ').trim(); if (!n) return { id: '', name: '' };
+  const key = normKey(n);
+  let hit = S.masterItems.find((x) => x.companyId === coId && x.kind === kind && (normKey(x.name) === key || (x.aliases || []).some((a) => normKey(a) === key)));
+  if (hit && hit.status === 'merged') hit = masterById(hit.mergedInto) || hit;
+  if (hit) return hit.status === 'rejected' ? { id: '', name: n } : { id: hit.id, name: hit.status === 'approved' ? hit.name : n, isNew: false };
+  const rec = { id: uid(), companyId: coId, kind, name: n, status: isHR(coId) ? 'approved' : 'proposed', proposedBy: me.id, proposedAt: Date.now(), ...extra };
+  if (isHR(coId)) { rec.decidedBy = me.id; rec.decidedAt = Date.now(); }
+  S.masterItems.push(rec);
+  return { id: rec.id, name: n, isNew: true, approved: isHR(coId) };
+}
+ACT.bgEdit = (b) => {
+  const e = empById(b.dataset.emp), k = b.dataset.k, def = BG[k]; const x0 = b.dataset.id ? (e[k] || []).find((x) => x.id === b.dataset.id) : null;
+  const v = x0 || (k === 'references' ? { kind: 'reference' } : k === 'education' ? { level: 'Graduate', mode: 'full', scoreType: 'pct' } : k === 'awards' ? { category: 'Professional' } : {});
+  const prev = CO; CO = e.companyId;
+  const html = def.fields.map((f) => (f.master ? masterInput(f, v[f.k], MASTER_KIND[f.k], e.companyId) : f.type === 'file'
+    ? `<label class="field wide">${esc(f.label)}<input type="file" class="inp" name="${f.k}" accept="image/*,application/pdf"><small>${v.docFileId ? `Attached: ${esc(v.docName || 'document')}. Choose a file to replace it.` : 'Optional. A photo or PDF, up to 10 MB.'}</small></label>` : fieldHtml(f, v[f.k]))).join('');
+  CO = prev;
+  openDlg(`<form class="dlg" id="bgF" novalidate><h2>${x0 ? 'Edit' : 'Add'} ${esc(def.one)}${e.id !== me.id ? `: ${esc(fullName(e))}` : ''}</h2>
+    ${x0 && x0.verify && x0.verify.status && !isHR(e.companyId) ? '<p class="fine" style="margin:0">HR has checked this entry. If you change it, HR checks it again.</p>' : ''}
+    <div class="form">${html}</div><p class="err" id="bgE"></p>
+    <div class="btns">${x0 ? '<button type="button" class="btn danger" id="bgDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  const form = $('#bgF');
+  if (k === 'references') { const sync = () => { const ref = form.elements.kind.value === 'referral'; form.elements.referrerId.closest('.field').style.display = ref ? '' : 'none';
+    const inside = ref && form.elements.referrerId.value; ['name', 'organisation', 'designation', 'phone', 'email'].forEach((n) => { form.elements[n].closest('.field').style.display = inside ? 'none' : ''; }); };
+    form.elements.kind.addEventListener('change', sync); form.elements.referrerId.addEventListener('change', sync); sync(); }
+  form.onsubmit = async (ev) => {
+    ev.preventDefault(); const err = (m) => { $('#bgE').textContent = m; };
+    const fields = def.fields.filter((f) => f.type !== 'file'); const d = readForm(form, fields);
+    if (k === 'references') { if (d.kind !== 'referral') d.referrerId = ''; if (d.referrerId) { d.name = ''; d.organisation = ''; d.designation = ''; d.phone = ''; d.email = ''; } if (!d.referrerId && !d.name) return err('Enter the name.'); if (d.kind === 'reference' && !d.phone && !d.email) return err('Give a phone number or e-mail so HR can contact them.'); }
+    const miss = fields.find((f) => f.req && (d[f.k] === '' || d[f.k] == null) && !(k === 'references' && f.k === 'name')); if (miss) return err(`Enter ${miss.label.toLowerCase()}.`);
+    if (k === 'prevJobs') { if (d.to && d.to < d.from) return err('The job ends before it starts.'); if (d.from > todayISO().slice(0, 7)) return err('The start is in the future.'); if ((e.doj || '') && d.to && d.to > e.doj.slice(0, 7)) return err(`This job ends after ${dmy(e.doj)}, when you joined here.`); }
+    if (k === 'education' && d.fromYear && d.toYear && d.toYear < d.fromYear) return err('The year passed is before the start.');
+    if (k === 'awards' && d.date && d.date > todayISO()) return err('The date is in the future.');
+    if (d.phone && !/^\+?[\d\s-]{8,16}$/.test(d.phone)) return err('Enter the phone with digits only.');
+    const file = form.elements.doc && form.elements.doc.files[0];
+    let added = 0, proposed = 0;
+    Object.entries(MASTER_FIELD).forEach(([f, idk]) => { if (!fields.some((x) => x.k === f && x.master)) return; const m = masterFor(MASTER_KIND[f], d[f], e.companyId); d[f] = m.name; d[idk] = m.id; if (m.isNew) (m.approved ? added++ : proposed++); });
+    if (file) { try { err(`Uploading ${file.name}…`); const up = await uploadFile(file); d.docFileId = up.id; d.docName = file.name; } catch (x) { return err(x.message); } }
+    const list = e[k] = e[k] || [];
+    if (x0) { const before = bgContent(x0); Object.assign(x0, d); if (bgContent(x0) !== before && !isHR(e.companyId)) delete x0.verify; }
+    else list.push({ id: uid(), ...d, addedBy: me.id, addedAt: Date.now() });
+    (e.history = e.history || []).push({ date: todayISO(), type: 'Background details changed', note: `${def.title}: ${d.employer || d.qualification || d.title || d.name || nameOf(d.referrerId) || ''}`, by: me.id });
+    audit('Background saved', `${fullName(e)}: ${def.title}`, 'org', 'employee', e.id);
+    saveNow(); closeDlg(); toast(proposed ? 'Saved. The new name goes to HR for the standard list.' : added ? 'Saved and added to the standard list' : 'Saved'); route();
+  };
+  if ($('#bgDel')) $('#bgDel').onclick = async () => { if (!(await confirmBox(`Remove this ${def.one}?`, 'HR’s check of it is removed too.', 'Remove'))) return; e[k] = (e[k] || []).filter((x) => x !== x0); saveNow(); closeDlg(); route(); };
+};
+ACT.bgCheck = (b) => {
+  const e = empById(b.dataset.emp), k = b.dataset.k; const x = (e[k] || []).find((y) => y.id === b.dataset.id); if (!x || !isHR(e.companyId)) return;
+  const v = x.verify || {};
+  const fields = [{ k: 'status', label: 'Result', type: 'select', opts: [['', 'Not checked yet'], ...Object.entries(VERIFY).map(([a, [l]]) => [a, l])] }, { k: 'at', label: 'Checked on', type: 'date' },
+    { k: 'how', label: 'How', type: 'select', opts: [['phone', 'Phone call'], ['email', 'E-mail'], ['document', 'Original document seen'], ['agency', 'Background-check agency'], ['portal', 'Online portal (university, EPFO)']] },
+    { k: 'spoke', label: 'Spoke to or replied', help: 'Name and designation' }, { k: 'note', label: 'Note (seen only by HR)', type: 'textarea', wide: true }];
+  openDlg(`<form class="dlg" id="bcF" novalidate><h2>Check: ${esc(BG[k].row(x)[0].replace(/<[^>]+>/g, ' ').trim().slice(0, 60))}</h2><p class="fine" style="margin:0">${esc(fullName(e))}. The employee sees the result, not your note.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, f.k === 'at' ? v.at || todayISO() : v[f.k])).join('')}</div><p class="err" id="bcE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save check</button></div></form>`, true);
+  $('#bcF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields);
+    if (d.status && d.status !== 'pending' && !d.at) { $('#bcE').textContent = 'Enter when it was checked.'; return; }
+    if (d.status === 'discrepancy' && d.note.length < 4) { $('#bcE').textContent = 'Say what does not match.'; return; }
+    if (d.status) x.verify = { ...d, by: me.id }; else delete x.verify;
+    audit('Background checked', `${fullName(e)}: ${BG[k].title}, ${d.status ? VERIFY[d.status][0] : 'not checked'}`, 'org', 'employee', e.id);
+    saveNow(); closeDlg(); toast('Saved'); route(); };
+};
+
+/* ---------------------------------------------------------------- standard lists (master data) */
+const MASTER_KINDS = { institution: 'Schools, colleges and institutes', qualification: 'Qualifications', employer: 'Employers (companies)' };
+const MASTER_ONE = { institution: 'institution', qualification: 'qualification', employer: 'employer' };
+const INST_TYPES = ['School', 'Junior college', 'College', 'University', 'Institute', 'ITI or polytechnic', 'Board', 'Professional body', 'Online provider'];
+const STARTER = {
+  institution: [['Central Board of Secondary Education (CBSE)', 'Board'], ['Council for the Indian School Certificate Examinations (CISCE)', 'Board'], ['National Institute of Open Schooling (NIOS)', 'Board'],
+    ['Maharashtra State Board of Secondary and Higher Secondary Education', 'Board'], ['Karnataka School Examination and Assessment Board', 'Board'], ['Tamil Nadu State Board', 'Board'],
+    ['Indian Institute of Science, Bengaluru', 'Institute', 'Bengaluru'], ['Indian Institute of Technology Bombay', 'Institute', 'Mumbai'], ['Indian Institute of Technology Delhi', 'Institute', 'New Delhi'],
+    ['Indian Institute of Technology Madras', 'Institute', 'Chennai'], ['Indian Institute of Technology Kanpur', 'Institute', 'Kanpur'], ['Indian Institute of Technology Kharagpur', 'Institute', 'Kharagpur'],
+    ['Indian Institute of Technology Roorkee', 'Institute', 'Roorkee'], ['National Institute of Technology Karnataka, Surathkal', 'Institute', 'Mangaluru'], ['National Institute of Technology Tiruchirappalli', 'Institute', 'Tiruchirappalli'],
+    ['Birla Institute of Technology and Science, Pilani', 'Institute', 'Pilani'], ['Indian Institute of Management Ahmedabad', 'Institute', 'Ahmedabad'], ['Indian Institute of Management Bangalore', 'Institute', 'Bengaluru'],
+    ['Indian Institute of Management Calcutta', 'Institute', 'Kolkata'], ['University of Mumbai', 'University', 'Mumbai'], ['University of Delhi', 'University', 'New Delhi'], ['Savitribai Phule Pune University', 'University', 'Pune'],
+    ['Anna University', 'University', 'Chennai'], ['Visvesvaraya Technological University', 'University', 'Belagavi'], ['Bangalore University', 'University', 'Bengaluru'], ['Osmania University', 'University', 'Hyderabad'],
+    ['Jawaharlal Nehru University', 'University', 'New Delhi'], ['University of Calcutta', 'University', 'Kolkata'], ['Gujarat University', 'University', 'Ahmedabad'], ['Manipal Academy of Higher Education', 'University', 'Manipal'],
+    ['Vellore Institute of Technology', 'University', 'Vellore'], ['SRM Institute of Science and Technology', 'University', 'Chennai'], ['Christ University', 'University', 'Bengaluru'], ['Symbiosis International University', 'University', 'Pune'],
+    ['Indira Gandhi National Open University (IGNOU)', 'University', 'New Delhi'], ['The Institute of Chartered Accountants of India (ICAI)', 'Professional body'], ['The Institute of Company Secretaries of India (ICSI)', 'Professional body'],
+    ['The Institute of Cost Accountants of India (ICMAI)', 'Professional body'], ['Government Industrial Training Institute', 'ITI or polytechnic'], ['Government Polytechnic', 'ITI or polytechnic']],
+  qualification: ['Class 10 (SSC)', 'Class 12 (HSC)', 'ITI', 'Diploma in Engineering', 'B.A.', 'B.Com', 'B.Sc', 'BBA', 'BCA', 'B.E.', 'B.Tech', 'B.Pharm', 'LLB', 'M.A.', 'M.Com', 'M.Sc', 'MBA', 'PGDM', 'MCA', 'M.E.', 'M.Tech', 'Ph.D', 'Chartered Accountant (CA)', 'Company Secretary (CS)', 'Cost and Management Accountant (CMA)'].map((x) => [x]),
+  employer: ['Tata Consultancy Services', 'Infosys', 'Wipro', 'HCLTech', 'Tech Mahindra', 'Accenture', 'Cognizant', 'Capgemini', 'IBM', 'Larsen & Toubro', 'Reliance Industries', 'Tata Motors', 'Mahindra & Mahindra', 'Maruti Suzuki',
+    'Bajaj Auto', 'Hindustan Unilever', 'ITC', 'Asian Paints', 'HDFC Bank', 'ICICI Bank', 'State Bank of India', 'Axis Bank', 'Avenue Supermarts (DMart)', 'Reliance Retail', 'Flipkart', 'Amazon India'].map((x) => [x]),
+};
+function masterUse(item) {
+  const idk = Object.values(MASTER_FIELD); let n = 0;
+  S.employees.filter((e) => e.companyId === item.companyId).forEach((e) => BG_KEYS.forEach((k) => (e[k] || []).forEach((x) => { if (idk.some((f) => x[f] === item.id)) n++; })));
+  return n;
+}
+/* points every profile entry that used one entry of a list at another (after a mapping or a rename) */
+function relinkMaster(fromId, to) {
+  S.employees.forEach((e) => { let ch = false; BG_KEYS.forEach((k) => (e[k] || []).forEach((x) => Object.entries(MASTER_FIELD).forEach(([f, idk]) => {
+    if (x[idk] === fromId) { const b = bgContent(x); x[idk] = to ? to.id : ''; if (to) x[f] = to.name; if (bgContent(x) !== b) ch = true; } }))); });
+}
+VIEWS.masterdata = () => {
+  if (!isHR()) return { title: 'Standard lists', html: '<div class="empty">Only HR keeps the standard lists.</div>' };
+  const tab = R.q.get('tab') || 'review';
+  const items = S.masterItems.filter((x) => x.companyId === CO);
+  const prop = items.filter((x) => x.status === 'proposed');
+  const tabs = `<nav class="tabs"><a href="#/masterdata?tab=review" class="${tab === 'review' ? 'on' : ''}">New names to review${prop.length ? ` (${prop.length})` : ''}</a>${Object.entries(MASTER_KINDS).map(([k, l]) => `<a href="#/masterdata?tab=${k}" class="${tab === k ? 'on' : ''}">${l}</a>`).join('')}</nav>`;
+  if (tab === 'review') {
+    return { title: 'Standard lists', html: `${tabs}<div class="card"><div class="hd"><div><h2>New names from employees</h2><p class="sub">When someone types an institution, qualification or employer that is not on a standard list, it waits here. <b>Add to list</b> makes it a standard entry for everyone. <b>Same as…</b> points it at an entry already on the list, and that spelling is matched from then on. <b>Keep off the list</b> leaves it on their profile as typed, without offering it to others.</p></div></div>
+      ${prop.length ? `<div class="scroll"><table class="t"><thead><tr><th>Name as typed</th><th>List</th><th>From</th><th>Used in</th><th>Closest on the list</th><th></th></tr></thead><tbody>${prop.sort((a, b) => a.proposedAt - b.proposedAt).map((x) => { const near = masterNearest(x);
+        return `<tr><td><b>${esc(x.name)}</b></td><td>${esc(MASTER_ONE[x.kind])}</td><td>${esc(nameOf(x.proposedBy))}<div class="fine">${dt(x.proposedAt)}</div></td><td>${masterUse(x)} profile${masterUse(x) === 1 ? '' : 's'}</td><td>${near ? esc(near.name) : '<span class="fine">Nothing close</span>'}</td>
+          <td class="r" style="white-space:nowrap"><button class="btn sm ok" data-act="mdAccept" data-id="${x.id}">Add to list</button> <button class="btn sm" data-act="mdMap" data-id="${x.id}">Same as…</button> <button class="btn sm ghost" data-act="mdReject" data-id="${x.id}">Keep off the list</button></td></tr>`; }).join('')}</tbody></table></div>`
+        : '<div class="empty">Nothing to review. New names employees type appear here.</div>'}</div>
+      ${items.filter((x) => ['rejected', 'merged'].includes(x.status)).length ? `<div class="card"><h2>Decided earlier</h2><div class="scroll"><table class="t"><thead><tr><th>Name as typed</th><th>List</th><th>Decision</th><th>By</th><th></th></tr></thead><tbody>${items.filter((x) => ['rejected', 'merged'].includes(x.status)).sort((a, b) => (b.decidedAt || 0) - (a.decidedAt || 0)).slice(0, 40).map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(MASTER_ONE[x.kind])}</td><td>${x.status === 'merged' ? `Same as <b>${esc((masterById(x.mergedInto) || {}).name || '—')}</b>` : 'Kept off the list'}</td><td>${esc(nameOf(x.decidedBy))}<div class="fine">${dt(x.decidedAt)}</div></td><td class="r">${x.status === 'rejected' ? `<button class="btn sm" data-act="mdAccept" data-id="${x.id}">Add to list after all</button>` : ''}</td></tr>`).join('')}</tbody></table></div></div>` : ''}` };
+  }
+  const list = items.filter((x) => x.kind === tab && x.status === 'approved').sort((a, b) => a.name.localeCompare(b.name));
+  const q = (R.q.get('q') || '').toLowerCase(); const shown = q ? list.filter((x) => `${x.name} ${x.city || ''} ${(x.aliases || []).join(' ')}`.toLowerCase().includes(q)) : list;
+  return { title: 'Standard lists', html: `${tabs}<div class="card"><div class="hd"><div><h2>${esc(MASTER_KINDS[tab])}</h2><p class="sub">${list.length} on the list. Employees choose from it on the Background tab of their profile${tab === 'employer' ? ' (previous employment)' : ' (education)'}. Other spellings matched to an entry are shown under it.</p></div>
+    <div class="tools"><input class="inp" placeholder="Search" value="${esc(R.q.get('q') || '')}" data-ch="mdQ" style="min-width:180px">${list.length < 10 ? `<button class="btn" data-act="mdStarter" data-k="${tab}">Add the starter list</button>` : ''}<label class="btn">Import from Excel<input type="file" accept=".xlsx,.xls,.csv" hidden data-ch="mdImport" data-k="${tab}"></label><button class="btn" data-act="mdExport" data-k="${tab}">Download Excel</button><button class="btn pri" data-act="mdEdit" data-k="${tab}">Add ${esc(MASTER_ONE[tab])}</button></div></div>
+    ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Name</th>${tab === 'institution' ? '<th>Type</th><th>City</th>' : ''}<th>Also matches</th><th class="r">Used in</th><th>Added</th></tr></thead><tbody>${shown.map((x) => `<tr class="click" data-act="mdEdit" data-k="${tab}" data-id="${x.id}"><td><b>${esc(x.name)}</b></td>${tab === 'institution' ? `<td>${esc(x.type || '')}</td><td>${esc(x.city || '')}</td>` : ''}<td class="fine">${esc((x.aliases || []).join(', '))}</td><td class="r">${masterUse(x)}</td><td class="fine">${x.proposedBy && x.proposedBy !== x.decidedBy ? `Proposed by ${esc(nameOf(x.proposedBy))}` : x.source === 'starter' ? 'Starter list' : x.source === 'import' ? 'Imported' : ''}</td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="empty">${list.length ? 'Nothing matches the search.' : 'The list is empty. Add entries, import them from Excel, or start from the starter list.'}</div>`}</div>` };
+};
+function masterNearest(x) {
+  const k = normKey(x.name); const words = new Set(k.split(' ').filter((w) => w.length > 2));
+  let best = null, score = 0;
+  S.masterItems.filter((y) => y.companyId === x.companyId && y.kind === x.kind && y.status === 'approved').forEach((y) => { const yk = normKey(y.name); let s = yk.includes(k) || k.includes(yk) ? 5 : 0; yk.split(' ').forEach((w) => { if (words.has(w)) s++; }); if (s > score) { score = s; best = y; } });
+  return score >= 2 ? best : null;
+}
+ACT.mdQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/masterdata?' + p); };
+function mdFields(kind) { return [{ k: 'name', label: 'Name, in full', req: true, wide: true }, ...(kind === 'institution' ? [{ k: 'type', label: 'Type', type: 'select', opts: INST_TYPES.map((x) => [x, x]) }, { k: 'city', label: 'City' }] : []), { k: 'aliasTxt', label: 'Other spellings to match (comma separated)', wide: true, help: 'For example: IIT Bombay, IITB' }]; }
+ACT.mdEdit = (b) => {
+  const kind = b.dataset.k; const x0 = b.dataset.id ? masterById(b.dataset.id) : null; const fields = mdFields(kind);
+  const v = x0 ? { ...x0, aliasTxt: (x0.aliases || []).join(', ') } : { type: 'College' };
+  openDlg(`<form class="dlg" id="mdF" novalidate><h2>${x0 ? 'Edit' : 'Add'} ${esc(MASTER_ONE[kind])}</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div>${x0 ? `<p class="fine">Used in ${masterUse(x0)} profile entries. A new name is changed on them too.</p>` : ''}<p class="err" id="mdE"></p>
+    <div class="btns">${x0 ? '<button type="button" class="btn danger" id="mdDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#mdF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); d.name = d.name.replace(/\s+/g, ' ').trim();
+    if (d.name.length < 2) { $('#mdE').textContent = 'Enter the name.'; return; }
+    const dup = S.masterItems.find((y) => y !== x0 && y.companyId === CO && y.kind === kind && y.status === 'approved' && normKey(y.name) === normKey(d.name)); if (dup) { $('#mdE').textContent = `${dup.name} is already on the list.`; return; }
+    const aliases = d.aliasTxt.split(',').map((s) => s.trim()).filter(Boolean); delete d.aliasTxt;
+    if (x0) { const renamed = x0.name !== d.name; Object.assign(x0, d, { aliases }); if (renamed) relinkMaster(x0.id, x0); }
+    else S.masterItems.push({ id: uid(), companyId: CO, kind, ...d, aliases, status: 'approved', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() });
+    audit('Standard list changed', `${MASTER_ONE[kind]}: ${d.name}`, 'org'); saveNow(); closeDlg(); toast('Saved'); route(); };
+  if ($('#mdDel')) $('#mdDel').onclick = async () => { if (masterUse(x0)) { toast('Profiles use this entry. Rename it, or map a duplicate to it instead.'); return; }
+    if (!(await confirmBox('Remove from the list?', x0.name, 'Remove'))) return; S.masterItems = S.masterItems.filter((y) => y !== x0); saveNow(); closeDlg(); route(); };
+};
+ACT.mdAccept = (b) => {
+  const x = masterById(b.dataset.id); const fields = mdFields(x.kind).filter((f) => f.k !== 'aliasTxt');
+  openDlg(`<form class="dlg" id="maF" novalidate><h2>Add to the standard list</h2><p class="fine" style="margin:0">Correct the spelling if needed: ${masterUse(x)} profile entr${masterUse(x) === 1 ? 'y uses' : 'ies use'} it and will show the corrected name.</p><div class="form">${fields.map((f) => fieldHtml(f, x[f.k] || (f.k === 'type' ? 'College' : ''))).join('')}</div><p class="err" id="maE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add to list</button></div></form>`, true);
+  $('#maF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); d.name = d.name.replace(/\s+/g, ' ').trim(); if (d.name.length < 2) { $('#maE').textContent = 'Enter the name.'; return; }
+    const dup = S.masterItems.find((y) => y !== x && y.companyId === x.companyId && y.kind === x.kind && y.status === 'approved' && normKey(y.name) === normKey(d.name)); if (dup) { $('#maE').textContent = `${dup.name} is already on the list. Use “Same as…” instead.`; return; }
+    const typed = x.name; Object.assign(x, d, { status: 'approved', decidedBy: me.id, decidedAt: Date.now() }); if (normKey(typed) !== normKey(d.name)) x.aliases = [...(x.aliases || []), typed];
+    relinkMaster(x.id, x); audit('Standard list: name added', `${MASTER_ONE[x.kind]}: ${x.name}`, 'org'); saveNow(); closeDlg(); toast('Added to the standard list'); route(); };
+};
+ACT.mdMap = (b) => {
+  const x = masterById(b.dataset.id); const opts = S.masterItems.filter((y) => y.companyId === x.companyId && y.kind === x.kind && y.status === 'approved').sort((a, c) => a.name.localeCompare(c.name)); const near = masterNearest(x);
+  if (!opts.length) { toast('The list is empty. Add the entry instead.'); return; }
+  openDlg(`<form class="dlg" id="mmF"><h2>“${esc(x.name)}” is the same as</h2><label class="field">Entry on the list<select class="inp" name="to">${opts.map((y) => `<option value="${y.id}" ${near && near.id === y.id ? 'selected' : ''}>${esc(y.name)}${y.city ? `, ${esc(y.city)}` : ''}</option>`).join('')}</select></label>
+    <p class="fine">The ${masterUse(x)} profile entr${masterUse(x) === 1 ? 'y' : 'ies'} with this name will show the entry you choose, and this spelling is matched to it from now on.</p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Map to it</button></div></form>`);
+  $('#mmF').onsubmit = (ev) => { ev.preventDefault(); const to = masterById(ev.target.elements.to.value);
+    to.aliases = [...new Set([...(to.aliases || []), x.name])]; Object.assign(x, { status: 'merged', mergedInto: to.id, decidedBy: me.id, decidedAt: Date.now() }); relinkMaster(x.id, to);
+    audit('Standard list: name mapped', `${x.name} → ${to.name}`, 'org'); saveNow(); closeDlg(); toast(`Mapped to ${to.name}`); route(); };
+};
+ACT.mdReject = async (b) => {
+  const x = masterById(b.dataset.id);
+  if (!(await confirmBox('Keep this name off the list?', `“${x.name}” stays on the profile as typed but is not offered to others.`, 'Keep off the list'))) return;
+  Object.assign(x, { status: 'rejected', decidedBy: me.id, decidedAt: Date.now() }); audit('Standard list: name kept off', x.name, 'org'); saveNow(); route();
+};
+ACT.mdStarter = (b) => {
+  const kind = b.dataset.k; let n = 0;
+  STARTER[kind].forEach(([name, type, city]) => { if (S.masterItems.some((y) => y.companyId === CO && y.kind === kind && normKey(y.name) === normKey(name))) return;
+    S.masterItems.push({ id: uid(), companyId: CO, kind, name, ...(type ? { type } : {}), ...(city ? { city } : {}), status: 'approved', source: 'starter', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
+  saveNow(); toast(`${n} added`); route();
+};
+ACT.mdImport = async (el) => {
+  const f = el.files[0]; el.value = ''; if (!f) return; const kind = el.dataset.k;
+  try { const rows = await readSheet(f); let n = 0, skip = 0;
+    rows.forEach((r) => { const k = (names) => String(r[Object.keys(r).find((x) => names.includes(x.toLowerCase().replace(/[^a-z]/g, '')))] ?? '').trim();
+      const name = k(['name', 'institution', 'employer', 'company', 'qualification']).replace(/\s+/g, ' '); if (name.length < 2 || S.masterItems.some((y) => y.companyId === CO && y.kind === kind && y.status === 'approved' && normKey(y.name) === normKey(name))) { skip++; return; }
+      S.masterItems.push({ id: uid(), companyId: CO, kind, name, type: k(['type']) || undefined, city: k(['city']) || undefined, aliases: k(['alsomatches', 'aliases', 'otherspellings']).split(',').map((s) => s.trim()).filter(Boolean), status: 'approved', source: 'import', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
+    saveNow(); toast(`${n} imported${skip ? `, ${skip} skipped (empty or already on the list)` : ''}`); route();
+  } catch (x) { toast(x.message); }
+};
+ACT.mdExport = (b) => { const kind = b.dataset.k; writeBook(`${MASTER_KINDS[kind]}_${company().code}.xlsx`, { [MASTER_ONE[kind]]: S.masterItems.filter((x) => x.companyId === CO && x.kind === kind && x.status === 'approved').map((x) => ({ Name: x.name, ...(kind === 'institution' ? { Type: x.type || '', City: x.city || '' } : {}), 'Also matches': (x.aliases || []).join(', '), 'Used in': masterUse(x) })) }); };
+
+/* ---------------------------------------------------------------- contractors (third party) */
+const CON_FIELDS = [{ k: 'name', label: 'Contractor (agency) name', req: true }, { k: 'code', label: 'Short code', req: true }, { k: 'legalName', label: 'Legal name' },
+  { k: 'licenceNo', label: 'Contract labour licence number', help: 'Under the Contract Labour Act, or the labour code that applies' }, { k: 'licenceTo', label: 'Licence valid to', type: 'date' }, { k: 'maxWorkers', label: 'Workers allowed by the licence', type: 'number', min: 0 },
+  { k: 'pan', label: 'PAN' }, { k: 'gstin', label: 'GSTIN' }, { k: 'pfCode', label: 'PF establishment code' }, { k: 'esiCode', label: 'ESI employer code' },
+  { k: 'servicePct', label: 'Service charge (%)', type: 'number', step: 0.01, min: 0 }, { k: 'serviceOn', label: 'Service charge on', type: 'select', opts: [['cost', 'Wages plus employer PF and ESI'], ['wages', 'Gross wages only']] },
+  { k: 'gstPct', label: 'GST (%)', type: 'number', step: 0.01, min: 0, help: '0 if the contractor is not registered for GST' }, { k: 'gstOn', label: 'GST on', type: 'select', opts: [['service', 'Service charge only'], ['total', 'The whole bill']] },
+  { k: 'contactName', label: 'Contact person' }, { k: 'phone', label: 'Phone' }, { k: 'email', label: 'E-mail', type: 'email' }, { k: 'address', label: 'Address', wide: true },
+  { k: 'bankName', label: 'Bank' }, { k: 'bankAcc', label: 'Account number' }, { k: 'ifsc', label: 'IFSC' }, { k: 'active', label: 'Active', type: 'check' }];
+function conLedger(cid) {
+  const runs = S.payRuns.filter((r) => r.companyId === CO && runReg(r) === 'contract' && r.status === 'locked' && (r.bills || {})[cid]);
+  const billed = runs.reduce((s, r) => s + (+r.bills[cid].total || 0), 0), paid = runs.reduce((s, r) => s + billPaid(r, cid), 0);
+  return { runs, billed: r2(billed), paid: r2(paid), due: r2(Math.max(0, billed - paid)) };
+}
+VIEWS.contractors = () => {
+  const cons = S.contractors.filter((c) => c.companyId === CO);
+  const t = todayISO();
+  const open = S.payRuns.filter((r) => r.companyId === CO && runReg(r) === 'contract' && r.status === 'locked').flatMap((r) => Object.keys(r.bills || {}).map((cid) => ({ r, cid, due: billDue(r, cid) }))).filter((x) => x.due > 0.5).sort((a, b) => (a.r.month < b.r.month ? -1 : 1));
+  return { title: 'Contractors', html: `${crudCard('contractors', { coll: 'contractors', title: 'Contractors (third party)', one: 'contractor', wide: true, filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }), addLabel: 'Add contractor',
+    sub: 'Agencies that supply contract workers. Their workers have their own attendance register and payroll; the company pays the contractor’s bill, and each payment is knocked off against it.',
+    defaults: { servicePct: 8, serviceOn: 'cost', gstPct: 18, gstOn: 'service', active: true },
+    validate: (d, rec) => { d.code = d.code.toUpperCase(); if (S.contractors.some((c) => c !== rec && c.companyId === CO && c.code === d.code)) return 'That code is in use.'; if (d.gstin && !/^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$/.test(d.gstin.toUpperCase())) return 'GSTIN should look like 27ABCDE1234F1Z5.'; if (d.gstin) d.gstin = d.gstin.toUpperCase(); if (d.pan) d.pan = d.pan.toUpperCase(); return ''; },
+    inUse: (r) => (S.employees.some((e) => e.contractorId === r.id) ? 'Workers are attached to this contractor. Make it inactive instead.' : ''),
+    fields: CON_FIELDS, sort: (a, b) => a.name.localeCompare(b.name),
+    cols: [{ label: 'Contractor', fmt: (r) => `<b>${esc(r.name)}</b> <span class="fine">${esc(r.code)}</span>${r.active === false ? ' <span class="badge">Inactive</span>' : ''}` },
+      { label: 'Licence', fmt: (r) => `${esc(r.licenceNo || '—')}${r.licenceTo ? `<div class="fine ${r.licenceTo < t ? 'bad' : ''}">${r.licenceTo < t ? 'Expired' : 'to'} ${dmy(r.licenceTo)}</div>` : ''}` },
+      { label: 'Workers', cls: 'r', fmt: (r) => { const n = coEmployees().filter((e) => e.contractorId === r.id).length; return `${n}${+r.maxWorkers && n > +r.maxWorkers ? ` <span class="badge bad">over ${r.maxWorkers}</span>` : ''}`; } },
+      { label: 'Charges', fmt: (r) => `${num(r.servicePct || 0)}% service, GST ${num(r.gstPct === '' || r.gstPct == null ? 18 : r.gstPct)}%` },
+      { label: 'Billed', cls: 'r', fmt: (r) => inr0(conLedger(r.id).billed) }, { label: 'Paid', cls: 'r', fmt: (r) => inr0(conLedger(r.id).paid) }, { label: 'Outstanding', cls: 'r', fmt: (r) => `<b>${inr0(conLedger(r.id).due)}</b>` }] })}
+    <div class="card"><div class="hd"><div><h2>Bills to pay</h2><p class="sub">Bills from locked contract payroll. Record each payment the company makes; when a bill is paid in full it is knocked off.</p></div><a class="btn" href="#/payroll?tab=contract">Contract workers' payroll</a></div>
+      ${open.length ? `<div class="scroll"><table class="t"><thead><tr><th>Month</th><th>Contractor</th><th class="r">Bill</th><th class="r">Paid</th><th class="r">Outstanding</th><th></th></tr></thead><tbody>${open.map((x) => `<tr><td>${monthName(x.r.month)}</td><td>${esc(conName(x.cid))}</td><td class="r">${inr0(x.r.bills[x.cid].total)}</td><td class="r">${inr0(billPaid(x.r, x.cid))}</td><td class="r"><b>${inr0(x.due)}</b></td>
+        <td class="r"><button class="btn sm pri" data-act="conPay" data-run="${x.r.id}" data-con="${x.cid}">Record payment</button> <a class="btn sm" href="#/payroll/${x.r.id}?tab=contract">Open</a></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing outstanding. Every contractor bill is paid and knocked off.</div>'}</div>` };
+};
+
+/* ---------------------------------------------------------------- contract workers' payroll: bills and knock-off */
+function contractBills(run) {
+  const bills = {};
+  Object.values(run.results || {}).forEach((r) => { const e = empById(r.empId); const cid = (e && e.contractorId) || '';
+    const b = bills[cid] = bills[cid] || { workers: 0, gross: 0, net: 0, ded: 0, employer: 0 };
+    b.workers++; b.gross += r.gross; b.net += r.net; b.ded += r.totalDed; b.employer += r.employer.reduce((s, x) => s + x.amount, 0); });
+  Object.entries(bills).forEach(([cid, b]) => { const c = contractorById(cid) || {};
+    const pct = +c.servicePct || 0, gstPct = c.gstPct === '' || c.gstPct == null ? 18 : +c.gstPct;
+    ['gross', 'net', 'ded', 'employer'].forEach((k) => { b[k] = r2(b[k]); });
+    b.service = r2((c.serviceOn === 'wages' ? b.gross : b.gross + b.employer) * pct / 100);
+    b.gst = r2((c.gstOn === 'total' ? b.gross + b.employer + b.service : b.service) * gstPct / 100);
+    Object.assign(b, { servicePct: pct, gstPct, total: Math.round(b.gross + b.employer + b.service + b.gst) }); });
+  return bills;
+}
+function billPaid(run, cid) { return r2((run.payments || []).filter((p) => p.contractorId === cid).reduce((s, p) => s + (+p.amount || 0), 0)); }
+function billDue(run, cid) { const b = (run.bills || {})[cid]; return b ? Math.max(0, r2(b.total - billPaid(run, cid))) : 0; }
+function runDue(run) { return r2(Object.keys(run.bills || {}).reduce((s, c) => s + billDue(run, c), 0)); }
+function runBillTotal(run) { return Object.values(run.bills || {}).reduce((s, b) => s + (+b.total || 0), 0); }
+function contractRunBadge(r) {
+  if (r.status !== 'locked') return '<span class="badge warn">Draft</span>';
+  const due = runDue(r), tot = runBillTotal(r);
+  return due <= 0.5 ? '<span class="badge ok">Paid: knocked off</span>' : due < tot - 0.5 ? '<span class="badge info">Part paid</span>' : '<span class="badge mari">Locked: bill to pay</span>';
+}
+function billsCard(run) {
+  const bills = run.bills || {}; const locked = run.status === 'locked';
+  const btn = (a, l, cid) => `<button class="btn sm" data-act="${a}" data-id="${run.id}" data-con="${esc(cid)}">${l}</button>`;
+  return `<div class="card"><div class="hd"><div><h2>Contractor bills</h2><p class="sub">What each contractor is owed: wages, employer PF and ESI, service charge and GST. ${locked ? 'Record each payment; a bill paid in full is knocked off and drops out of what is outstanding.' : 'Bills become final when the payroll is locked; payments are recorded after that.'}</p></div></div>
+    <div class="scroll"><table class="t"><thead><tr><th>Contractor</th><th class="r">Workers</th><th class="r">Gross wages</th><th class="r">Employer PF, ESI</th><th class="r">Service charge</th><th class="r">GST</th><th class="r">Bill</th><th class="r">Paid</th><th class="r">Outstanding</th></tr></thead><tbody>
+    ${Object.entries(bills).map(([cid, b]) => { const due = billDue(run, cid); return `<tr><td><b>${esc(conName(cid))}</b>${!cid ? '<div class="fine bad">Attach these workers to a contractor</div>' : ''}${(contractorById(cid) || {}).licenceTo && contractorById(cid).licenceTo < monthEnd(run.month) ? '<div class="fine bad">Licence expired</div>' : ''}</td><td class="r">${b.workers}</td><td class="r">${inr0(b.gross)}</td><td class="r">${inr0(b.employer)}</td>
+      <td class="r">${inr0(b.service)}<div class="fine">${num(b.servicePct)}%</div></td><td class="r">${inr0(b.gst)}<div class="fine">${num(b.gstPct)}%</div></td><td class="r"><b>${inr0(b.total)}</b></td><td class="r">${inr0(billPaid(run, cid))}</td><td class="r">${locked ? (due > 0.5 ? `<b>${inr0(due)}</b>` : '<span class="badge ok">Knocked off</span>') : '—'}</td></tr>
+      <tr><td colspan="9" style="border-top:0;padding-top:0"><div class="tools" style="justify-content:flex-end">${btn('conBill', 'Bill', cid)} ${btn('repRegister', 'Wage register', cid)} ${btn('repECR', 'PF ECR', cid)} ${btn('repESI', 'ESI file', cid)} ${btn('repBank', 'Bank file', cid)} ${btn('repSlips', 'Payslips', cid)}${locked && due > 0.5 ? ` <button class="btn sm pri" data-act="conPay" data-run="${run.id}" data-con="${esc(cid)}">Record payment</button>` : ''}</div></td></tr>`; }).join('') || '<tr><td colspan="9" class="mut">No contract workers were paid this month.</td></tr>'}</tbody></table></div>
+    ${(run.payments || []).length ? `<h3>Payments</h3><table class="t"><thead><tr><th>Date</th><th>Contractor</th><th class="r">Amount</th><th>Mode and reference</th><th>Paid by</th><th>Statutory check</th><th></th></tr></thead><tbody>${run.payments.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).map((p) => `<tr><td>${dmy(p.date)}</td><td>${esc(conName(p.contractorId))}</td><td class="r">${inr(p.amount)}</td><td>${esc(p.mode || '')} ${esc(p.ref || '')}${p.note ? `<div class="fine">${esc(p.note)}</div>` : ''}</td><td>${esc(p.paidBy || '')}<div class="fine">recorded by ${esc(nameOf(p.by))}</div></td><td>${p.challans ? 'PF and ESI challans seen' : '<span class="fine">Not recorded</span>'}</td><td class="r"><button class="btn sm ghost" data-act="conPayDel" data-run="${run.id}" data-id="${p.id}">Remove</button></td></tr>`).join('')}</tbody></table>` : ''}</div>`;
+}
+ACT.conPay = (b) => {
+  const run = S.payRuns.find((r) => r.id === b.dataset.run); const cid = b.dataset.con; const due = billDue(run, cid); const co = coById(run.companyId);
+  if (run.status !== 'locked') { toast('Lock the payroll first; the bill is final then.'); return; }
+  const fields = [{ k: 'amount', label: 'Amount paid (₹)', type: 'number', min: 1, step: 0.01, req: true }, { k: 'date', label: 'Paid on', type: 'date', req: true },
+    { k: 'mode', label: 'Mode', type: 'select', opts: [['NEFT', 'NEFT'], ['RTGS', 'RTGS'], ['IMPS', 'IMPS'], ['Cheque', 'Cheque'], ['Other', 'Other']] }, { k: 'ref', label: 'UTR or cheque number' },
+    { k: 'paidBy', label: 'Paid by' }, { k: 'challans', label: 'The contractor’s PF and ESI challans for this month were seen', type: 'check', wide: true }, { k: 'note', label: 'Note', wide: true }];
+  openDlg(`<form class="dlg" id="cpF" novalidate><h2>Payment to ${esc(conName(cid))}, ${monthName(run.month)}</h2><p class="fine" style="margin:0">Bill ${inr0(run.bills[cid].total)}, paid so far ${inr0(billPaid(run, cid))}, outstanding <b>${inr0(due)}</b>. As principal employer the company should see the contractor’s PF and ESI payments for these workers.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, { amount: due, date: todayISO(), mode: 'NEFT', paidBy: co.legalName || co.name }[f.k])).join('')}</div><p class="err" id="cpE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Record payment</button></div></form>`, true);
+  $('#cpF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); const err = (m) => { $('#cpE').textContent = m; };
+    if (!(d.amount > 0)) return err('Enter the amount paid.'); if (d.amount > due + 1) return err(`That is more than the ${inr0(due)} outstanding.`); if (!d.date) return err('Enter the date of payment.'); if (d.date > todayISO()) return err('The payment date is in the future.');
+    (run.payments = run.payments || []).push({ id: uid(), contractorId: cid, ...d, amount: r2(d.amount), by: me.id, at: Date.now() });
+    const left = billDue(run, cid); if (runDue(run) <= 0.5) run.settledAt = Date.now();
+    audit('Contractor paid', `${conName(cid)} ${run.month}: ${inr0(d.amount)}${left <= 0.5 ? ', knocked off' : `, ${inr0(left)} outstanding`}`, 'payroll', 'payrun', run.id);
+    saveNow(); closeDlg(); toast(left <= 0.5 ? 'Paid in full: the bill is knocked off' : `Recorded. ${inr0(left)} still outstanding`); route(); };
+};
+ACT.conPayDel = async (b) => {
+  const run = S.payRuns.find((r) => r.id === b.dataset.run); const p = (run.payments || []).find((x) => x.id === b.dataset.id);
+  if (!(await confirmBox('Remove this payment?', `${inr(p.amount)} to ${conName(p.contractorId)} on ${dmy(p.date)}. The bill becomes outstanding again.`, 'Remove'))) return;
+  run.payments = run.payments.filter((x) => x !== p); delete run.settledAt; audit('Contractor payment removed', `${conName(p.contractorId)} ${run.month}: ${inr0(p.amount)}`, 'payroll', 'payrun', run.id); saveNow(); route();
+};
+ACT.conBill = (b) => {
+  const run = S.payRuns.find((r) => r.id === b.dataset.id); const cid = b.dataset.con; const bill = run.bills[cid]; const c = contractorById(cid) || {}; const co = coById(run.companyId);
+  const rows = Object.values(run.results).filter((r) => (empById(r.empId).contractorId || '') === cid);
+  printHtml(`Bill ${c.code || ''} ${run.month}`, `<div style="display:flex;justify-content:space-between;gap:20px"><div><h2>${esc(c.legalName || c.name || 'Contractor')}</h2><div class="fine">${esc(c.address || '')}${c.gstin ? `<br>GSTIN ${esc(c.gstin)}` : ''}${c.licenceNo ? `<br>Licence ${esc(c.licenceNo)}` : ''}</div></div>
+    <div style="text-align:right"><b>Bill for contract labour, ${monthName(run.month)}</b><div class="fine">To ${esc(co.legalName || co.name)}<br>${esc(co.address || '')}</div></div></div><hr>
+    <table><tr><th>Worker</th><th class="r">Paid days</th><th class="r">Gross wages</th><th class="r">Employer PF</th><th class="r">Employer ESI</th><th class="r">Net pay</th></tr>
+    ${rows.map((r) => { const e = empById(r.empId); const amt = (pre) => r.employer.filter((x) => x.code.startsWith(pre)).reduce((s, x) => s + x.amount, 0); return `<tr><td>${esc(fullName(e))} <span class="fine">${esc(e.empNo)}</span></td><td class="r">${num(r.paidDays)}</td><td class="r">${inr(r.gross)}</td><td class="r">${inr0(amt('/3F'))}</td><td class="r">${inr0(amt('/3E'))}</td><td class="r">${inr(r.net)}</td></tr>`; }).join('')}</table>
+    <table style="width:50%;margin-left:auto"><tr><td>Gross wages</td><td class="r">${inr(bill.gross)}</td></tr><tr><td>Employer contributions (PF, ESI, LWF)</td><td class="r">${inr(bill.employer)}</td></tr>
+      <tr><td>Service charge ${num(bill.servicePct)}%</td><td class="r">${inr(bill.service)}</td></tr><tr><td>GST ${num(bill.gstPct)}%</td><td class="r">${inr(bill.gst)}</td></tr><tr><td><b>Total</b></td><td class="r"><b>${inr(bill.total)}</b></td></tr>
+      <tr><td>Paid</td><td class="r">${inr(billPaid(run, cid))}</td></tr><tr><td><b>Outstanding</b></td><td class="r"><b>${inr(billDue(run, cid))}</b></td></tr></table>
+    <p class="fine">Prepared from the contract workers' payroll in PeopleDesk${run.status === 'locked' ? '' : ' (draft: not yet locked)'}.</p>`);
+};
+
+ACT.attLock = async () => {
+  const r = S.payRuns.find((x) => x.id === R.arg); if (!r) return; const upTo = lockUpToFor(r.month);
+  if (upTo < `${r.month}-01`) { toast('This month has not started yet.'); return; }
+  if (!(await confirmBox('Lock attendance?', `Attendance up to ${dmy(upTo)} for ${REGS[runReg(r)].toLowerCase()} cannot change until you unlock it: punches, corrections, leave and the roster. Recalculate the payroll after locking so it uses the final attendance.`, 'Lock attendance'))) return;
+  Object.assign(r, { attLocked: true, attLockUpTo: upTo, attLockedAt: Date.now(), attLockedBy: me.id });
+  if (r.status !== 'locked') computeRun(r);
+  audit('Attendance locked for payroll', `${company().code} ${r.month} up to ${dmy(upTo)}`, 'payroll', 'payrun', r.id); saveNow(); toast('Attendance locked and payroll recalculated'); route();
+};
+ACT.attUnlock = async () => {
+  const r = S.payRuns.find((x) => x.id === R.arg); if (!r) return;
+  if (r.status === 'locked') { toast('Unlock the payroll first.'); return; }
+  if (!(await confirmBox('Unlock attendance?', 'Punches, leave and the roster for this month can be changed again. Recalculate the payroll afterwards.', 'Unlock attendance'))) return;
+  Object.assign(r, { attLocked: false, attLockUpTo: '' }); audit('Attendance unlocked', `${company().code} ${r.month}`, 'payroll', 'payrun', r.id); saveNow(); route();
+};
+/* from the attendance register: lock the month by running payroll for it */
+ACT.attLockFor = async (b) => {
+  const ym = b.dataset.m, reg = b.dataset.reg; const upTo = lockUpToFor(ym);
+  if (upTo < `${ym}-01`) { toast('This month has not started yet.'); return; }
+  if (!(await confirmBox('Lock attendance for payroll?', `Payroll for ${monthName(ym)} (${REGS[reg].toLowerCase()}) is run and attendance up to ${dmy(upTo)} is locked.`, 'Lock and run payroll'))) return;
+  const run = ensureRun(CO, reg, ym); if (!run) return;
+  Object.assign(run, { attLocked: true, attLockUpTo: upTo, attLockedAt: Date.now(), attLockedBy: me.id }); if (run.status !== 'locked') computeRun(run);
+  audit('Attendance locked for payroll', `${company().code} ${ym} up to ${dmy(upTo)}`, 'payroll', 'payrun', run.id); saveNow(); go(`#/payroll/${run.id}${reg === 'contract' ? '?tab=contract' : ''}`);
+};
+
+/* ---------------------------------------------------------------- manager: change team shifts, with the policy's notice */
+VIEWS.shiftchange = () => {
+  const pol = shiftPol(CO); const n = +pol.noticeHrs || 0; const hr = isHR();
+  if (!hr && pol.mgrChange === false) return { title: 'Change team shifts', html: '<div class="empty">Your company’s policy lets only HR change shifts. Team members can still ask for a change on their attendance page.</div>' };
+  const emps = lineEmps(CO).filter((e) => hr || e.id !== me.id).sort((a, b) => (attGroup(b) === 'shift') - (attGroup(a) === 'shift') || fullName(a).localeCompare(fullName(b)));
+  const first = firstChangeable(CO); const shifts = S.shifts.filter((s) => s.companyId === CO);
+  const recent = S.regs.filter((r) => r.type === 'shift' && r.by && r.by !== r.empId && emps.some((e) => e.id === r.empId) && r.at > Date.now() - 45 * 86400000).sort((a, b) => b.at - a.at).slice(0, 30);
+  return { title: 'Change team shifts', html: `<div class="card"><div class="hd"><div><h2>Change shifts for your team</h2><p class="sub">${n > 0 ? `Company policy: a shift can be changed up to <b>${num(n, 1)} hours</b> before it starts${hr && pol.hrOverride !== false ? '; as HR you may change it later' : ''}. The earliest day you can change now is <b>${D(first).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</b>.` : 'Company policy sets no notice for shift changes.'} Each person sees the change when they next sign in, and it is listed on their attendance page.</p></div>${hr ? '<a class="btn" href="#/shiftpolicy">Policy</a>' : ''}</div>
+    <form id="scF" novalidate><div class="form">
+      <label class="field">From<input type="date" class="inp" name="from" value="${first}" min="${hr && pol.hrOverride !== false ? '' : first}"></label><label class="field">To<input type="date" class="inp" name="to" value="${first}"></label>
+      <label class="field">New shift<select class="inp" name="shift">${shifts.map((s) => `<option value="${s.id}">${esc(s.code)} ${esc(s.name)} ${esc(s.start)}–${esc(s.end)}</option>`).join('')}<option value="WO">Weekly off</option><option value="">Their default shift</option></select></label>
+      <label class="field wide">Reason<input class="inp" name="reason" placeholder="e.g. covering for leave, production plan for the week"></label></div>
+      <fieldset style="border:1px solid var(--rule);border-radius:9px;max-height:260px;overflow:auto;margin-top:10px"><legend class="fine">People (shift staff first)</legend>${emps.map((e) => `<label class="chk"><input type="checkbox" name="emp" value="${e.id}"> ${esc(fullName(e))} <span class="fine">${esc(catLabel(e))}${e.patternId ? `, rotation ${esc((S.shiftPatterns.find((p) => p.id === e.patternId) || {}).name || '')}` : ''}</span></label>`).join('') || '<p class="mut">Nobody reports to you.</p>'}</fieldset>
+      <p class="err" id="scE"></p><div class="btns" style="justify-content:flex-start"><button type="button" class="btn" data-act="scPreview">Check the changes</button><button class="btn pri">Change shifts</button></div></form>
+    <div id="scPrev"></div></div>
+    <div class="card"><h2>Recent changes made for your team</h2>${recent.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Days</th><th>Change</th><th>Reason</th><th>By</th></tr></thead><tbody>${recent.map((r) => `<tr><td><b>${esc(nameOf(r.empId))}</b></td><td>${dShort(r.date)}${r.to && r.to !== r.date ? ` to ${dShort(r.to)}` : ''}</td><td>${regAsked(r)}</td><td>${esc(r.reason || '')}</td><td>${esc(nameOf(r.by))}<div class="fine">${dt(r.at)}</div></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No shift changes in the last 45 days.</div>'}</div>`,
+  after: () => { $('#scF').onsubmit = (ev) => { ev.preventDefault(); shiftChangeGo(true); }; } };
+};
+function shiftChangePlan() {
+  const f = $('#scF'); const fd = new FormData(f); const ids = fd.getAll('emp'); const from = fd.get('from'), to = fd.get('to') || from; const val = fd.get('shift');
+  if (!ids.length) return { err: 'Choose the people.' }; if (!from || to < from) return { err: 'Check the dates.' }; if (daysBetween(from, to) > 62) return { err: 'Change at most two months at a time.' };
+  const rows = []; ids.forEach((id) => { const e = empById(id); for (let d = from; d <= to; d = addDays(d, 1)) { const cur = (S.roster[id] || {})[d] || ''; const same = effShift(e, d, cur) === effShift(e, d, val); rows.push({ e, d, cur, problem: same ? 'No change' : rosterChangeErr(e, d, val), same }); } });
+  return { rows, ids, from, to, val, reason: String(fd.get('reason') || '').trim() };
+}
+ACT.scPreview = () => {
+  const p = shiftChangePlan(); if (p.err) { $('#scE').textContent = p.err; return; } $('#scE').textContent = '';
+  const ok = p.rows.filter((x) => !x.problem).length;
+  $('#scPrev').innerHTML = `<h3>${ok} day${ok === 1 ? '' : 's'} will change</h3><div class="scroll" style="max-height:300px"><table class="t"><thead><tr><th>Employee</th><th>Day</th><th>Now</th><th>Will be</th><th></th></tr></thead><tbody>${p.rows.map((x) => `<tr><td>${esc(fullName(x.e))}</td><td>${D(x.d).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</td><td>${esc(shiftLabel(effShift(x.e, x.d, x.cur)))}</td><td>${esc(shiftLabel(effShift(x.e, x.d, p.val)))}</td><td>${x.problem ? `<span class="fine ${x.same ? '' : 'bad'}">${esc(x.problem)}</span>` : '<span class="badge ok">Will change</span>'}</td></tr>`).join('')}</tbody></table></div>`;
+};
+function shiftChangeGo() {
+  const p = shiftChangePlan(); if (p.err) { $('#scE').textContent = p.err; return; }
+  if (p.reason.length < 4) { $('#scE').textContent = 'Give a reason; the employee sees it.'; return; }
+  const go1 = p.rows.filter((x) => !x.problem); if (!go1.length) { ACT.scPreview(); $('#scE').textContent = 'None of these days can change. See the reasons below.'; return; }
+  const byEmp = {}; go1.forEach((x) => { (byEmp[x.e.id] = byEmp[x.e.id] || []).push(x); });
+  Object.entries(byEmp).forEach(([id, rows]) => { const m = S.roster[id] = S.roster[id] || {}; rows.forEach((x) => { if (p.val) m[x.d] = p.val; else delete m[x.d]; });
+    const e = empById(id); const r = { id: uid(), type: 'shift', kind: 'manager', empId: id, companyId: e.companyId, by: me.id, at: Date.now(), date: rows[0].d, to: rows[rows.length - 1].d, days: rows.length, shiftId: p.val, prevShift: effShift(e, rows[0].d, rows[0].cur), reason: p.reason, status: 'approved', applied: true, steps: [], log: [] };
+    logEntry(r, 'Shift changed by manager', p.reason); S.regs.push(r); });
+  audit('Shifts changed', `${Object.keys(byEmp).length} people, ${go1.length} days, from ${dmy(p.from)}`, 'time');
+  saveNow(); const skipped = p.rows.filter((x) => x.problem && !x.same).length; toast(`${go1.length} day${go1.length === 1 ? '' : 's'} changed${skipped ? `; ${skipped} could not change (too soon or locked)` : ''}`); route();
+}
+
+/* ---------------------------------------------------------------- rotation and shift-change policy (HR) */
+VIEWS.shiftpolicy = () => {
+  if (!isHR()) return { title: 'Rotation and shift change policy', html: '<div class="empty">Only HR sets this policy.</div>' };
+  const co = company(); const p = shiftPol(CO); const pats = S.shiftPatterns.filter((x) => x.companyId === CO);
+  const staff = coEmployees().filter((e) => attGroup(e) === 'shift'); const withPat = staff.filter((e) => S.shiftPatterns.some((x) => x.id === e.patternId));
+  const filled = withPat.map((e) => e.rotFilledTo || '').filter(Boolean).sort();
+  const patOpts = (v) => `<option value="">None</option>${pats.map((x) => `<option value="${x.id}" ${x.id === v ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}`;
+  const sel = (name, v, opts) => `<select class="inp" name="${name}">${opts.map(([a, l]) => `<option value="${esc(a)}" ${String(a) === String(v || '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  return { title: 'Rotation and shift change policy', html: `<form id="spF" novalidate>
+    <div class="card"><h2>Rotation for ${esc(co.name)}</h2><p class="sub">How rotation patterns reach the roster. ${staff.length} people are shift staff; ${withPat.length} have a rotation${filled.length ? `, rostered at least to ${dmy(filled[0])}` : ''}.</p>
+      <div class="grid g2" style="margin-top:8px"><label class="choice ${p.rotationMode !== 'auto' ? 'on' : ''}"><input type="radio" name="rotationMode" value="manual" ${p.rotationMode !== 'auto' ? 'checked' : ''}> <b>Managers assign rotations</b><span>Managers and HR assign a pattern to their people for a period (Shift roster › Assign rotation).</span></label>
+        <label class="choice ${p.rotationMode === 'auto' ? 'on' : ''}"><input type="radio" name="rotationMode" value="auto" ${p.rotationMode === 'auto' ? 'checked' : ''}> <b>The organisation applies them automatically</b><span>Shift staff get the pattern the rules below give them, and the roster is kept filled ahead. Days a manager changed by hand are left as they are.</span></label></div>
+      <div class="form" style="margin-top:12px"><label class="field">Keep the roster filled for (weeks ahead)<input type="number" class="inp" name="weeksAhead" min="1" max="26" value="${p.weeksAhead}"></label>
+        <label class="field">Pattern for shift staff no rule covers<select class="inp" name="defaultPatternId">${patOpts(p.defaultPatternId)}</select></label></div>
+      <h3>Rules</h3><p class="fine" style="margin-top:0">The first rule that fits a person gives their pattern. Leave a column as “Any” to match everyone.</p>
+      <div class="scroll"><table class="t" id="spRules"><thead><tr><th>Department</th><th>Location</th><th>Category</th><th>Pattern</th><th></th></tr></thead><tbody>
+        ${(p.rules || []).concat([{}]).map((r, i) => `<tr data-rule="${i}"><td>${sel('r_dept', r.deptId, [['', 'Any'], ...S.depts.filter((x) => x.companyId === CO).map((x) => [x.id, x.name])])}</td><td>${sel('r_loc', r.locationId, [['', 'Any'], ...S.locations.filter((x) => x.companyId === CO).map((x) => [x.id, x.name])])}</td>
+          <td>${sel('r_cat', r.category, [['', 'Any'], ...Object.entries(CAT_SHORT).filter(([k]) => k !== 'staff')])}</td><td><select class="inp" name="r_pat">${patOpts(r.patternId)}</select></td><td class="fine">${r.patternId ? `${staff.filter((e) => patternFor(e) === r.patternId).length} people` : i === (p.rules || []).length ? 'New rule' : ''}</td></tr>`).join('')}</tbody></table></div>
+      ${pats.length ? '' : '<div class="note warn">There are no rotation patterns yet. Add them under Shift roster › Rotation patterns.</div>'}</div>
+    <div class="card"><h2>Changing shifts</h2><p class="sub">Who may change the roster, and how much notice people get. The server enforces this for every change, including from the roster grid.</p>
+      <div class="form"><label class="field">Notice before a shift starts (hours)<input type="number" class="inp" name="noticeHrs" min="0" max="336" step="1" value="${p.noticeHrs}"><small>0 for no notice. 24 means a shift starting Tuesday at 07:00 can be changed until Monday 07:00.</small></label>
+        <label class="chk" style="align-self:end"><input type="checkbox" name="mgrChange" ${p.mgrChange !== false ? 'checked' : ''}> Line managers may change their team’s shifts</label>
+        <label class="chk" style="align-self:end"><input type="checkbox" name="hrOverride" ${p.hrOverride !== false ? 'checked' : ''}> HR may change shifts with less notice</label></div>
+      <p class="fine">A change the employee asks for themselves, once approved, applies whatever the notice. Days whose attendance is locked for payroll cannot change.</p></div>
+    <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save policy</button><button type="button" class="btn" data-act="spApply">Apply rotations now</button></div></form>`,
+  after: () => { $$('#spF [name=rotationMode]').forEach((r) => { r.onchange = () => $$('#spF .choice').forEach((l) => l.classList.toggle('on', l.querySelector('input').checked)); });
+    $('#spF').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target; const c = company();
+    const rules = [...f.querySelectorAll('#spRules tbody tr')].map((tr) => ({ deptId: tr.querySelector('[name=r_dept]').value, locationId: tr.querySelector('[name=r_loc]').value, category: tr.querySelector('[name=r_cat]').value, patternId: tr.querySelector('[name=r_pat]').value })).filter((r) => r.patternId);
+    const noticeHrs = parseNum(f.elements.noticeHrs.value); if (noticeHrs < 0 || noticeHrs > 336) { toast('Notice is between 0 and 336 hours.'); return; }
+    c.shiftPolicy = { ...(c.shiftPolicy || {}), rotationMode: f.elements.rotationMode.value, weeksAhead: Math.max(1, Math.min(26, parseNum(f.elements.weeksAhead.value) || 4)), defaultPatternId: f.elements.defaultPatternId.value, rules, noticeHrs, mgrChange: f.elements.mgrChange.checked, hrOverride: f.elements.hrOverride.checked };
+    audit('Shift policy changed', `${c.code}: ${c.shiftPolicy.rotationMode === 'auto' ? 'automatic rotation' : 'rotation by managers'}, ${noticeHrs} h notice`, 'time'); ROT_RUN[CO] = 0; saveNow(); toast('Saved'); route(); }; } };
+};
+ACT.spApply = () => { const n = autoRotate(CO, true); saveNow(); toast(n ? `${n} roster days filled from rotations` : 'The roster is already filled from rotations'); route(); };
+
+/* ---------------------------------------------------------------- greetings and notifications */
+const GREET_DEFAULT = { birthday: 'Happy birthday, {first}! Wishing you a wonderful year ahead from all of us at {company}.', anniversary: 'Happy wedding anniversary, {first}! Warm wishes to you and your family from everyone at {company}.',
+  work: 'Congratulations on {years} with {company}, {first}. Thank you for all you do.', popup: true, teamDays: 2, team: true };
+const greetPol = (coId) => Object.assign({}, GREET_DEFAULT, (coById(coId) || {}).greetings || {});
+const mdOf = (iso) => (iso ? String(iso).slice(5, 10) : '');
+function fillGreet(tpl, e, years) { const co = coById(e.companyId) || {}; return String(tpl || '').replace(/\{first\}/g, e.firstName || '').replace(/\{name\}/g, fullName(e)).replace(/\{company\}/g, co.name || '').replace(/\{years\}/g, `${years} year${years === 1 ? '' : 's'}`); }
+function inDays(iso, n) { const md = mdOf(iso); if (!md) return -1; for (let i = 0; i <= n; i++) if (mdOf(addDays(todayISO(), i)) === md) return i; return -1; }
+const whenTxt = (i) => (i === 0 ? 'today' : i === 1 ? 'tomorrow' : `on ${D(addDays(todayISO(), i)).toLocaleDateString('en-IN', { weekday: 'long' })}`);
+/* What the signed-in person should know today: their own celebrations, their team's, shift changes made for them,
+   and what HR decided about names they proposed for the standard lists. */
+function myNotices() {
+  if (!me) return [];
+  const out = []; const t = todayISO(); const g = greetPol(me.companyId);
+  if (mdOf(me.dob) === mdOf(t)) out.push({ kind: 'celebrate', icon: '🎂', title: 'Happy birthday', text: fillGreet(g.birthday, me, 0) });
+  if (me.marital === 'married' && mdOf(me.anniversary) === mdOf(t)) { const y = me.anniversary && +me.anniversary.slice(0, 4) > 1900 ? yearsBetween(me.anniversary, t) : 0; out.push({ kind: 'celebrate', icon: '💐', title: y ? `${y} years married` : 'Wedding anniversary', text: fillGreet(g.anniversary, me, y) }); }
+  if (me.doj && mdOf(me.doj) === mdOf(t) && me.doj < t) { const y = yearsBetween(me.doj, t); if (y > 0) out.push({ kind: 'celebrate', icon: '🎉', title: `${y} year${y === 1 ? '' : 's'} with us`, text: fillGreet(g.work, me, y) }); }
+  S.regs.filter((r) => r.empId === me.id && r.type === 'shift' && r.by && r.by !== me.id && (r.to || r.date) >= t && r.at > Date.now() - 14 * 86400000).sort((a, b) => b.at - a.at).forEach((r) => out.push({ kind: 'shift', icon: '🕑', title: 'Your shift was changed',
+    text: `${dShort(r.date)}${r.to && r.to !== r.date ? ` to ${dShort(r.to)}` : ''}: ${shiftLabel(r.shiftId || '') === 'Default shift' ? 'back to your usual shift' : shiftLabel(r.shiftId)}. ${nameOf(r.by)}${r.reason ? `: “${r.reason}”` : ''}`, link: '#/attendance' }));
+  if (g.team !== false) {
+    const team = isHR() ? [] : S.employees.filter((e) => active(e) && (e.managerId === me.id || (e.matrixManagerIds || []).includes(me.id)));
+    team.forEach((e) => { const b = inDays(e.dob, +g.teamDays || 0); if (b >= 0) out.push({ kind: 'team', icon: '🎂', title: `${fullName(e)}: birthday ${whenTxt(b)}`, text: 'Someone in your team.' });
+      const a = e.shareAnniversary !== false ? inDays(e.anniversary, +g.teamDays || 0) : -1; if (a >= 0) out.push({ kind: 'team', icon: '💐', title: `${fullName(e)}: wedding anniversary ${whenTxt(a)}`, text: 'Someone in your team.' });
+      const w = e.doj && e.doj.slice(0, 4) < t.slice(0, 4) ? inDays(e.doj, +g.teamDays || 0) : -1; if (w >= 0) out.push({ kind: 'team', icon: '🎉', title: `${fullName(e)}: ${yearsBetween(e.doj, addDays(t, w))} years with the company ${whenTxt(w)}`, text: 'Someone in your team.' }); });
+  }
+  S.masterItems.filter((x) => x.proposedBy === me.id && x.decidedBy && x.decidedBy !== me.id && x.decidedAt > Date.now() - 14 * 86400000).forEach((x) => out.push({ kind: 'info', icon: '📋', title: x.status === 'approved' ? `“${x.name}” is now on the standard list` : x.status === 'merged' ? `“${x.name}” was matched to ${(masterById(x.mergedInto) || {}).name || 'an existing entry'}` : `“${x.name}” stays on your profile only`,
+    text: x.status === 'rejected' ? 'HR kept it off the standard list; your profile shows it as you typed it.' : 'Your profile shows the standard name.', link: '#/profile?tab=background' }));
+  return out;
+}
+/* At sign-in, once a day: a greeting on someone's birthday or anniversary, and shift changes made for them */
+function showLoginNotices() {
+  if (!me) return;
+  const g = greetPol(me.companyId); if (g.popup === false) return;
+  const list = myNotices().filter((x) => x.kind === 'celebrate' || x.kind === 'shift'); if (!list.length) return;
+  const key = `pd.greet.${me.id}.${todayISO()}`; try { if (localStorage.getItem(key)) return; localStorage.setItem(key, '1'); } catch (e) { /* private mode: show it anyway */ }
+  const cel = list.filter((x) => x.kind === 'celebrate'), sh = list.filter((x) => x.kind === 'shift');
+  openDlg(`<div class="dlg greet">${cel.length ? `<div class="greet-hd"><div class="greet-ic" aria-hidden="true">${cel.map((x) => x.icon).join(' ')}</div><h2>${esc(cel.map((x) => x.title).join(' and '))}</h2></div>${cel.map((x) => `<p class="greet-msg">${esc(x.text)}</p>`).join('')}` : `<h2>Good to see you, ${esc(me.firstName)}</h2>`}
+    ${sh.length ? `<div class="note" style="margin-top:12px"><b>Shift changes</b>${sh.map((x) => `<div>${esc(x.text)}</div>`).join('')}</div>` : ''}
+    <div class="btns">${sh.length ? '<a class="btn" href="#/attendance" data-act="close">My attendance</a>' : ''}<button class="btn pri" data-act="close" autofocus>${cel.length ? 'Thank you' : 'OK'}</button></div></div>`);
+}
+VIEWS.greetings = () => {
+  if (!isHR()) return { title: 'Greetings', html: '<div class="empty">Only HR sets greetings.</div>' };
+  const co = company(); const g = greetPol(CO); const sample = me;
+  return { title: 'Greetings and notifications', html: `<form class="card" id="grF" novalidate><h2>Greetings for ${esc(co.name)}</h2>
+    <p class="sub">Shown to a person when they sign in on their birthday, wedding anniversary or work anniversary, once that day, and on their home page. Use {first}, {name}, {company} and {years}. People add their wedding anniversary on the Personal tab of their profile and choose whether colleagues see it.</p>
+    <div class="form">${fieldHtml({ k: 'birthday', label: 'Birthday', type: 'textarea', wide: true }, g.birthday)}${fieldHtml({ k: 'anniversary', label: 'Wedding anniversary', type: 'textarea', wide: true }, g.anniversary)}${fieldHtml({ k: 'work', label: 'Work anniversary', type: 'textarea', wide: true }, g.work)}
+      ${fieldHtml({ k: 'popup', label: 'Greet people when they sign in (once a day)', type: 'check', wide: true }, g.popup)}${fieldHtml({ k: 'team', label: 'Tell managers about their team’s birthdays and anniversaries', type: 'check', wide: true }, g.team)}
+      ${fieldHtml({ k: 'teamDays', label: 'Tell managers this many days ahead', type: 'number', min: 0, max: 14 }, g.teamDays)}</div>
+    <h3>Preview for ${esc(fullName(sample))}</h3><p class="greet-msg">${esc(fillGreet(g.anniversary, sample, 12))}</p>
+    <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save</button></div></form>
+    <div class="card"><h2>Coming up in the next 30 days</h2>${greetUpcoming()}</div>`,
+  after: () => { $('#grF').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target; const c = company();
+    c.greetings = { birthday: f.elements.birthday.value.trim() || GREET_DEFAULT.birthday, anniversary: f.elements.anniversary.value.trim() || GREET_DEFAULT.anniversary, work: f.elements.work.value.trim() || GREET_DEFAULT.work, popup: f.elements.popup.checked, team: f.elements.team.checked, teamDays: Math.max(0, Math.min(14, parseNum(f.elements.teamDays.value))) };
+    audit('Greetings changed', c.code, 'org'); saveNow(); toast('Saved'); route(); }; } };
+};
+function greetUpcoming() {
+  const rows = [];
+  coEmployees().forEach((e) => { [['Birthday', e.dob], ['Wedding anniversary', e.anniversary], ['Work anniversary', e.doj && e.doj.slice(0, 4) < todayISO().slice(0, 4) ? e.doj : '']].forEach(([what, iso]) => { const i = inDays(iso, 30); if (i >= 0) rows.push({ e, what, i }); }); });
+  rows.sort((a, b) => a.i - b.i);
+  return rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>When</th><th>Employee</th><th>Occasion</th></tr></thead><tbody>${rows.map((x) => `<tr><td>${D(addDays(todayISO(), x.i)).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</td><td>${esc(fullName(x.e))}</td><td>${x.what}${x.what === 'Wedding anniversary' && x.e.shareAnniversary === false ? ' <span class="fine">(not shown to colleagues)</span>' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing in the next 30 days.</div>';
+}
+
+/* ---------------------------------------------------------------- approvals for this section */
+function wfPending() {
+  if (!me) return [];
+  autoRotateSoon();
+  const out = [];
+  if (isHR()) {
+    const prop = S.masterItems.filter((x) => x.status === 'proposed' && isHR(x.companyId));
+    if (prop.length) out.push({ kind: 'master', r: { cand: 'Standard lists' }, what: `${prop.length} new name${prop.length === 1 ? '' : 's'} from employees to review`, link: '#/masterdata?tab=review' });
+    S.payRuns.filter((r) => runReg(r) === 'contract' && r.status === 'locked' && isHR(r.companyId)).forEach((r) => Object.keys(r.bills || {}).forEach((cid) => { const due = billDue(r, cid);
+      if (due > 0.5) out.push({ kind: 'conbill', r: { cand: conName(cid) }, what: `Contractor bill for ${monthName(r.month)} to pay: ${inr0(due)}`, link: `#/payroll/${r.id}?tab=contract` }); }));
+    const soon = addDays(todayISO(), 30);
+    S.contractors.filter((c) => isHR(c.companyId) && c.active !== false && c.licenceTo && c.licenceTo <= soon).forEach((c) => out.push({ kind: 'conlic', r: { cand: c.name }, what: `Contract labour licence ${c.licenceTo < todayISO() ? 'expired' : 'expires'} on ${dmy(c.licenceTo)}`, link: '#/contractors' }));
+  }
+  return out;
+}
+
+/* ---------------------------------------------------------------- category and anniversary on the profile forms */
+function wireCategory(form) {
+  const el = (k) => form.elements[k]; if (!el('workerCategory')) return;
+  const sync = (apply) => { const c = el('workerCategory').value; const f = el('contractorId') && el('contractorId').closest('.field'); if (f) f.style.display = c === 'contract' ? '' : 'none';
+    if (apply) { const d = CAT_DEFAULTS[c]; if (el('attGroup')) el('attGroup').value = d.attGroup; if (el('otEligible')) el('otEligible').checked = d.otEligible; } };
+  el('workerCategory').addEventListener('change', () => sync(true)); sync(false);
+}
+function checkCategory(d, e) {
+  const coId = e ? e.companyId : CO;
+  if (d.workerCategory === 'contract') { if (!d.contractorId) return S.contractors.some((c) => c.companyId === coId) ? 'Choose the contractor this worker comes through.' : 'Add the contractor first under Personnel Information › Contractors (third party).'; }
+  else d.contractorId = '';
+  if (d.otEligible === undefined && CAT_DEFAULTS[d.workerCategory]) d.otEligible = CAT_DEFAULTS[d.workerCategory].otEligible;
+  if (e && regOf(e) !== (d.workerCategory === 'contract' ? 'contract' : 'own') && S.payRuns.some((r) => r.companyId === e.companyId && r.status !== 'locked' && r.results && r.results[e.id])) return 'This person is in a payroll run that is not locked. Lock or recalculate it first, then change between own employee and contract worker.';
+  return '';
+}
+function wireAnniversary(form) {
+  const el = (k) => form.elements[k]; if (!el('anniversary')) return;
+  const sync = () => { const m = el('marital').value === 'married'; el('anniversary').closest('.field').style.display = m ? '' : 'none'; el('shareAnniversary').closest('label').style.display = m ? '' : 'none'; };
+  el('marital').addEventListener('change', sync); sync();
+}
+
 
 /* =====================================================================
    Demo data: two companies, eighteen employees, six months of punches, leave and locked payroll
@@ -6690,6 +7497,8 @@ function loadDemo() {
   emps.forEach((e, k) => { e.attGroup = k >= 13 && k <= 17 && k !== 16 ? 'shift' : 'regular'; if (e.attGroup === 'shift') { e.patternId = P1.id; e.patternFrom = '2026-04-01'; } });
   // rotation for store staff: a week of mornings, a week of evenings
   emps.slice(13, 18).forEach((e, k) => { const m = S.roster[e.id] = {}; for (let d = '2026-04-01', i = 0; d <= '2026-12-31'; d = addDays(d, 1), i++) { const wk = Math.floor((i + k * 7) / 7) % 2; if (D(d).getDay() !== 0) m[d] = (wk ? EVE : MOR).id; } });
+  // 2.7: a contractor supplying three warehouse loaders on the three-shift rotation; Nilgiri Retail's rotation is automatic, with 24 hours' notice
+  workforceDemo(A, B, emps, { dWh, lPUN, P2, genB, DB, gr });
   // leave: approved history, pending items for the inbox
   const lt = (co, code) => S.leaveTypes.find((t) => t.companyId === co.id && t.code === code);
   const leave = (e, code, from, to, status, reason, half = '') => { const t = lt(coById(e.companyId), code); S.leaveReqs.push({ id: uid(), empId: e.id, typeId: t.id, from, to, half, days: leaveDays(e, t, from, to, half), reason, status, appliedAt: D(from).getTime() - 5 * 86400000, by: e.id, needsHR: !!t.needsHR }); };
@@ -6726,6 +7535,7 @@ function loadDemo() {
   [emps[14], emps[15]].forEach((e) => S.otRecs.push({ id: uid(), empId: e.id, date: '2026-11-07', kind: 'planned', dayType: 'working', approvedHrs: 3, status: 'approved', consent: true, note: 'Deepavali weekend rush', by: emps[12].id, decidedBy: emps[12].id, decidedAt: Date.now(), createdAt: Date.now() }));
   const save0 = me; me = emps[0];
   for (let m = '2026-04'; m <= '2026-09'; m = ymAdd(m, 1)) [A, B].forEach((c) => { const run = { id: uid(), companyId: c.id, month: m, status: 'draft', results: {}, skipped: [] }; S.payRuns.push(run); computeRun(run); run.status = 'locked'; run.lockedAt = Date.now(); markOtPaid(run); });
+  workforcePayDemo(B, emps);
   // performance: last year's cycle in calibration, this year's in check-ins
   const c1 = { id: uid(), companyId: A.id, name: 'Annual review 2025-26', from: '2025-04-01', to: '2026-03-31', stage: 'calibration', d5: 10, d4: 20, d3: 40, d2: 20, d1: 10 };
   const c2 = { id: uid(), companyId: A.id, name: 'Annual review 2026-27', from: '2026-04-01', to: '2027-03-31', stage: 'checkin', d5: 10, d4: 20, d3: 40, d2: 20, d1: 10 };
@@ -6816,6 +7626,7 @@ function loadDemo() {
   S.seq['ol-' + B.id] = 1; a7.followups.push({ id: uid(), due: addDays(todayISO(), 3), note: 'Check on offer decision', done: false, by: emps[11].id });
   const a8 = app(r3, ca8, 'interview', 3); iv(a8, 'Store manager round', addDays(todayISO(), 1), '16:00', [emps[12]], 'scheduled');
   trainingDemo(A);
+  backgroundDemo(A, B, emps);
   me = save0; S.audit = [];
 }
 
@@ -6829,5 +7640,6 @@ export {
   empById, nameOf, fullName, initials, coEmployees, leaveTypesFor, leaveBalance, ltById,
   shiftFor, punchOf, leaveOn, holidayOn, todayISO, addDays, D, ymAdd, monthName, yearsBetween,
   num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin, regAsked,
-  uid, coById, DOC_CATEGORIES, docTypesFor, docPreview, downloadBlob
+  uid, coById, DOC_CATEGORIES, docTypesFor, docPreview, downloadBlob,
+  myNotices, showLoginNotices, mdOf, runReg
 };

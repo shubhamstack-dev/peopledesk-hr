@@ -12,7 +12,9 @@ export const COLLECTIONS = ['companies', 'employees', 'depts', 'desigs', 'grades
   // salary planning: cycles, then budgets, then recommendations (the server checks recommendations against the saved budgets)
   'compCycles', 'compBudgets', 'compRecs',
   // training: trainings before enrolments and feedback (the server checks those against the saved training)
-  'trainings', 'trainingEnrols', 'trainingFeedback', 'trainingNeeds'];
+  'trainings', 'trainingEnrols', 'trainingFeedback', 'trainingNeeds',
+  // workforce (2.7): standard lists and contractors
+  'masterItems', 'contractors'];
 const SINGLETONS = ['group', 'settings', 'stat', 'seq'];
 const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 

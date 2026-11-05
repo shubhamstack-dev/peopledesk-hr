@@ -35,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import doctemplates, mailer, migrate, policy, repo, training
+from . import doctemplates, mailer, migrate, policy, repo, training, workforce
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
@@ -378,6 +378,7 @@ def sync(body: SyncBody, me=Depends(current_user)):
     """All or nothing: if any change is refused, none is saved and the reason is returned."""
     with repo.engine.begin() as conn:
         ctx = _ctx(conn, me)
+        guard = workforce.Guard(conn)       # attendance locked for payroll, notice for shift changes (everyone, HR too)
         for coll, recs in body.upsert.items():
             if coll not in BY_NAME:
                 raise HTTPException(400, f"Unknown data: {coll}")
@@ -389,8 +390,11 @@ def sync(body: SyncBody, me=Depends(current_user)):
                 if coll == "employees":
                     for k in ("pwHash", "pwSalt", "googleSub"):
                         r.pop(k, None)
+                _guarded(guard.check_record, coll, r, olds.get(r["id"]), ctx.emps)
                 keep.append(policy.check_upsert(conn, coll, r, olds.get(r["id"]), ctx))
             repo.upsert(conn, coll, keep, me["id"])
+            if coll == "payRuns":
+                guard.forget_runs()
         comp_cycles = set()   # salary-planning cycles touched: budgets are checked once everything is saved
         for coll, recs in body.upsert.items():
             if coll in ("compBudgets", "compRecs"):
@@ -403,6 +407,7 @@ def sync(body: SyncBody, me=Depends(current_user)):
             olds = repo.get_records(conn, coll, ids)
             for i in ids:
                 if i in olds:
+                    _guarded(guard.check_record, coll, None, olds[i], ctx.emps)
                     policy.check_delete(conn, coll, olds[i], ctx)
                     if coll in ("compBudgets", "compRecs"):
                         comp_cycles.add(olds[i].get("cycleId"))
@@ -419,12 +424,21 @@ def sync(body: SyncBody, me=Depends(current_user)):
             repo.set_singleton(conn, k, v)
         for e in body.rosterSet + body.rosterDel:
             policy.check_roster(e.get("empId"), ctx)
+            emp = ctx.emps.get(e.get("empId")) or {}
+            _guarded(guard.check_roster, e.get("empId"), e.get("date"), e.get("value") if e in body.rosterSet else None, ctx.emps, ctx.is_hr_for(emp.get("companyId")))
         repo.roster_set(conn, [{"empId": e["empId"], "date": e["date"], "value": str(e["value"])} for e in body.rosterSet])
         repo.roster_del(conn, [{"empId": e["empId"], "date": e["date"]} for e in body.rosterDel])
         for a in body.audit[:200]:
             repo.audit_add(conn, a.get("what", ""), a.get("detail", ""), me["id"], a.get("at"), a.get("id"), a.get("module"), a.get("refType"), a.get("refId"))
         repo.bump_rev(conn)
         return {"ok": True, "rev": repo.rev(conn)}
+
+
+def _guarded(fn, *args):
+    try:
+        fn(*args)
+    except workforce.Problem as e:
+        raise policy.Rejected(str(e)) from None
 
 
 # ---------------------------------------------------------------- administration

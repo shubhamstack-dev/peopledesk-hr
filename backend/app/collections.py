@@ -80,6 +80,11 @@ COLLS = [
     Coll("trainingEnrols", "training_enrolments", {"training_id": ("trainingId", "str"), "status": ("status", "str")}),
     Coll("trainingFeedback", "training_feedback", {"training_id": ("trainingId", "str")}),
     Coll("trainingNeeds", "training_needs", {"status": ("status", "str")}),
+    # v2.7: workforce (see workforce.py). Standard lists of institutions, qualifications and employers, including
+    # entries employees propose for HR to accept or not; third-party contractors, whose workers have their own
+    # attendance register and payroll
+    Coll("masterItems", "master_items", {"kind": ("kind", "str"), "name": ("name", "str"), "status": ("status", "str")}),
+    Coll("contractors", "contractors", {"name": ("name", "str"), "code": ("code", "str")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 

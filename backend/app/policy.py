@@ -17,12 +17,12 @@ cannot approve their own requests, change their access, salary or job record.
 """
 from dataclasses import dataclass, field
 
-from . import comp, repo, training
+from . import comp, repo, training, workforce
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
            "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns",
-           "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles"}
+           "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles", "contractors"}
 # Compensation planning: budgets and recommendations follow their own rules (comp.py)
 COMP = {"compBudgets", "compRecs"}
 # Training: trainings are HR's, but internal trainers add content and mark completion; enrolments and feedback
@@ -49,13 +49,14 @@ SENSITIVE_EMP = {"salaryHist": [], "salaryOverrides": {}, "pan": "", "aadhaar": 
 PROTECTED_SELF = {"id", "role", "companyId", "hrCompanies", "status", "blocked", "empNo", "email", "managerId",
                   "salaryHist", "salaryOverrides", "doj", "exit", "stints", "gratuityFrom", "gradeId", "desigId",
                   "deptId", "locationId", "empType", "probationEnd", "attGroup", "otEligible", "shiftId", "source",
-                  "pfOn", "epsOn", "esiOn", "ptOn", "lwfOn", "patternId", "patternFrom",
+                  "pfOn", "epsOn", "esiOn", "ptOn", "lwfOn", "patternId", "patternFrom", "rotFilledTo",
+                  "workerCategory", "contractorId",
                   "matrixManagerIds", "reportingHist", "gradeHist", "pendingMoves", "variableHist",
                   # statutory details change only through an approved request; letters are issued by HR
                   "pan", "aadhaar", "uan", "pfNo", "esiNo", "esiRegDate", "esiDispensary", "vpfPct", "documents",
                   "mediclaim"}
-# Employee fields a manager may change for someone in their reporting line (resignation flow)
-MANAGER_MAY = {"exit", "history", "status"}
+# Employee fields a manager may change for someone in their reporting line (resignation flow, shift rotation)
+MANAGER_MAY = {"exit", "history", "status", "patternId", "patternFrom", "rotFilledTo"}
 
 
 @dataclass
@@ -151,7 +152,10 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     sees_all = lambda emp_id: emp_id == ctx.id or ctx.is_hr_for(emp_co.get(emp_id))  # noqa: E731
 
     for e in st["employees"]:
-        if not sees_all(e["id"]):
+        if e["id"] == ctx.id and not ctx.is_hr_for(e.get("companyId")):
+            workforce.redact_employee(e, "self")
+        elif not sees_all(e["id"]):
+            workforce.redact_employee(e, "line" if e["id"] in ctx.line else "other")
             for k, blank in SENSITIVE_EMP.items():
                 if k in e:
                     e[k] = blank
@@ -163,6 +167,7 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
         if not ctx.is_hr_for(run.get("companyId")):
             run["results"] = {k: v for k, v in (run.get("results") or {}).items() if k == ctx.id}
             run["skipped"] = []
+            run["bills"], run["payments"] = {}, []        # what is owed and paid to contractors is for HR
     st["payInputs"] = [x for x in st["payInputs"] if sees_all(x.get("empId")) and (x.get("empId") == ctx.id or ctx.is_hr_for(x.get("companyId")))]
     st["declarations"] = [x for x in st["declarations"] if sees_all(x.get("empId"))]
     st["leaveAdj"] = [x for x in st["leaveAdj"] if x.get("empId") == ctx.id or x.get("empId") in ctx.line or ctx.is_hr_for(emp_co.get(x.get("empId")))]
@@ -172,6 +177,10 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
                     or ctx.id in (x.get("participants") or []) or x.get("empId") == ctx.id]
     comp.visible(st, ctx)
     training.visible(st, ctx)
+    hr_cos = {c.get("id") for c in st.get("companies", []) if ctx.is_hr_for(c.get("id"))}
+    st["masterItems"] = [x for x in st.get("masterItems", []) if x.get("companyId") in hr_cos] + \
+        workforce.visible_masters([x for x in st.get("masterItems", []) if x.get("companyId") not in hr_cos], ctx.id)
+    st["contractors"] = [x if x.get("companyId") in hr_cos else {k: x.get(k) for k in ("id", "companyId", "name", "code")} for x in st.get("contractors", [])]
     if not ctx.is_hr:
         st["docTemplates"] = []          # only HR makes documents; employees see the finished letters on their profile
     s = st.get("settings") or {}
@@ -229,6 +238,13 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         return _train(conn, coll, new, old, ctx)
     if coll in PARTICIPANT:
         return _participant(coll, new, old, ctx)
+    if coll == "masterItems":
+        if co_new != ctx.me.get("companyId"):
+            raise Rejected("belongs to another company")
+        try:
+            return workforce.check_master(new, old, ctx.id)
+        except workforce.Problem as e:
+            raise Rejected(str(e)) from None
     if coll in HR_ONLY or coll not in WORKFLOW:
         raise Rejected("only HR can change this")
     own_co = ctx.me.get("companyId")
@@ -420,7 +436,10 @@ def _employee(new: dict, old: dict | None, ctx: Ctx, hr_ok: bool) -> dict:
                 merged[k] = old[k]
             else:
                 merged.pop(k, None)
-        return merged
+        try:
+            return workforce.keep_verification(merged, old)
+        except workforce.Problem as e:
+            raise Rejected(str(e)) from None
     if new["id"] in ctx.line:
         merged = dict(old)
         for k in MANAGER_MAY:

@@ -278,3 +278,15 @@ ul.otree{display:flex;justify-content:center;margin:0;padding:0;transform-origin
 .choice span{display:block;color:var(--muted);font-size:13px;margin-top:4px;font-weight:400}
 .picklist{max-height:170px;overflow:auto;border:1px solid var(--rule);border-radius:8px;padding:4px 10px;margin-top:4px}
 .picklist label{display:flex;gap:8px;align-items:center;padding:3px 0;font-size:13px;color:var(--ink);font-weight:400;cursor:pointer}
+
+/* 2.7: notices on the home page and the greeting at sign-in */
+.notices .notice{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--rule)}
+.notices .notice:last-child{border-bottom:0}
+.notices .notice-ic{font-size:18px;line-height:1.2;width:24px;text-align:center;flex:none}
+.notices .notice.celebrate b{color:var(--pri)}
+.dlg.greet{text-align:center;padding:28px 26px 22px}
+.dlg.greet .greet-ic{font-size:40px;line-height:1;margin-bottom:6px}
+.dlg.greet h2{font-size:22px}
+.greet-msg{font-size:15.5px;line-height:1.55;margin:4px auto;max-width:46ch}
+.dlg.greet .btns{justify-content:center}
+.dlg.greet .note{text-align:left}
