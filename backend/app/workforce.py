@@ -272,3 +272,167 @@ class Guard:
             return
         if min(self._start(emp, day, old), self._start(emp, day, value)) < time.time() + notice * 3600:
             raise Problem(f"shift changes need {notice:g} hours' notice before the shift starts; {dmy(day)} is too soon")
+
+
+# ---------------------------------------------------------------- 2.8: time and shift controls
+# The same rules as the browser (frontend/src/engine/engine.js, controlIssues). Only controls set to "block" are
+# enforced here; "warn" is for the screens and the Control exceptions report.
+TC_DEFAULTS = {"rest": 11, "consecutive": 6, "weekHrs": 48, "nights": 6, "punchEarly": 120, "corrDays": 7, "corrMonth": 3}
+
+
+def _mins(hhmm) -> int:
+    try:
+        h, m = (int(x) for x in str(hhmm or "0:0").split(":")[:2])
+        return h * 60 + m
+    except ValueError:
+        return 0
+
+
+def _today() -> date:
+    return datetime.now(TZ).date()
+
+
+class Controls:
+    """Blocking time controls for one company, read from its record (timeControls)."""
+
+    def __init__(self, company: dict):
+        tc = company.get("timeControls") or {}
+        self.set = bool(company.get("timeControls"))
+        self.hr_override = tc.get("hrOverride") is not False
+        self.rules = {}
+        for k, d in {**TC_DEFAULTS, "womenNight": 0}.items():
+            x = tc.get(k) or {}
+            if x.get("mode") == "block":
+                try:
+                    self.rules[k] = float(x.get("value")) if x.get("value") not in (None, "") else d
+                except (TypeError, ValueError):
+                    self.rules[k] = d
+
+    def blocks(self, k) -> bool:
+        return k in self.rules
+
+
+def _night(sh: dict) -> bool:
+    return bool(sh.get("night")) or _mins(sh.get("start")) >= 20 * 60
+
+
+def _after_hours(sh: dict) -> bool:
+    return bool(sh.get("night")) or _mins(sh.get("start")) < 6 * 60 or _mins(sh.get("end")) > 19 * 60
+
+
+def _guard_controls(self, emp_id: str, days: list, emps: dict, is_hr: bool):
+    """After a roster save: the days changed must keep the company's blocking time controls."""
+    emp = emps.get(emp_id)
+    if not emp or not days:
+        return
+    ctl = Controls(self._company(emp.get("companyId")))
+    if not ctl.rules or (is_hr and ctl.hr_override):
+        return
+    ds = sorted(date.fromisoformat(d) for d in days)
+    lo, hi = ds[0] - timedelta(days=14), ds[-1] + timedelta(days=14)
+    roster = {d.isoformat(): v for d, v in self.conn.execute(text(
+        "SELECT day, value FROM roster WHERE emp_id=:e AND day BETWEEN :a AND :b"), {"e": emp_id, "a": lo, "b": hi})}
+    hol = set()
+    for d in self.conn.execute(text("SELECT data FROM holidays WHERE company_id=:c AND day BETWEEN :a AND :b"),
+                               {"c": emp.get("companyId"), "a": lo, "b": hi}).scalars():
+        h = repo.loads(d)
+        if not h.get("optional") and (not h.get("locationId") or h.get("locationId") == emp.get("locationId")):
+            hol.add(h.get("date"))
+    work = {}
+    d = lo
+    while d <= hi:
+        iso = d.isoformat()
+        v = roster.get(iso)
+        if not v and emp.get("patternId") and emp.get("rotFilledTo") and iso > emp["rotFilledTo"]:
+            work[iso] = None        # on a rotation, days after the roster is filled to are not planned yet
+            d += timedelta(days=1)
+            continue
+        ef = self._effective(emp, iso, v)
+        sh = self._shift(ef) if ef and ef != "WO" and not (not v and iso in hol) else None
+        if sh:
+            start = self._start(emp, iso, ef)
+            end = start - _mins(sh.get("start")) * 60 + _mins(sh.get("end")) * 60
+            if end <= start:
+                end += 86400
+            work[iso] = (sh, start, end, max(0.0, (end - start) / 3600 - float(sh.get("breakMin") or 0) / 60))
+        else:
+            work[iso] = None
+        d += timedelta(days=1)
+    touched = set(days)
+    seq = sorted(work)
+
+    def fail(msg):
+        raise Problem(f"against the company's time controls: {msg}")
+
+    if ctl.blocks("rest"):
+        for a, b in zip(seq, seq[1:]):
+            if work[a] and work[b] and (a in touched or b in touched):
+                rest = (work[b][1] - work[a][2]) / 3600
+                if rest < ctl.rules["rest"]:
+                    fail(f"only {rest:.1f} hours' rest before {dmy(b)} (at least {ctl.rules['rest']:g})")
+
+    def runs(test):
+        out, cur = [], None
+        for iso in seq:
+            if test(work[iso]):
+                cur = cur or {"s": iso, "n": 0, "t": False}
+                cur["n"] += 1
+                cur["e"] = iso
+                cur["t"] = cur["t"] or iso in touched
+            elif cur:
+                out.append(cur)
+                cur = None
+        return out + ([cur] if cur else [])
+
+    if ctl.blocks("consecutive"):
+        for r in runs(lambda x: bool(x)):
+            if r["t"] and r["n"] > ctl.rules["consecutive"]:
+                fail(f"{r['n']} working days in a row to {dmy(r['e'])} (at most {ctl.rules['consecutive']:g})")
+    if ctl.blocks("nights"):
+        for r in runs(lambda x: bool(x) and _night(x[0])):
+            if r["t"] and r["n"] > ctl.rules["nights"]:
+                fail(f"{r['n']} night shifts in a row to {dmy(r['e'])} (at most {ctl.rules['nights']:g})")
+    if ctl.blocks("weekHrs"):
+        for mon in {date.fromisoformat(x) - timedelta(days=date.fromisoformat(x).weekday()) for x in touched}:
+            hrs = sum((work.get((mon + timedelta(days=i)).isoformat()) or (None, 0, 0, 0))[3] for i in range(7))
+            if hrs > ctl.rules["weekHrs"]:
+                fail(f"{hrs:.1f} hours rostered in the week of {dmy(mon.isoformat())} (at most {ctl.rules['weekHrs']:g})")
+    if ctl.blocks("womenNight") and emp.get("gender") == "F" and not emp.get("nightConsent"):
+        for iso in touched:
+            if work.get(iso) and _after_hours(work[iso][0]):
+                fail(f"{dmy(iso)} is before 6:00 or after 19:00 and her consent is not recorded")
+
+
+def _guard_attendance_request(self, coll: str, new: dict | None, old: dict | None, emps: dict, me_id: str):
+    """Employees' own punches, corrections and shift requests: early punching and how far back and how often."""
+    if not new:
+        return
+    emp = emps.get(new.get("empId"))
+    if not emp or new.get("empId") != me_id:
+        return
+    ctl = Controls(self._company(emp.get("companyId")))
+    if coll == "punches" and ctl.blocks("punchEarly") and new.get("in") and (not old or old.get("in") != new.get("in")) and new.get("source") == "web":
+        iso = new.get("date")
+        v = self.conn.execute(text("SELECT value FROM roster WHERE emp_id=:e AND day=:d"), {"e": emp["id"], "d": iso}).scalar()
+        ef = self._effective(emp, iso, v)
+        if ef and ef != "WO" and self._shift(ef):
+            start = self._start(emp, iso, ef)
+            if float(new["in"]) / 1000 < start - ctl.rules["punchEarly"] * 60:
+                raise Problem(f"punching in is allowed from {ctl.rules['punchEarly']:g} minutes before the shift starts")
+    if coll == "regs" and not old and new.get("by") in (None, "", me_id) and (new.get("type") or "time") in ("time", "shift"):
+        iso = str(new.get("date") or "")
+        if ctl.blocks("corrDays") and iso and iso < (_today() - timedelta(days=int(ctl.rules["corrDays"]))).isoformat():
+            raise Problem(f"corrections and shift requests can go back {ctl.rules['corrDays']:g} days at most")
+        if ctl.blocks("corrMonth") and (new.get("type") or "time") == "time" and iso:
+            n = 0
+            for d in self.conn.execute(text("SELECT data FROM attendance_regularisations WHERE emp_id=:e"), {"e": emp["id"]}).scalars():
+                r = repo.loads(d)
+                if (r.get("type") or "time") == "time" and r.get("by") in (None, "", emp["id"]) and str(r.get("date") or "")[:7] == iso[:7] and r.get("status") != "withdrawn":
+                    n += 1
+            if n >= ctl.rules["corrMonth"]:
+                raise Problem(f"at most {ctl.rules['corrMonth']:g} attendance corrections a month")
+
+
+Guard.check_controls = _guard_controls
+Guard.check_attendance_request = _guard_attendance_request
+MASTER_KINDS.add("skill")

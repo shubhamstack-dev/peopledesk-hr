@@ -860,6 +860,8 @@ const MENU = [
     { page: 'overtime', label: 'Overtime', show: () => MGR() && shiftBased() },
     { page: 'otpolicy', tab: 'rules', label: 'Overtime and shift policy', show: () => HR() && shiftBased() },
     { page: 'shiftpolicy', label: 'Rotation and shift change policy', show: () => HR() && shiftBased() },
+    { page: 'timecontrols', tab: 'rules', label: 'Time and shift controls', show: HR },
+    { page: 'timecontrols', tab: 'exceptions', label: 'Control exceptions', show: MGR },
     { page: 'timemode', label: 'Shifts or time management', show: HR },
     { page: 'register', tab: 'own', label: 'Attendance register: own employees', show: MGR },
     { page: 'register', tab: 'contract', label: 'Attendance register: contract workers', show: () => MGR() && hasContract() },
@@ -895,6 +897,7 @@ const MENU = [
     { page: 'training', tab: 'calendar', label: 'Training calendar' },
     { page: 'training', tab: 'team', label: 'Team training', show: MGR },
     { page: 'training', tab: 'needs', label: 'Development needs' },
+    { page: 'skillgaps', label: 'Skills and gaps', show: MGR },
     { page: 'training', tab: 'admin', label: 'Plan and manage trainings', show: HR },
     { page: 'training', tab: 'trainers', label: 'Instructor reports', show: () => isHR() || S.trainings.some((t) => trIsTrainer(t)) },
   ] },
@@ -910,7 +913,7 @@ const MENU = [
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
     { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
-const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf', training: 'mine', register: 'own', payroll: 'own', masterdata: 'review' };
+const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf', training: 'mine', register: 'own', payroll: 'own', masterdata: 'review', timecontrols: 'rules' };
 /* contract workers or contractors in the company being worked on */
 const hasContract = () => S.contractors.some((c) => c.companyId === CO) || S.employees.some((e) => e.companyId === CO && catOf(e) === 'contract');
 const itemShown = (it) => !it.show || it.show();
@@ -1025,7 +1028,7 @@ function newCompany(f) {
   const co = Object.assign({ id: uid(), code: '', name: '', legalName: '', state: '29', address: '', pan: '', tan: '', pfCode: '', esiCode: '', ptRegNo: '', domain: '',
     leaveYearStart: 1, attendanceSource: 'punch', latePenaltyCount: 3, latePenaltyDays: 0.5, hrApprovalDays: 5, otAfterMin: 30, otRate: 2,
     pfRestrict: true, esiEnabled: true, esiOnCodeWages: true, ptEnabled: true, lwfEnabled: true, roundNet: true, gratuityInCTC: false, gratuityYears: 5, punchNeedsLocation: false,
-    shiftPolicy: { rotationMode: 'manual', weeksAhead: 4, defaultPatternId: '', rules: [], noticeHrs: 24, hrOverride: true, mgrChange: true } }, f);
+    shiftPolicy: { rotationMode: 'manual', weeksAhead: 4, defaultPatternId: '', rules: [], noticeHrs: 24, hrOverride: true, mgrChange: true }, timeControls: newTimeControls() }, f);
   S.companies.push(co);
   seedCompany(co);
   return co;
@@ -1134,6 +1137,7 @@ const EMP_FIELDS = {
     { k: 'role', label: 'Access in this app', type: 'select', opts: () => Object.entries(ROLES).filter(([k]) => k !== 'super' || isSuper()) },
     { k: 'attGroup', label: 'Attendance group', type: 'select', opts: [['regular', 'Regular: general shift, fixed weekly offs'], ['shift', 'Shift: rostered shifts and rotations']] },
     { k: 'otEligible', label: 'Eligible for overtime (shift staff are unless unticked)', type: 'check' },
+    { k: 'nightConsent', label: 'Consents to work before 6:00 or after 19:00 (needed for women under the OSH Code)', type: 'check', wide: true },
   ],
   personal: [
     { k: 'firstName', label: 'First name', req: true }, { k: 'lastName', label: 'Last name' }, { k: 'gender', label: 'Gender', type: 'select', opts: [['M', 'Male'], ['F', 'Female'], ['O', 'Other']], blank: 'Not stated' },
@@ -1161,9 +1165,9 @@ VIEWS.profile = () => {
   const mine = e.id === me.id, hr = isHR(e.companyId), mgr = allReportees(me.id).includes(e.id) || (e.matrixManagerIds || []).includes(me.id);
   if (!mine && !hr && !mgr) return { title: 'Profile', html: '<div class="empty">You cannot see this profile.</div>' };
   const tabs = [['personal', 'Personal'], ['family', 'Family'], ['background', 'Background'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'], ['documents', 'Documents'],
-    ['career', 'Career'], ['job', 'Job'], ['reporting', 'Reporting'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['performance', 'Performance'], ['training', 'Training'],
+    ['career', 'Career'], ['job', 'Job'], ['reporting', 'Reporting'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['performance', 'Performance'], ['skills', 'Skills'], ['training', 'Training'],
     ['history', 'History'], ['activity', 'Activity log']]
-    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance', 'training', 'background'].includes(k)) && (k !== 'activity' || hr));
+    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance', 'training', 'background', 'skills'].includes(k)) && (k !== 'activity' || hr));
   // Opens on the first tab this person may see (Personal for oneself and HR, Career for a manager)
   const tab = tabs.some(([k]) => k === R.q.get('tab')) ? R.q.get('tab') : tabs[0][0];
   const base = `#/profile/${e.id}?tab=`;
@@ -1631,6 +1635,7 @@ ACT.punch = async (b) => {
   let p = punchOf(me.id, t);
   if (p && p.out) { toast('You have already punched out today'); return; }
   if (lockErr(me, t)) { toast(lockErr(me, t)); return; }
+  if (!p) { const pi = punchIssue(me); if (pi && pi.mode === 'block') { toast(pi.msg); return; } }
   b.disabled = true;
   let pos = null;
   try { pos = await getPosition(); } catch (e) { if (co.punchNeedsLocation) { toast(e.message + ' Punching needs your location.'); b.disabled = false; return; } }
@@ -1696,6 +1701,7 @@ ACT.regNew = (b) => {
     if (f.out && toMin(f.out) <= toMin(f.in) && !(shiftFor(me, f.date).shift || {}).night) { $('#rge').textContent = 'Time out must be after time in.'; return; }
     if (f.reason.trim().length < 4) { $('#rge').textContent = 'Give a reason.'; return; }
     if (lockErr(me, f.date)) { $('#rge').textContent = lockErr(me, f.date); return; }
+    { const ci = corrIssue(me, f.date, 'time'); if (ci.block) { $('#rge').textContent = ci.block.msg + '.'; return; } if (ci.warn && !$('#rgf').dataset.ok) { $('#rgf').dataset.ok = '1'; $('#rge').textContent = `${ci.warn.msg}. Send again to ask anyway.`; return; } }
     if (S.regs.some((r) => r.empId === me.id && r.date === f.date && r.status === 'pending')) { $('#rge').textContent = 'A correction for that day is already waiting.'; return; }
     const r = newReg({ type: 'time', date: f.date, in: f.in, out: f.out, prevIn: p0 && p0.in ? hm(p0.in) : '', prevOut: p0 && p0.out ? hm(p0.out) : '', reason: f.reason.trim() });
     saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Correction recorded' : `Correction sent to ${stepNow(r).label.toLowerCase()}`); route(); };
@@ -1709,6 +1715,8 @@ function setPunch(empId, iso, inT, outT, source) {
 ACT.regDecide = async (b) => {
   const r = S.regs.find((x) => x.id === b.dataset.id); if (!r) return; const ok = b.dataset.ok === '1';
   { const le = lockErr(empById(r.empId), r.date, r.to); if (le) { toast(le); return; } }
+  if (ok && r.type === 'shift') { const e = empById(r.empId); const v = controlVerdict(e, controlIssues(e, { [r.date]: r.shiftId || '' }));
+    if (v.refused) { toast(`Cannot approve: ${v.blocks[0].msg}.`); return; } if (v.override && !(await confirmOverride(v.blocks))) return; }
   const note = ok ? '' : await askText('Reject this correction?', 'Reason, shown to the employee', 'Reject'); if (!ok && note === null) return;
   if (r.steps) {
     decide(r, ok, note || ''); if (!ok) r.note = note; r.decidedBy = me.id; r.decidedAt = Date.now();
@@ -1769,8 +1777,12 @@ VIEWS.roster = () => {
 ACT.rosterWeek = (b) => { const p = new URLSearchParams(R.q); p.set('w', b.dataset.w); go('#/roster?' + p); };
 ACT.rosterGrp = (el) => { const p = new URLSearchParams(R.q); p.set('g', el.value); go('#/roster?' + p); };
 ACT.rotPick = (el) => { const x = S.shiftPatterns.find((p) => p.id === el.value); if (x) $('#rof [name=pattern]').value = x.sequence; };
-ACT.rosterSet = (el) => { const e = empById(el.dataset.emp); const er = rosterChangeErr(e, el.dataset.d, el.value); if (er) { el.value = (S.roster[e.id] || {})[el.dataset.d] || ''; toast(er); return; }
-  const m = S.roster[el.dataset.emp] = S.roster[el.dataset.emp] || {}; if (el.value) m[el.dataset.d] = el.value; else delete m[el.dataset.d]; save(); toast('Roster updated'); };
+ACT.rosterSet = async (el) => { const e = empById(el.dataset.emp); const d = el.dataset.d, val = el.value; const was = (S.roster[e.id] || {})[d] || '';
+  const er = rosterChangeErr(e, d, val); if (er) { el.value = was; toast(er); return; }
+  const v = controlVerdict(e, controlIssues(e, { [d]: val }));
+  if (v.refused) { el.value = was; toast(`Not allowed: ${v.blocks[0].msg}.`); return; }
+  if (v.override && !(await confirmOverride(v.blocks))) { el.value = was; return; }
+  const m = S.roster[e.id] = S.roster[e.id] || {}; if (val) m[d] = val; else delete m[d]; save(); toast(v.warns.length ? `Roster updated. Note: ${v.warns[0].msg}.` : 'Roster updated'); };
 ACT.rotation = () => {
   const shifts = S.shifts.filter((s) => s.companyId === CO);
   openDlg(`<form class="dlg" id="rof" novalidate><h2>Apply a rotation</h2><p class="fine" style="margin:0">Repeat a pattern of shift codes and WO (weekly off) over a period, for example <span class="mono">MOR MOR MOR MOR MOR WO WO EVE EVE EVE EVE EVE WO WO</span>. Codes: ${shifts.map((s) => esc(s.code)).join(', ')}, WO.</p>
@@ -1787,13 +1799,15 @@ ACT.rotation = () => {
     if (!pat.length || bad) { $('#roe').textContent = bad ? `${bad} is not a shift code.` : 'Enter a pattern.'; return; }
     if (!emps.length) { $('#roe').textContent = 'Choose the employees.'; return; }
     if (!from || !to || to < from) { $('#roe').textContent = 'Check the dates.'; return; }
-    let n = 0, skipped = 0;
+    let n = 0, skipped = 0; const refused = [];
     const pid = fd.get('patternId') || '';
     emps.forEach((id) => { const emp = empById(id); emp.patternId = pid; emp.patternFrom = from; if (pid) emp.rotFilledTo = to;
       if (attGroup(emp) !== 'shift' && isHR(emp.companyId)) { emp.attGroup = 'shift'; emp.history.push({ date: from, type: 'Attendance group', note: 'Moved to shift staff with a rotation', by: me.id }); }
-      const m = S.roster[id] = S.roster[id] || {}; let i = 0; for (let d = from; d <= to; d = addDays(d, 1), i++) { const c = pat[i % pat.length]; const v = c === 'WO' ? 'WO' : shifts.find((s) => s.code.toUpperCase() === c).id;
-        if (rosterChangeErr(emp, d, v)) { skipped++; continue; } m[d] = v; n++; } });
-    saveNow(); closeDlg(); toast(`${n} roster entries set${skipped ? `; ${skipped} days left as they were (too soon or locked)` : ''}`); route();
+      const plan = {}; let i = 0; for (let d = from; d <= to; d = addDays(d, 1), i++) { const c = pat[i % pat.length]; const v = c === 'WO' ? 'WO' : shifts.find((s) => s.code.toUpperCase() === c).id;
+        if (rosterChangeErr(emp, d, v)) { skipped++; continue; } plan[d] = v; }
+      const vd = controlVerdict(emp, controlIssues(emp, plan)); if (vd.blocks.length) { refused.push(`${fullName(emp)}: ${vd.blocks[0].msg}`); return; }
+      const m = S.roster[id] = S.roster[id] || {}; Object.entries(plan).forEach(([d, v]) => { m[d] = v; n++; }); });
+    saveNow(); closeDlg(); toast(`${n} roster entries set${skipped ? `; ${skipped} days left as they were (too soon or locked)` : ''}${refused.length ? `. Not applied for ${refused.length} (time controls): ${refused[0]}` : ''}`); route();
   };
 };
 
@@ -2080,7 +2094,7 @@ VIEWS.performance = () => {
         ${canMgr ? `<textarea class="inp" data-ch="revText" data-k="mgrSummary" data-c="${cyc.id}" data-emp="${emp.id}" placeholder="Strengths, areas to develop">${esc(rv.mgrSummary || '')}</textarea>
           <label class="field" style="margin-top:8px">Potential<select class="inp" data-ch="revPot" data-c="${cyc.id}" data-emp="${emp.id}"><option value="">Choose</option>${[[3, 'High'], [2, 'Medium'], [1, 'Low']].map(([v, l]) => `<option value="${v}" ${+rv.potential === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
           : (!mine || cyc.stage === 'closed' ? `<p class="mut">${esc(rv.mgrSummary || 'Not written yet.')}</p>` : '<p class="mut">Visible when the cycle closes.</p>')}</div></div></div>` : ''}
-    ${mine ? feedbackFor(emp) : ''}` };
+    ${reviewSkillsCard(emp, cyc, { mine, isMgrOf, canMgr, canSelf, st })}${mine ? feedbackFor(emp) : ''}` };
 };
 const ratingSel = (k, g) => `<select class="inp" style="padding:3px" data-ch="goalRate" data-k="${k}" data-id="${g.id}" aria-label="Rating"><option value="">—</option>${[5, 4, 3, 2, 1].map((v) => `<option value="${v}" ${+g[k] === v ? 'selected' : ''} title="${RATING[v]}">${v}</option>`).join('')}</select>`;
 ACT.perfCycle = (el) => { const p = new URLSearchParams(R.q); p.set('c', el.value); go('#/performance?' + p); };
@@ -5093,6 +5107,7 @@ ACT.punchEdit = (b) => {
     if (f.in === pin && (f.out || '') === pout) return err('The times are the same as recorded.');
     if (f.reason.trim().length < 4) return err('Give a reason.');
     if (lockErr(me, iso)) return err(lockErr(me, iso));
+    { const ci = corrIssue(me, iso, 'time'); if (ci.block) return err(ci.block.msg + '.'); if (ci.warn && !ev.target.dataset.ok) { ev.target.dataset.ok = '1'; return err(`${ci.warn.msg}. Send again to ask anyway.`); } }
     const r = newReg({ type: 'time', date: iso, in: f.in, out: f.out, prevIn: pin, prevOut: pout, reason: f.reason.trim() });
     saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Recorded' : `Sent to ${stepNow(r).label.toLowerCase()} for approval`); route();
   };
@@ -5110,6 +5125,8 @@ ACT.shiftReq = (b) => {
     ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
     if (f.reason.trim().length < 4) { $('#shE').textContent = 'Give a reason.'; return; }
     if (lockErr(me, iso)) { $('#shE').textContent = lockErr(me, iso); return; }
+    { const ci = corrIssue(me, iso, 'shift'); if (ci.block) { $('#shE').textContent = ci.block.msg + '.'; return; } }
+    { const v = controlIssues(me, { [iso]: f.shift }).filter((x) => x.mode === 'block'); if (v.length) { $('#shE').textContent = `That shift is against the company’s time controls: ${v[0].msg}.`; return; } }
     const r = newReg({ type: 'shift', date: iso, shiftId: f.shift, prevShift: sf.off ? 'WO' : now, reason: f.reason.trim() });
     saveNow(); closeDlg(); toast(r.status === 'approved' ? 'Recorded' : `Sent to ${stepNow(r).label.toLowerCase()} for approval`); route();
   };
@@ -6230,14 +6247,14 @@ function trNeedsHtml() {
   const vis = S.trainingNeeds.filter((n) => (isHR(n.companyId) && n.companyId === CO) || n.empId === me.id || allReportees(me.id).includes(n.empId));
   const st = R.q.get('st') || 'open';
   const list = vis.filter((n) => st === 'all' || n.status === st).sort((a, b) => (['high', 'medium', 'low'].indexOf(a.priority) - ['high', 'medium', 'low'].indexOf(b.priority)) || ((a.targetDate || '9') < (b.targetDate || '9') ? -1 : 1));
-  const groups = {}; vis.filter((n) => n.status === 'open').forEach((n) => { const k = `${n.category || 'Other'}|${n.topic.trim().toLowerCase()}`; (groups[k] = groups[k] || { cat: n.category || 'Other', topic: n.topic, n: 0, high: 0 }); groups[k].n++; if (n.priority === 'high') groups[k].high++; });
+  const groups = {}; vis.filter((n) => n.status === 'open').forEach((n) => { const k = n.skillId || `${n.category || 'Other'}|${n.topic.trim().toLowerCase()}`; (groups[k] = groups[k] || { cat: n.category || 'Other', topic: n.skillId ? skillName(n.skillId) : n.topic, skillId: n.skillId || '', n: 0, high: 0 }); groups[k].n++; if (n.priority === 'high') groups[k].high++; });
   const top = Object.values(groups).sort((a, b) => b.n - a.n || b.high - a.high);
   return `${isHR() && top.length ? `<div class="card"><h2>Open needs by topic</h2><p class="sub">What to plan next. <b>Plan a training</b> starts one with the topic; then add the people who need it.</p><table class="t"><thead><tr><th>Topic</th><th>Category</th><th class="r">People</th><th class="r">High priority</th><th></th></tr></thead><tbody>
-      ${top.slice(0, 15).map((g) => `<tr><td><b>${esc(g.topic)}</b></td><td>${esc(g.cat)}</td><td class="r">${g.n}</td><td class="r">${g.high || ''}</td><td class="r"><button class="btn sm" data-act="trNew" data-title="${esc(g.topic)}" data-cat="${esc(g.cat)}">Plan a training</button></td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${top.slice(0, 15).map((g) => `<tr><td><b>${esc(g.topic)}</b></td><td>${esc(g.cat)}</td><td class="r">${g.n}</td><td class="r">${g.high || ''}</td><td class="r"><button class="btn sm" data-act="trNew" data-title="${esc(g.topic)}" data-cat="${esc(g.cat)}" data-skill="${esc(g.skillId || '')}">Plan a training</button></td></tr>`).join('')}</tbody></table></div>` : ''}
     <div class="card"><div class="hd"><div><h2>Development needs</h2><p class="sub">Skills or knowledge someone should build, raised by them, their manager or HR, for example from a performance review. When they are enrolled in a training for it, the need shows as planned; once they attend, as done.</p></div>
       <div class="tools"><select class="inp" data-ch="trNeedSt">${Object.entries({ open: 'Open', planned: 'Training planned', done: 'Done', all: 'All' }).map(([k, l]) => `<option value="${k}" ${k === st ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn pri" data-act="trNeedAdd">Add a need</button></div></div>
     ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Need</th><th>Priority</th><th>By</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map((n) => { const s = trNeedStatus(n); const t = n.trainingId && trById(n.trainingId); return `<tr><td><b>${esc(nameOf(n.empId))}</b></td><td><b>${esc(n.topic)}</b><div class="fine">${esc(n.category || '')}${n.note ? `. ${esc(n.note)}` : ''}${n.targetDate ? `. By ${dmy(n.targetDate)}` : ''}</div></td>
+      ${list.map((n) => { const s = trNeedStatus(n); const t = n.trainingId && trById(n.trainingId); return `<tr><td><b>${esc(nameOf(n.empId))}</b></td><td><b>${esc(n.topic)}</b><div class="fine">${esc(n.category || '')}${n.targetLevel ? `, to ${levelTxt(n.targetLevel)}` : ''}${n.cycleId ? `. From the review ${esc((S.cycles.find((c) => c.id === n.cycleId) || {}).name || '')}` : ''}${n.note ? `. ${esc(n.note)}` : ''}${n.targetDate ? `. By ${dmy(n.targetDate)}` : ''}</div></td>
         <td>${trBadge(NEED_PRI, n.priority)}</td><td class="fine">${esc(nameOf(n.by))}</td><td>${trBadge(NEED_ST, s)}${t ? `<div class="fine"><a href="#/course/${t.id}">${esc(t.title)}</a></div>` : ''}</td>
         <td class="r" style="white-space:nowrap">${s === 'open' ? `<a class="btn sm" href="#/training?tab=calendar&cat=${encodeURIComponent(n.category || '')}">Find a training</a> <button class="btn sm ghost" data-act="trNeedSet" data-id="${n.id}" data-s="dropped">Drop</button>` : ''}${s === 'planned' ? `<button class="btn sm ghost" data-act="trNeedSet" data-id="${n.id}" data-s="done">Mark done</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No needs here.</div>'}</div>`;
 }
@@ -6295,7 +6312,9 @@ function trEditDialog(t, pre = {}) {
   const v = t ? { ...t, extName: tr.name, extOrg: tr.org, extEmail: tr.email, extPhone: tr.phone } : { kind: 'internal', mode: 'classroom', category: 'Technical', start: addDays(todayISO(), 14), startTime: '10:00', endTime: '17:00', mgrReviewDays: 30, closeBy: addDays(todayISO(), 10), ...pre };
   const people = coEmployees().filter((e) => e.status !== 'exited').map((e) => [e.id, `${fullName(e)}, ${(desig(e.desigId) || {}).name || ''}`]);
   openDlg(`<form class="dlg" id="trF" novalidate><h2>${t ? 'Edit training' : 'New training'}</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}
-    <label class="field wide">Internal trainers (for internal trainings)${checkList('trainerIds', people, (t && t.trainerIds) || [])}<small>They see the participants, mark attendance, add content and get their feedback report.</small></label></div>
+    <label class="field wide">Internal trainers (for internal trainings)${checkList('trainerIds', people, (t && t.trainerIds) || [])}<small>They see the participants, mark attendance, add content and get their feedback report.</small></label>
+    <label class="field wide">Skills this training builds${checkList('skillIds', skillOpts(CO), ((t ? t.skills : pre.skills) || []).map((x) => x.skillId))}<small>Attending records the skill on each participant’s profile. People with an open development need for one of these skills are suggested first.</small></label>
+    <label class="field">To level${levelSel('name="skillLevel"', (((t ? t.skills : pre.skills) || [])[0] || {}).level || 2, 'Choose')}</label></div>
     <p class="err" id="trE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${t ? 'Save' : 'Create as draft'}</button></div></form>`, true);
   $('#trF').onsubmit = (ev) => {
     ev.preventDefault(); const d = readForm(ev.target, fields); const ids = checked(ev.target, 'trainerIds');
@@ -6303,13 +6322,14 @@ function trEditDialog(t, pre = {}) {
     if (bad) { $('#trE').textContent = bad; return; }
     const rec = { title: d.title, category: d.category, kind: d.kind, mode: d.mode, start: d.start, end: d.end || d.start, startTime: d.startTime, endTime: d.endTime, hours: d.hours === '' ? '' : +d.hours, capacity: d.capacity === '' ? '' : +d.capacity,
       venue: d.venue, link: d.link, closeBy: d.closeBy, cost: +d.cost || 0, mgrReviewDays: d.mgrReviewDays === '' ? 30 : +d.mgrReviewDays, mandatory: d.mandatory, audience: d.audience, objectives: d.objectives, description: d.description,
-      trainerIds: d.kind === 'internal' ? ids : [], trainer: d.kind === 'external' ? { name: d.extName, org: d.extOrg, email: d.extEmail, phone: d.extPhone } : null };
+      trainerIds: d.kind === 'internal' ? ids : [], trainer: d.kind === 'external' ? { name: d.extName, org: d.extOrg, email: d.extEmail, phone: d.extPhone } : null,
+      skills: checked(ev.target, 'skillIds').map((id) => ({ skillId: id, level: +ev.target.elements.skillLevel.value || 2 })) };
     if (t) { Object.assign(t, rec); logEntry(t, 'Details changed'); saveNow(); closeDlg(); route(); return; }
     const nt = { id: uid(), no: nextNo('trn', 'TRN-'), companyId: CO, status: 'draft', materials: [], quiz: { pre: false, post: true, pass: 60, questions: [] }, fbQs: FB_DEFAULT.map((x) => [...x]), log: [], createdBy: me.id, createdAt: Date.now(), ...rec };
     logEntry(nt, 'Planned'); S.trainings.push(nt); audit('Training planned', nt.title, 'training'); saveNow(); closeDlg(); go('#/course/' + nt.id);
   };
 }
-ACT.trNew = (b) => trEditDialog(null, b && b.dataset && b.dataset.title ? { title: b.dataset.title, category: b.dataset.cat } : {});
+ACT.trNew = (b) => trEditDialog(null, b && b.dataset && b.dataset.title ? { title: b.dataset.title, category: b.dataset.cat, skills: b.dataset.skill ? [{ skillId: b.dataset.skill, level: 2 }] : [] } : {});
 ACT.trExcelAll = () => {
   const all = S.trainings.filter((t) => t.companyId === CO);
   writeBook(`Trainings_${company().code}.xlsx`, {
@@ -6336,7 +6356,7 @@ VIEWS.course = () => {
     <div class="grid g2"><table class="t"><tbody><tr><td>When</td><td><b>${trWhen(t)}</b>${trHours(t) ? `, ${num(trHours(t), 1)} hours` : ''}</td></tr><tr><td>Trainer</td><td>${esc(trTrainer(t))}${hr && t.trainer && t.trainer.email ? `<div class="fine">${esc(t.trainer.email)} ${esc(t.trainer.phone || '')}</div>` : ''}</td></tr>
       ${t.venue ? `<tr><td>Venue</td><td>${esc(t.venue)}</td></tr>` : ''}${t.link && (manage || (x && ['approved', 'attended'].includes(x.status))) ? `<tr><td>Link</td><td><a href="${esc(t.link)}" target="_blank" rel="noopener noreferrer">${esc(t.link)}</a></td></tr>` : ''}
       <tr><td>Places</td><td>${taken}${+t.capacity ? ` of ${t.capacity} taken` : ' enrolled'}${t.closeBy && t.status === 'scheduled' ? `. Enrolment closes ${dmy(t.closeBy)}` : ''}</td></tr>${hr ? `<tr><td>Cost</td><td>${inr0(t.cost)}${taken ? `, ${inr0((+t.cost || 0) / taken)} a person` : ''}</td></tr>` : ''}</tbody></table>
-      <div>${t.audience ? `<p><b>Who should attend:</b> ${esc(t.audience)}</p>` : ''}${t.objectives ? `<p style="white-space:pre-wrap"><b>Objectives</b><br>${esc(t.objectives)}</p>` : ''}${t.description ? `<p style="white-space:pre-wrap" class="mut">${esc(t.description)}</p>` : ''}</div></div></div>`;
+      <div>${(t.skills || []).length ? `<p><b>Skills it builds:</b> ${t.skills.map((x) => `${esc(skillName(x.skillId))} (${levelTxt(x.level)})`).join(', ')}</p>` : ''}${t.audience ? `<p><b>Who should attend:</b> ${esc(t.audience)}</p>` : ''}${t.objectives ? `<p style="white-space:pre-wrap"><b>Objectives</b><br>${esc(t.objectives)}</p>` : ''}${t.description ? `<p style="white-space:pre-wrap" class="mut">${esc(t.description)}</p>` : ''}</div></div></div>`;
   // my part
   if (x || trCan(t)) {
     const st = x ? x.status : '';
@@ -6403,6 +6423,9 @@ ACT.trComplete = async () => {
   Object.assign(t, { status: 'completed', completedAt: Date.now(), completedBy: me.id }); logEntry(t, 'Completed'); audit('Training completed', t.title, 'training');
   // development needs met by attending (only those the person completing may change)
   S.trainingNeeds.filter((n) => n.trainingId === t.id && n.status === 'planned' && (isHR(n.companyId) || allReportees(me.id).includes(n.empId))).forEach((n) => { const y = trEnrolOf(t, n.empId); if (y && y.status === 'attended') n.status = 'done'; });
+  // open skill needs this training met for the people who attended, to the level wanted
+  S.trainingNeeds.filter((n) => n.status === 'open' && n.skillId && (isHR(n.companyId) || allReportees(me.id).includes(n.empId))).forEach((n) => { const sk = (t.skills || []).find((x) => x.skillId === n.skillId); const y = trEnrolOf(t, n.empId);
+    if (sk && y && y.status === 'attended' && (+sk.level || 0) >= (+n.targetLevel || 0)) Object.assign(n, { status: 'done', trainingId: t.id, closedBy: me.id, closedAt: Date.now() }); });
   saveNow(); route();
 };
 ACT.trAsk = async () => {
@@ -6418,7 +6441,7 @@ ACT.trAdd = () => {
   const t = curTr(); const hr = isHR(t.companyId);
   const pool = (hr ? coEmployees(t.companyId) : allReportees(me.id).map(empById)).filter((e) => e && e.status === 'active' && !trEnrolOf(t, e.id) && !trIsTrainer(t, e.id));
   if (!pool.length) { toast('Everyone you can enrol is already in it.'); return; }
-  const needOf = (e) => S.trainingNeeds.find((n) => n.empId === e.id && n.status === 'open' && (n.category === t.category || t.title.toLowerCase().includes(String(n.topic).toLowerCase()) || String(n.topic).toLowerCase().includes(t.title.toLowerCase())));
+  const needOf = (e) => S.trainingNeeds.find((n) => n.empId === e.id && n.status === 'open' && n.skillId && (t.skills || []).some((x) => x.skillId === n.skillId)) || S.trainingNeeds.find((n) => n.empId === e.id && n.status === 'open' && (n.category === t.category || t.title.toLowerCase().includes(String(n.topic).toLowerCase()) || String(n.topic).toLowerCase().includes(t.title.toLowerCase())));
   const list = pool.map((e) => ({ e, n: needOf(e) })).sort((a, b) => (!!b.n - !!a.n) || fullName(a.e).localeCompare(fullName(b.e)));
   const left = +t.capacity ? +t.capacity - trTaken(t) : null;
   openDlg(`<form class="dlg" id="taF"><h2>${hr ? 'Add participants' : 'Enrol team members'}</h2><p class="fine" style="margin:0">They are enrolled straight away and see it in My training.${left != null ? ` ${left} place${left === 1 ? '' : 's'} left.` : ''} People with a matching development need are first and ticked.</p>
@@ -6715,6 +6738,43 @@ function backgroundDemo(A, B, emps) {
   Object.assign(vikram, { marital: 'married', anniversary: `2012-${addDays(todayISO(), 1).slice(5)}`, shareAnniversary: false });
 }
 
+
+function skillsDemo(A, B, emps) {
+  [A, B].forEach((c) => STARTER.skill.forEach(([name, category]) => S.masterItems.push({ id: uid(), companyId: c.id, kind: 'skill', name, category, status: 'approved', source: 'starter', proposedBy: emps[0].id, proposedAt: Date.now(), decidedBy: emps[0].id, decidedAt: Date.now() })));
+  const sk = (c, n) => (S.masterItems.find((x) => x.companyId === c.id && x.kind === 'skill' && x.name === n) || {}).id;
+  const role = (c, dn, list) => { const d = S.desigs.find((x) => x.companyId === c.id && x.name === dn); if (d) d.skills = list.map(([n, level]) => ({ skillId: sk(c, n), level })); };
+  role(A, 'Engineer', [['Java', 3], ['SQL and databases', 2], ['Secure coding', 2], ['System design', 2]]);
+  role(A, 'Senior engineer', [['Java', 4], ['System design', 3], ['Secure coding', 3], ['Coaching and feedback', 2]]);
+  role(A, 'Engineering manager', [['People management', 3], ['Coaching and feedback', 3], ['Planning and prioritising', 3]]);
+  role(A, 'Account executive', [['Negotiation', 3], ['Customer service', 3], ['Communication and presentation', 3]]);
+  role(B, 'Sales associate', [['Customer service', 2], ['Inventory and stock control', 2]]);
+  role(B, 'Warehouse associate', [['Forklift operation', 2], ['Inventory and stock control', 2], ['Fire safety and evacuation', 2]]);
+  role(B, 'Shift supervisor', [['People management', 2], ['Fire safety and evacuation', 3]]);
+  const tr = (title, list) => { const t = S.trainings.find((x) => x.title === title); if (t) t.skills = list.map(([n, level]) => ({ skillId: sk(A, n), level })); };
+  tr('Secure coding practices', [['Secure coding', 3]]); tr('Negotiation skills for account managers', [['Negotiation', 3]]);
+  tr('Leadership essentials for first-time managers', [['People management', 2], ['Coaching and feedback', 2]]); tr('POSH awareness (prevention of sexual harassment)', [['POSH awareness', 2]]);
+  // last year's review: Vikram assessed his engineers, Meera her account executives, and raised needs
+  const c1 = S.cycles.find((c) => c.companyId === A.id && c.name === 'Annual review 2025-26'); if (!c1) return;
+  const by = (n) => S.employees.find((e) => e.companyId === A.id && fullName(e) === n);
+  const assess = (name, mgr, list) => { const e = by(name); if (!e) return; let r = S.reviews.find((x) => x.cycleId === c1.id && x.empId === e.id); if (!r) { r = { id: uid(), cycleId: c1.id, empId: e.id }; S.reviews.push(r); }
+    r.skills = list.map(([n, level]) => ({ skillId: sk(A, n), level, by: by(mgr).id, at: Date.now() - 40 * 86400000 })); return { e, r }; };
+  const need = (x, n, level, priority, note, mgr) => { if (!x) return; S.trainingNeeds.push({ id: uid(), companyId: A.id, empId: x.e.id, skillId: sk(A, n), topic: n, category: SKILL_TO_TR[(S.masterItems.find((m) => m.id === sk(A, n)) || {}).category] || 'Technical',
+    priority, targetLevel: level, targetDate: addDays(todayISO(), 90), note, status: 'open', by: by(mgr).id, at: Date.now() - 40 * 86400000, source: 'review', cycleId: c1.id, reviewId: x.r.id }); };
+  const divya = assess('Divya Shetty', 'Vikram Menon', [['Java', 4], ['System design', 3], ['Secure coding', 2], ['Coaching and feedback', 1]]);
+  const arjun = assess('Arjun Nair', 'Vikram Menon', [['Java', 3], ['SQL and databases', 2], ['Secure coding', 1], ['System design', 1]]);
+  assess('Sneha Kulkarni', 'Vikram Menon', [['Java', 2], ['SQL and databases', 2], ['Secure coding', 2], ['System design', 1]]);
+  const farhan = assess('Farhan Sheikh', 'Meera Iyer', [['Negotiation', 2], ['Customer service', 3], ['Communication and presentation', 2]]);
+  const lakshmi = assess('Lakshmi Gowda', 'Meera Iyer', [['Negotiation', 2], ['Customer service', 3], ['Communication and presentation', 3]]);
+  need(divya, 'Coaching and feedback', 2, 'high', 'She now guides two engineers; needs to give structured feedback.', 'Vikram Menon');
+  need(arjun, 'System design', 2, 'high', 'Design reviews depend on others today.', 'Vikram Menon');
+  need(by('Sneha Kulkarni') && { e: by('Sneha Kulkarni'), r: S.reviews.find((x) => x.cycleId === c1.id && x.empId === by('Sneha Kulkarni').id) }, 'System design', 2, 'medium', 'Ready to take on design of small services.', 'Vikram Menon');
+  need(farhan, 'Communication and presentation', 3, 'medium', 'Client presentations at quarterly reviews.', 'Meera Iyer');
+  need(lakshmi, 'Communication and presentation', 4, 'medium', 'Will lead the quarterly business reviews with two large accounts.', 'Meera Iyer');
+  // Nilgiri Retail switches the time and shift controls on; two women on evening and night rotations have consented
+  B.timeControls = newTimeControls();
+  emps.filter((e) => ['Priya', 'Vaishali'].includes(e.firstName)).forEach((e) => { e.nightConsent = true; });
+}
+
 /* ---------------------------------------------------------------- server state and session (used by the React app) */
 function loadServerState(state, meId) {
   S = hydrate(state);
@@ -6854,11 +6914,15 @@ function autoRotate(coId, force) {
     let from = e.rotFilledTo ? addDays(e.rotFilledTo, 1) : e.patternFrom || start0;
     if (from < start0) from = start0; if ((e.doj || '') > from) from = e.doj;
     if (from > horizon) return;
-    n += fillPattern(e, pat, from, horizon, true); e.rotFilledTo = horizon;
+    const before = { ...(S.roster[e.id] || {}) }; const k = fillPattern(e, pat, from, horizon, true);
+    const changed = {}; Object.entries(S.roster[e.id] || {}).forEach(([d, v]) => { if (before[d] !== v) changed[d] = v; });
+    const bad = k ? controlIssues(e, changed, { planEnd: horizon }).find((x) => x.mode === 'block') : null;
+    if (bad) { S.roster[e.id] = before; ROT_SKIPPED.push(bad.msg); return; }   // left for HR or the manager to fix by hand
+    n += k; e.rotFilledTo = horizon;
   });
   return n;
 }
-const ROT_RUN = {};
+const ROT_RUN = {}; let ROT_SKIPPED = [];
 function autoRotateSoon() {
   if (!me || !(isHR() || isManager())) return;
   const k = CO; if (Date.now() - (ROT_RUN[k] || 0) < 600000) return; ROT_RUN[k] = Date.now();
@@ -7028,6 +7092,7 @@ const STARTER = {
     'Bajaj Auto', 'Hindustan Unilever', 'ITC', 'Asian Paints', 'HDFC Bank', 'ICICI Bank', 'State Bank of India', 'Axis Bank', 'Avenue Supermarts (DMart)', 'Reliance Retail', 'Flipkart', 'Amazon India'].map((x) => [x]),
 };
 function masterUse(item) {
+  if (item.kind === 'skill') return skillUse(item);
   const idk = Object.values(MASTER_FIELD); let n = 0;
   S.employees.filter((e) => e.companyId === item.companyId).forEach((e) => BG_KEYS.forEach((k) => (e[k] || []).forEach((x) => { if (idk.some((f) => x[f] === item.id)) n++; })));
   return n;
@@ -7053,10 +7118,10 @@ VIEWS.masterdata = () => {
   }
   const list = items.filter((x) => x.kind === tab && x.status === 'approved').sort((a, b) => a.name.localeCompare(b.name));
   const q = (R.q.get('q') || '').toLowerCase(); const shown = q ? list.filter((x) => `${x.name} ${x.city || ''} ${(x.aliases || []).join(' ')}`.toLowerCase().includes(q)) : list;
-  return { title: 'Standard lists', html: `${tabs}<div class="card"><div class="hd"><div><h2>${esc(MASTER_KINDS[tab])}</h2><p class="sub">${list.length} on the list. Employees choose from it on the Background tab of their profile${tab === 'employer' ? ' (previous employment)' : ' (education)'}. Other spellings matched to an entry are shown under it.</p></div>
+  return { title: 'Standard lists', html: `${tabs}<div class="card"><div class="hd"><div><h2>${esc(MASTER_KINDS[tab])}</h2><p class="sub">${list.length} on the list. ${tab === 'skill' ? 'Managers assess these skills in reviews, trainings say which they build, and employees add skills they have.' : `Employees choose from it on the Background tab of their profile${tab === 'employer' ? ' (previous employment)' : ' (education)'}.`} Other spellings matched to an entry are shown under it.</p></div>
     <div class="tools"><input class="inp" placeholder="Search" value="${esc(R.q.get('q') || '')}" data-ch="mdQ" style="min-width:180px">${list.length < 10 ? `<button class="btn" data-act="mdStarter" data-k="${tab}">Add the starter list</button>` : ''}<label class="btn">Import from Excel<input type="file" accept=".xlsx,.xls,.csv" hidden data-ch="mdImport" data-k="${tab}"></label><button class="btn" data-act="mdExport" data-k="${tab}">Download Excel</button><button class="btn pri" data-act="mdEdit" data-k="${tab}">Add ${esc(MASTER_ONE[tab])}</button></div></div>
-    ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Name</th>${tab === 'institution' ? '<th>Type</th><th>City</th>' : ''}<th>Also matches</th><th class="r">Used in</th><th>Added</th></tr></thead><tbody>${shown.map((x) => `<tr class="click" data-act="mdEdit" data-k="${tab}" data-id="${x.id}"><td><b>${esc(x.name)}</b></td>${tab === 'institution' ? `<td>${esc(x.type || '')}</td><td>${esc(x.city || '')}</td>` : ''}<td class="fine">${esc((x.aliases || []).join(', '))}</td><td class="r">${masterUse(x)}</td><td class="fine">${x.proposedBy && x.proposedBy !== x.decidedBy ? `Proposed by ${esc(nameOf(x.proposedBy))}` : x.source === 'starter' ? 'Starter list' : x.source === 'import' ? 'Imported' : ''}</td></tr>`).join('')}</tbody></table></div>`
-      : `<div class="empty">${list.length ? 'Nothing matches the search.' : 'The list is empty. Add entries, import them from Excel, or start from the starter list.'}</div>`}</div>` };
+    ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Name</th>${tab === 'institution' ? '<th>Type</th><th>City</th>' : tab === 'skill' ? '<th>Category</th>' : ''}<th>Also matches</th><th class="r">Used in</th><th>Added</th></tr></thead><tbody>${shown.map((x) => `<tr class="click" data-act="mdEdit" data-k="${tab}" data-id="${x.id}"><td><b>${esc(x.name)}</b>${x.description ? `<div class="fine">${esc(x.description)}</div>` : ''}</td>${tab === 'institution' ? `<td>${esc(x.type || '')}</td><td>${esc(x.city || '')}</td>` : tab === 'skill' ? `<td>${esc(x.category || '')}</td>` : ''}<td class="fine">${esc((x.aliases || []).join(', '))}</td><td class="r">${masterUse(x)}</td><td class="fine">${x.proposedBy && x.proposedBy !== x.decidedBy ? `Proposed by ${esc(nameOf(x.proposedBy))}` : x.source === 'starter' ? 'Starter list' : x.source === 'import' ? 'Imported' : ''}</td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="empty">${list.length ? 'Nothing matches the search.' : 'The list is empty. Add entries, import them from Excel, or start from the starter list.'}</div>`}</div>${tab === 'skill' ? skillRolesCard() : ''}` };
 };
 function masterNearest(x) {
   const k = normKey(x.name); const words = new Set(k.split(' ').filter((w) => w.length > 2));
@@ -7065,7 +7130,8 @@ function masterNearest(x) {
   return score >= 2 ? best : null;
 }
 ACT.mdQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/masterdata?' + p); };
-function mdFields(kind) { return [{ k: 'name', label: 'Name, in full', req: true, wide: true }, ...(kind === 'institution' ? [{ k: 'type', label: 'Type', type: 'select', opts: INST_TYPES.map((x) => [x, x]) }, { k: 'city', label: 'City' }] : []), { k: 'aliasTxt', label: 'Other spellings to match (comma separated)', wide: true, help: 'For example: IIT Bombay, IITB' }]; }
+function mdFields(kind) { return [{ k: 'name', label: 'Name, in full', req: true, wide: true }, ...(kind === 'institution' ? [{ k: 'type', label: 'Type', type: 'select', opts: INST_TYPES.map((x) => [x, x]) }, { k: 'city', label: 'City' }] : []),
+  ...(kind === 'skill' ? [{ k: 'category', label: 'Category', type: 'select', opts: SKILL_CATS.map((x) => [x, x]) }, { k: 'description', label: 'What it covers', wide: true }] : []), { k: 'aliasTxt', label: 'Other spellings to match (comma separated)', wide: true, help: 'For example: IIT Bombay, IITB' }]; }
 ACT.mdEdit = (b) => {
   const kind = b.dataset.k; const x0 = b.dataset.id ? masterById(b.dataset.id) : null; const fields = mdFields(kind);
   const v = x0 ? { ...x0, aliasTxt: (x0.aliases || []).join(', ') } : { type: 'College' };
@@ -7108,7 +7174,7 @@ ACT.mdReject = async (b) => {
 ACT.mdStarter = (b) => {
   const kind = b.dataset.k; let n = 0;
   STARTER[kind].forEach(([name, type, city]) => { if (S.masterItems.some((y) => y.companyId === CO && y.kind === kind && normKey(y.name) === normKey(name))) return;
-    S.masterItems.push({ id: uid(), companyId: CO, kind, name, ...(type ? { type } : {}), ...(city ? { city } : {}), status: 'approved', source: 'starter', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
+    S.masterItems.push({ id: uid(), companyId: CO, kind, name, ...(type ? (kind === 'skill' ? { category: type } : { type }) : {}), ...(city ? { city } : {}), status: 'approved', source: 'starter', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
   saveNow(); toast(`${n} added`); route();
 };
 ACT.mdImport = async (el) => {
@@ -7116,7 +7182,7 @@ ACT.mdImport = async (el) => {
   try { const rows = await readSheet(f); let n = 0, skip = 0;
     rows.forEach((r) => { const k = (names) => String(r[Object.keys(r).find((x) => names.includes(x.toLowerCase().replace(/[^a-z]/g, '')))] ?? '').trim();
       const name = k(['name', 'institution', 'employer', 'company', 'qualification']).replace(/\s+/g, ' '); if (name.length < 2 || S.masterItems.some((y) => y.companyId === CO && y.kind === kind && y.status === 'approved' && normKey(y.name) === normKey(name))) { skip++; return; }
-      S.masterItems.push({ id: uid(), companyId: CO, kind, name, type: k(['type']) || undefined, city: k(['city']) || undefined, aliases: k(['alsomatches', 'aliases', 'otherspellings']).split(',').map((s) => s.trim()).filter(Boolean), status: 'approved', source: 'import', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
+      S.masterItems.push({ id: uid(), companyId: CO, kind, name, type: k(['type']) || undefined, city: k(['city']) || undefined, category: k(['category']) || undefined, aliases: k(['alsomatches', 'aliases', 'otherspellings']).split(',').map((s) => s.trim()).filter(Boolean), status: 'approved', source: 'import', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
     saveNow(); toast(`${n} imported${skip ? `, ${skip} skipped (empty or already on the list)` : ''}`); route();
   } catch (x) { toast(x.message); }
 };
@@ -7268,15 +7334,22 @@ function shiftChangePlan() {
   const f = $('#scF'); const fd = new FormData(f); const ids = fd.getAll('emp'); const from = fd.get('from'), to = fd.get('to') || from; const val = fd.get('shift');
   if (!ids.length) return { err: 'Choose the people.' }; if (!from || to < from) return { err: 'Check the dates.' }; if (daysBetween(from, to) > 62) return { err: 'Change at most two months at a time.' };
   const rows = []; ids.forEach((id) => { const e = empById(id); for (let d = from; d <= to; d = addDays(d, 1)) { const cur = (S.roster[id] || {})[d] || ''; const same = effShift(e, d, cur) === effShift(e, d, val); rows.push({ e, d, cur, problem: same ? 'No change' : rosterChangeErr(e, d, val), same }); } });
-  return { rows, ids, from, to, val, reason: String(fd.get('reason') || '').trim() };
+  // time controls, for each person's changes together
+  const verdicts = {}; ids.forEach((id) => { const e = empById(id); const over = {}; rows.filter((x) => x.e.id === id && !x.problem).forEach((x) => { over[x.d] = val; });
+    const v = verdicts[id] = controlVerdict(e, Object.keys(over).length ? controlIssues(e, over) : []);
+    if (v.refused) rows.filter((x) => x.e.id === id && !x.problem).forEach((x) => { x.problem = `Not allowed: ${v.blocks[0].msg}`; x.control = true; }); });
+  return { rows, ids, from, to, val, verdicts, reason: String(fd.get('reason') || '').trim() };
 }
 ACT.scPreview = () => {
   const p = shiftChangePlan(); if (p.err) { $('#scE').textContent = p.err; return; } $('#scE').textContent = '';
   const ok = p.rows.filter((x) => !x.problem).length;
-  $('#scPrev').innerHTML = `<h3>${ok} day${ok === 1 ? '' : 's'} will change</h3><div class="scroll" style="max-height:300px"><table class="t"><thead><tr><th>Employee</th><th>Day</th><th>Now</th><th>Will be</th><th></th></tr></thead><tbody>${p.rows.map((x) => `<tr><td>${esc(fullName(x.e))}</td><td>${D(x.d).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</td><td>${esc(shiftLabel(effShift(x.e, x.d, x.cur)))}</td><td>${esc(shiftLabel(effShift(x.e, x.d, p.val)))}</td><td>${x.problem ? `<span class="fine ${x.same ? '' : 'bad'}">${esc(x.problem)}</span>` : '<span class="badge ok">Will change</span>'}</td></tr>`).join('')}</tbody></table></div>`;
+  const notes = Object.values(p.verdicts).flatMap((v) => [...(v.override ? v.blocks.map((x) => `${x.msg} (HR override needed)`) : []), ...v.warns.map((x) => x.msg)]);
+  $('#scPrev').innerHTML = `${notes.length ? `<div class="note warn"><b>Time controls:</b> ${notes.map(esc).join('. ')}.</div>` : ''}<h3>${ok} day${ok === 1 ? '' : 's'} will change</h3><div class="scroll" style="max-height:300px"><table class="t"><thead><tr><th>Employee</th><th>Day</th><th>Now</th><th>Will be</th><th></th></tr></thead><tbody>${p.rows.map((x) => `<tr><td>${esc(fullName(x.e))}</td><td>${D(x.d).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</td><td>${esc(shiftLabel(effShift(x.e, x.d, x.cur)))}</td><td>${esc(shiftLabel(effShift(x.e, x.d, p.val)))}</td><td>${x.problem ? `<span class="fine ${x.same ? '' : 'bad'}">${esc(x.problem)}</span>` : '<span class="badge ok">Will change</span>'}</td></tr>`).join('')}</tbody></table></div>`;
 };
-function shiftChangeGo() {
+async function shiftChangeGo() {
   const p = shiftChangePlan(); if (p.err) { $('#scE').textContent = p.err; return; }
+  const over = Object.values(p.verdicts).filter((v) => v.override).flatMap((v) => v.blocks);
+  if (over.length && !(await confirmOverride(over))) return;
   if (p.reason.length < 4) { $('#scE').textContent = 'Give a reason; the employee sees it.'; return; }
   const go1 = p.rows.filter((x) => !x.problem); if (!go1.length) { ACT.scPreview(); $('#scE').textContent = 'None of these days can change. See the reasons below.'; return; }
   const byEmp = {}; go1.forEach((x) => { (byEmp[x.e.id] = byEmp[x.e.id] || []).push(x); });
@@ -7284,7 +7357,8 @@ function shiftChangeGo() {
     const e = empById(id); const r = { id: uid(), type: 'shift', kind: 'manager', empId: id, companyId: e.companyId, by: me.id, at: Date.now(), date: rows[0].d, to: rows[rows.length - 1].d, days: rows.length, shiftId: p.val, prevShift: effShift(e, rows[0].d, rows[0].cur), reason: p.reason, status: 'approved', applied: true, steps: [], log: [] };
     logEntry(r, 'Shift changed by manager', p.reason); S.regs.push(r); });
   audit('Shifts changed', `${Object.keys(byEmp).length} people, ${go1.length} days, from ${dmy(p.from)}`, 'time');
-  saveNow(); const skipped = p.rows.filter((x) => x.problem && !x.same).length; toast(`${go1.length} day${go1.length === 1 ? '' : 's'} changed${skipped ? `; ${skipped} could not change (too soon or locked)` : ''}`); route();
+  saveNow(); const skipped = p.rows.filter((x) => x.problem && !x.same).length; const warns = Object.values(p.verdicts).flatMap((v) => v.warns);
+  toast(`${go1.length} day${go1.length === 1 ? '' : 's'} changed${skipped ? `; ${skipped} could not change (too soon, locked or against the time controls)` : ''}${warns.length ? `. Note: ${warns[0].msg}` : ''}`); route();
 }
 
 /* ---------------------------------------------------------------- rotation and shift-change policy (HR) */
@@ -7319,7 +7393,8 @@ VIEWS.shiftpolicy = () => {
     c.shiftPolicy = { ...(c.shiftPolicy || {}), rotationMode: f.elements.rotationMode.value, weeksAhead: Math.max(1, Math.min(26, parseNum(f.elements.weeksAhead.value) || 4)), defaultPatternId: f.elements.defaultPatternId.value, rules, noticeHrs, mgrChange: f.elements.mgrChange.checked, hrOverride: f.elements.hrOverride.checked };
     audit('Shift policy changed', `${c.code}: ${c.shiftPolicy.rotationMode === 'auto' ? 'automatic rotation' : 'rotation by managers'}, ${noticeHrs} h notice`, 'time'); ROT_RUN[CO] = 0; saveNow(); toast('Saved'); route(); }; } };
 };
-ACT.spApply = () => { const n = autoRotate(CO, true); saveNow(); toast(n ? `${n} roster days filled from rotations` : 'The roster is already filled from rotations'); route(); };
+ACT.spApply = () => { ROT_SKIPPED = []; const n = autoRotate(CO, true); saveNow();
+  toast(`${n ? `${n} roster days filled from rotations` : 'Nothing new to fill'}${ROT_SKIPPED.length ? `. Not filled for ${ROT_SKIPPED.length} (against the time controls): ${ROT_SKIPPED[0]}` : ''}`); route(); };
 
 /* ---------------------------------------------------------------- greetings and notifications */
 const GREET_DEFAULT = { birthday: 'Happy birthday, {first}! Wishing you a wonderful year ahead from all of us at {company}.', anniversary: 'Happy wedding anniversary, {first}! Warm wishes to you and your family from everyone at {company}.',
@@ -7421,6 +7496,305 @@ function wireAnniversary(form) {
 
 
 /* =====================================================================
+   PeopleDesk 2.8: skills, development from performance reviews, and time and shift controls
+   - A skills library (a standard list kept by HR) and the skills each designation needs, at a level
+   - In the manager review, managers assess each skill and raise development needs; the employee adds the
+     skills they want to develop. HR sees the needs from reviews by skill and plans trainings for them
+   - Trainings say which skills they build; attending one records the skill on the person's profile
+   - Time and shift controls: rest between shifts, working days in a row, weekly hours, night shifts in a row,
+     women's night work with consent, early punching and limits on corrections, each off, a warning, or a block.
+     HR may override a block with a reason; every breach is listed under Control exceptions
+   The server enforces the blocking controls (backend/app/workforce.py).
+   ===================================================================== */
+const SKILL_LEVELS = { 1: 'Basic', 2: 'Working', 3: 'Advanced', 4: 'Expert' };
+const SKILL_CATS = ['Technical', 'Functional', 'Behavioural', 'Leadership', 'Safety and compliance', 'Language', 'Other'];
+const SKILL_TO_TR = { Technical: 'Technical', Functional: 'Functional', Behavioural: 'Soft skills', Leadership: 'Leadership and management', 'Safety and compliance': 'Compliance and safety', Language: 'Soft skills', Other: 'Other' };
+MASTER_KINDS.skill = 'Skills'; MASTER_ONE.skill = 'skill';
+STARTER.skill = [['Java', 'Technical'], ['Python', 'Technical'], ['SQL and databases', 'Technical'], ['Cloud infrastructure (AWS, Azure)', 'Technical'], ['Kubernetes and containers', 'Technical'], ['Secure coding', 'Technical'],
+  ['System design', 'Technical'], ['Data analysis with Excel', 'Functional'], ['Payroll and statutory compliance', 'Functional'], ['Inventory and stock control', 'Functional'], ['Forklift operation', 'Functional'],
+  ['Customer service', 'Behavioural'], ['Negotiation', 'Behavioural'], ['Communication and presentation', 'Behavioural'], ['Problem solving', 'Behavioural'], ['People management', 'Leadership'],
+  ['Coaching and feedback', 'Leadership'], ['Planning and prioritising', 'Leadership'], ['Fire safety and evacuation', 'Safety and compliance'], ['POSH awareness', 'Safety and compliance'], ['English (business)', 'Language']];
+const levelTxt = (n) => (n ? `${SKILL_LEVELS[n] || n}` : '—');
+const skillById = (id) => S.masterItems.find((x) => x.id === id && x.kind === 'skill');
+const skillName = (id) => (skillById(id) || {}).name || 'Skill no longer listed';
+const skillOpts = (coId = CO) => S.masterItems.filter((x) => x.companyId === coId && x.kind === 'skill' && x.status === 'approved').sort((a, b) => a.name.localeCompare(b.name)).map((x) => [x.id, x.name]);
+const roleSkills = (e) => ((desig(e.desigId) || {}).skills || []).filter((x) => skillById(x.skillId));
+const levelSel = (attrs, v, blank = '—') => `<select class="inp" style="padding:3px 6px" ${attrs}><option value="">${blank}</option>${Object.entries(SKILL_LEVELS).map(([k, l]) => `<option value="${k}" ${+v === +k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+function skillUse(item) {
+  let n = 0; const id = item.id;
+  S.desigs.forEach((d) => { if ((d.skills || []).some((x) => x.skillId === id)) n++; });
+  S.trainings.forEach((t) => { if ((t.skills || []).some((x) => x.skillId === id)) n++; });
+  S.trainingNeeds.forEach((x) => { if (x.skillId === id) n++; });
+  S.employees.forEach((e) => { if ((e.selfSkills || []).some((x) => x.skillId === id)) n++; });
+  S.reviews.forEach((r) => { if ((r.skills || []).some((x) => x.skillId === id)) n++; });
+  return n;
+}
+/* Everything known about one person's skills: what their role needs, the latest manager assessment, trainings
+   attended that build it, and what they declared themselves. The confirmed level is the higher of the assessment
+   and training; a skill only the person declared is shown as declared. */
+function skillProfile(e) {
+  const mine = me && e.id === me.id; const out = {};
+  const row = (id) => (out[id] = out[id] || { skillId: id, required: 0, assessed: null, trained: [], self: 0, needs: [] });
+  roleSkills(e).forEach((x) => { row(x.skillId).required = +x.level || 0; });
+  const cyc = (id) => S.cycles.find((c) => c.id === id) || {};
+  S.reviews.filter((r) => r.empId === e.id && (r.skills || []).length && (!mine || cyc(r.cycleId).stage === 'closed')).sort((a, b) => (cyc(a.cycleId).from < cyc(b.cycleId).from ? -1 : 1))
+    .forEach((r) => r.skills.forEach((x) => { if (+x.level) row(x.skillId).assessed = { level: +x.level, cycle: cyc(r.cycleId).name || '', by: x.by, at: +x.at || 0 }; }));
+  S.trainingEnrols.filter((y) => y.empId === e.id && y.status === 'attended').forEach((y) => { const t = trById(y.trainingId); if (!t) return;
+    (t.skills || []).forEach((x) => row(x.skillId).trained.push({ t, level: +x.level || 0, date: t.end || t.start })); });
+  (e.selfSkills || []).forEach((x) => { row(x.skillId).self = +x.level || 0; });
+  S.trainingNeeds.filter((n) => n.empId === e.id && n.skillId && ['open', 'planned'].includes(trNeedStatus(n))).forEach((n) => row(n.skillId).needs.push(n));
+  Object.values(out).forEach((r) => {
+    // the latest evidence counts: an assessment made after a training replaces what the training gave
+    const since = r.assessed ? r.assessed.at : 0;
+    r.confirmed = Math.max(r.assessed ? r.assessed.level : 0, ...r.trained.filter((x) => D(x.date).getTime() > since).map((x) => x.level), 0);
+    r.status = !r.required ? (r.confirmed ? 'has' : r.self ? 'declared' : r.needs.length ? 'developing' : 'none')
+      : r.confirmed >= r.required ? 'meets' : r.needs.some((n) => trNeedStatus(n) === 'planned') ? 'planned' : r.needs.length ? 'need' : r.confirmed || r.assessed ? 'gap' : 'unknown';
+  });
+  return Object.values(out).filter((r) => skillById(r.skillId)).sort((a, b) => (b.required - a.required) || skillName(a.skillId).localeCompare(skillName(b.skillId)));
+}
+const SK_ST = { meets: ['Meets the role', 'ok'], planned: ['Training planned', 'info'], need: ['Development need raised', 'warn'], gap: ['Below the role', 'bad'], unknown: ['Not assessed yet', ''], has: ['Has it', 'ok'], declared: ['Declared by them', ''], developing: ['Developing', 'info'], none: ['', ''] };
+const skBadge = (s) => (SK_ST[s] && SK_ST[s][0] ? `<span class="badge ${SK_ST[s][1]}">${SK_ST[s][0]}</span>` : '');
+
+/* ---- profile: Skills tab */
+PROFILE_TABS.skills = (e, { hr, mine }) => {
+  const rows = skillProfile(e); const req = rows.filter((r) => r.required);
+  const canNeed = mine || hr || allReportees(me.id).includes(e.id);
+  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Skills the role needs</span><b>${req.filter((r) => r.status === 'meets').length} of ${req.length}</b><small>${req.length ? 'met at the level needed' : 'none set for this designation'}</small></div>
+      <div class="kpi"><span>Below the role</span><b>${req.filter((r) => ['gap', 'need', 'planned'].includes(r.status)).length}</b><small>${req.filter((r) => r.status === 'unknown').length} not assessed yet</small></div>
+      <div class="kpi"><span>Development needs</span><b>${rows.reduce((s, r) => s + r.needs.length, 0)}</b><small>open or with a training planned</small></div>
+      <div class="kpi"><span>Built through training</span><b>${rows.filter((r) => r.trained.length).length}</b><small>skills from trainings attended</small></div></div>
+    <div class="card"><div class="hd"><div><h2>Skills</h2><p class="sub">What ${mine ? 'your' : 'this'} role needs, the manager’s assessment from the latest review${mine ? ' (shown once the review cycle closes)' : ''}, and skills built in trainings attended.</p></div>
+      <div class="tools">${mine ? `<button class="btn" data-act="skSelf" data-emp="${e.id}">Add a skill I have</button>` : ''}${canNeed ? `<button class="btn pri" data-act="skNeed" data-emp="${e.id}">Raise a development need</button>` : ''}</div></div>
+    ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Skill</th><th>Role needs</th><th>Assessed</th><th>From training</th><th>Declared</th><th>Status</th><th></th></tr></thead><tbody>${rows.map((r) => { const s = skillById(r.skillId);
+      return `<tr><td><b>${esc(s.name)}</b><div class="fine">${esc(s.category || '')}</div></td><td>${levelTxt(r.required)}</td><td>${r.assessed ? `${levelTxt(r.assessed.level)}<div class="fine">${esc(r.assessed.cycle)}</div>` : '—'}</td>
+        <td>${r.trained.length ? r.trained.map((x) => `<div>${levelTxt(x.level)} <span class="fine"><a href="#/course/${x.t.id}">${esc(x.t.title)}</a>, ${dmy(x.date)}</span></div>`).join('') : '—'}</td><td>${levelTxt(r.self)}</td>
+        <td>${skBadge(r.status)}${r.needs.map((n) => `<div class="fine">${esc(NEED_ST[trNeedStatus(n)][0])}${n.targetLevel ? ` to ${levelTxt(n.targetLevel)}` : ''}${n.trainingId && trById(n.trainingId) ? `: <a href="#/course/${n.trainingId}">${esc(trById(n.trainingId).title)}</a>` : ''}</div>`).join('')}</td>
+        <td class="r">${canNeed && r.required && ['gap', 'unknown'].includes(r.status) ? `<button class="btn sm" data-act="skNeed" data-emp="${e.id}" data-skill="${r.skillId}">Raise a need</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">No skills yet. ${hr ? 'Set the skills this designation needs under Standard lists › Skills.' : ''}</div>`}</div>`;
+};
+ACT.skSelf = (b) => {
+  const e = empById(b.dataset.emp);
+  openDlg(`<form class="dlg" id="ssF" novalidate><h2>Add a skill you have</h2><p class="fine" style="margin:0">It shows as declared by you until your manager assesses it in a review or you attend a training for it.</p>
+    <div class="form">${masterInput({ k: 'skill', label: 'Skill', req: true, help: 'Choose from the list, or type it if it is not there' }, '', 'skill', e.companyId)}<label class="field">Your level${levelSel('name="level"', 2, 'Choose')}</label></div><p class="err" id="ssE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`);
+  $('#ssF').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target; const name = f.elements.skill.value.trim(); const level = +f.elements.level.value;
+    if (!name || !level) { $('#ssE').textContent = 'Choose the skill and your level.'; return; }
+    const m = masterFor('skill', name, e.companyId, { category: 'Other' });
+    e.selfSkills = (e.selfSkills || []).filter((x) => x.skillId !== m.id || !m.id); if (m.id) e.selfSkills.push({ skillId: m.id, level, at: Date.now() });
+    saveNow(); closeDlg(); toast(m.isNew && !m.approved ? 'Added. The new skill goes to HR for the skills list.' : 'Added'); route(); };
+};
+/* a development need for a skill: from a review, the profile or the employee themselves */
+function skillNeedDialog(e, skillId, extra = {}) {
+  const r = skillProfile(e).find((x) => x.skillId === skillId) || {};
+  const rv = extra.reviewId && S.reviews.find((x) => x.id === extra.reviewId); const now = rv && ((rv.skills || []).find((x) => x.skillId === skillId) || {}).level;
+  const cur = +(now || r.confirmed || 0); const target = r.required && cur < r.required ? r.required : Math.min(4, cur + 1);
+  const fields = [{ k: 'skillId', label: 'Skill to develop', type: 'select', opts: () => skillOpts(e.companyId), req: true }, { k: 'targetLevel', label: 'To level', type: 'select', opts: Object.entries(SKILL_LEVELS) },
+    { k: 'priority', label: 'Priority', type: 'select', opts: Object.entries(NEED_PRI).map(([k, [l]]) => [k, l]) }, { k: 'targetDate', label: 'Needed by', type: 'date' }, { k: 'note', label: 'Why, and how it will help', type: 'textarea', wide: true }];
+  openDlg(`<form class="dlg" id="snF" novalidate><h2>Development need: ${esc(fullName(e))}</h2><p class="fine" style="margin:0">${extra.cycleId ? `From the review ${esc((S.cycles.find((c) => c.id === extra.cycleId) || {}).name || '')}. ` : ''}HR sees it under Skills and gaps and plans a training; when ${e.id === me.id ? 'you attend' : 'they attend'}, the skill is recorded.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, { skillId, targetLevel: target || 2, priority: r.required && cur < r.required ? 'high' : 'medium', targetDate: addDays(todayISO(), 120) }[f.k])).join('')}</div><p class="err" id="snE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Raise need</button></div></form>`, true);
+  $('#snF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); if (!d.skillId) { $('#snE').textContent = 'Choose the skill.'; return; }
+    if (S.trainingNeeds.some((n) => n.empId === e.id && n.skillId === d.skillId && ['open', 'planned'].includes(trNeedStatus(n)))) { $('#snE').textContent = 'There is already an open need for this skill.'; return; }
+    const s = skillById(d.skillId);
+    S.trainingNeeds.push({ id: uid(), companyId: e.companyId, empId: e.id, skillId: d.skillId, topic: s.name, category: SKILL_TO_TR[s.category] || 'Other', priority: d.priority, targetLevel: +d.targetLevel || '', targetDate: d.targetDate, note: d.note,
+      status: 'open', by: me.id, at: Date.now(), source: extra.cycleId ? (e.id === me.id ? 'self-review' : 'review') : e.id === me.id ? 'self' : isHR(e.companyId) ? 'hr' : 'manager', ...extra });
+    audit('Development need raised', `${fullName(e)}: ${s.name}`, 'training', 'employee', e.id); saveNow(); closeDlg(); toast('Need raised; HR sees it under Skills and gaps'); route(); };
+}
+ACT.skNeed = (b) => skillNeedDialog(empById(b.dataset.emp), b.dataset.skill || '');
+
+/* ---- performance review: skills assessed and development needs */
+function reviewSkillsCard(emp, cyc, { mine, isMgrOf, canMgr, canSelf, st }) {
+  if (st < 2 && !canMgr) return '';
+  const rv = S.reviews.find((x) => x.cycleId === cyc.id && x.empId === emp.id) || {};
+  const req = roleSkills(emp); const assessed = rv.skills || [];
+  const ids = [...new Set([...req.map((x) => x.skillId), ...assessed.map((x) => x.skillId)])].filter(skillById);
+  const needs = S.trainingNeeds.filter((n) => n.empId === emp.id && n.cycleId === cyc.id);
+  const showLevels = canMgr || !mine || cyc.stage === 'closed';
+  const free = skillOpts(emp.companyId).filter(([id]) => !ids.includes(id));
+  return `<div class="card"><div class="hd"><div><h2>Skills and development</h2><p class="sub">${canMgr ? 'Assess each skill the role needs, and raise a development need where there is a gap. HR plans trainings from these needs.' : canSelf ? 'Say which skills you want to develop. Your manager assesses your skills in the manager review.' : 'Skills assessed in this review and the development needs raised.'}</p></div>
+    <div class="tools">${(canMgr || canSelf) ? `<button class="btn" data-act="revNeed" data-emp="${emp.id}" data-c="${cyc.id}">${canSelf ? 'A skill I want to develop' : 'Raise a development need'}</button>` : ''}</div></div>
+    ${ids.length ? `<div class="scroll"><table class="t"><thead><tr><th>Skill</th><th>Role needs</th><th>${canMgr ? 'Your assessment' : 'Assessed'}</th><th>Development need</th></tr></thead><tbody>${ids.map((id) => { const r = req.find((x) => x.skillId === id); const a = assessed.find((x) => x.skillId === id); const n = needs.find((x) => x.skillId === id);
+      return `<tr><td><b>${esc(skillName(id))}</b><div class="fine">${esc((skillById(id) || {}).category || '')}</div></td><td>${levelTxt(r && r.level)}</td>
+        <td>${canMgr ? levelSel(`data-ch="revSkill" data-c="${cyc.id}" data-emp="${emp.id}" data-skill="${id}" aria-label="Level"`, a && a.level, 'Not assessed') : showLevels ? `${levelTxt(a && a.level)}${a && r && +a.level < +r.level ? ' <span class="badge bad">Below the role</span>' : ''}` : '<span class="fine">Shared when the cycle closes</span>'}</td>
+        <td>${n ? `${trBadge(NEED_ST, trNeedStatus(n))}${n.targetLevel ? ` <span class="fine">to ${levelTxt(n.targetLevel)}</span>` : ''}` : canMgr ? `<button class="btn sm ${a && r && +a.level < +r.level ? 'pri' : ''}" data-act="revNeed" data-emp="${emp.id}" data-c="${cyc.id}" data-skill="${id}">Raise a need</button>` : '—'}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${isHR(emp.companyId) ? 'No skills are set for this designation yet (Standard lists › Skills).' : 'No skills are set for this role yet.'}</div>`}
+    ${canMgr && free.length ? `<div class="tools" style="margin-top:8px"><select class="inp" data-ch="revSkillAdd" data-c="${cyc.id}" data-emp="${emp.id}" style="max-width:320px"><option value="">Assess another skill…</option>${free.map(([id, n]) => `<option value="${id}">${esc(n)}</option>`).join('')}</select></div>` : ''}
+    ${needs.filter((n) => !ids.includes(n.skillId)).length ? `<h3>Other needs from this review</h3><table class="t"><tbody>${needs.filter((n) => !ids.includes(n.skillId)).map((n) => `<tr><td><b>${esc(n.topic)}</b>${n.note ? `<div class="fine">${esc(n.note)}</div>` : ''}</td><td>${trBadge(NEED_PRI, n.priority)}</td><td>${trBadge(NEED_ST, trNeedStatus(n))}</td></tr>`).join('')}</tbody></table>` : ''}</div>`;
+}
+ACT.revSkill = (el) => { const r = reviewOf(el.dataset.c, el.dataset.emp); r.skills = (r.skills || []).filter((x) => x.skillId !== el.dataset.skill);
+  if (el.value) r.skills.push({ skillId: el.dataset.skill, level: +el.value, by: me.id, at: Date.now() }); save(); toast('Assessment saved'); };
+ACT.revSkillAdd = (el) => { if (!el.value) return; const r = reviewOf(el.dataset.c, el.dataset.emp); r.skills = [...(r.skills || []), { skillId: el.value, level: '', by: me.id, at: Date.now() }]; save(); route(); };
+ACT.revNeed = (b) => { const e = empById(b.dataset.emp); const rv = reviewOf(b.dataset.c, e.id); skillNeedDialog(e, b.dataset.skill || '', { cycleId: b.dataset.c, reviewId: rv.id }); };
+
+/* ---- HR and managers: skills and gaps, needs from reviews */
+VIEWS.skillgaps = () => {
+  const dp = R.q.get('dept') || '', ds = R.q.get('desig') || '', cy = R.q.get('c') || '';
+  const pool = (isHR() ? coEmployees() : allReportees(me.id).map(empById).filter((e) => e && active(e))).filter((e) => (!dp || e.deptId === dp) && (!ds || e.desigId === ds));
+  const ids = new Set(pool.map((e) => e.id)); const yr = todayISO().slice(0, 4);
+  const profiles = pool.map((e) => ({ e, rows: skillProfile(e) }));
+  const by = {};
+  profiles.forEach(({ e, rows }) => rows.forEach((r) => { const g = by[r.skillId] = by[r.skillId] || { id: r.skillId, need: 0, meets: 0, gap: 0, unknown: 0, open: 0, planned: 0, trained: 0, people: [] };
+    if (r.required) { g.need++; if (r.status === 'meets') g.meets++; else if (r.status === 'unknown') g.unknown++; else g.gap++; }
+    r.needs.forEach((n) => { if (trNeedStatus(n) === 'planned') g.planned++; else g.open++; if (trNeedStatus(n) === 'open') g.people.push(e.id); });
+    if (r.trained.some((x) => String(x.date).startsWith(yr))) g.trained++; }));
+  const groups = Object.values(by).filter((g) => g.need || g.open || g.planned || g.trained).sort((a, b) => (b.open - a.open) || (b.gap - a.gap) || skillName(a.id).localeCompare(skillName(b.id)));
+  const cycles = S.cycles.filter((c) => c.companyId === CO).sort((a, b) => (a.from < b.from ? 1 : -1));
+  const fromReviews = S.trainingNeeds.filter((n) => ids.has(n.empId) && n.cycleId && (!cy || n.cycleId === cy));
+  const revGroups = {}; fromReviews.forEach((n) => { const k = n.skillId || n.topic; const g = revGroups[k] = revGroups[k] || { skillId: n.skillId, topic: n.topic, open: [], planned: 0, done: 0, high: 0 }; const s = trNeedStatus(n);
+    if (s === 'open') g.open.push(n); else if (s === 'planned') g.planned++; else if (s === 'done') g.done++; if (s === 'open' && n.priority === 'high') g.high++; });
+  const sel = (k, v, opts, all) => `<select class="inp" data-ch="sgFilter" data-k="${k}"><option value="">${all}</option>${opts.map(([a, l]) => `<option value="${a}" ${a === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  const plan = (skillId, topic) => { const s = skillById(skillId); return isHR() ? `<button class="btn sm pri" data-act="trNew" data-title="${esc(s ? s.name : topic)}" data-cat="${esc(s ? SKILL_TO_TR[s.category] || 'Other' : 'Other')}" data-skill="${esc(skillId || '')}">Plan a training</button>` : ''; };
+  return { title: 'Skills and gaps', html: `<div class="card"><div class="hd"><div><h2>Development needs from performance reviews</h2><p class="sub">Needs managers and employees raised in reviews, by skill. ${isHR() ? '<b>Plan a training</b> starts one for the skill; people with an open need for it are ticked first when you add participants, and the skill is recorded on their profile once they attend.' : 'HR plans trainings from these.'}</p></div>
+      <div class="tools">${sel('c', cy, cycles.map((c) => [c.id, c.name]), 'All review cycles')}${sel('dept', dp, S.depts.filter((d) => d.companyId === CO).map((d) => [d.id, d.name]), 'All departments')}${sel('desig', ds, S.desigs.filter((d) => d.companyId === CO).map((d) => [d.id, d.name]), 'All designations')}</div></div>
+    ${Object.keys(revGroups).length ? `<div class="scroll"><table class="t"><thead><tr><th>Skill</th><th class="r">Open</th><th class="r">High priority</th><th class="r">Training planned</th><th class="r">Done</th><th>Who</th><th></th></tr></thead><tbody>${Object.values(revGroups).sort((a, b) => b.open.length - a.open.length || b.high - a.high).map((g) => `<tr>
+      <td><b>${esc(g.skillId ? skillName(g.skillId) : g.topic)}</b></td><td class="r">${g.open.length}</td><td class="r">${g.high || ''}</td><td class="r">${g.planned || ''}</td><td class="r">${g.done || ''}</td>
+      <td class="fine">${g.open.slice(0, 6).map((n) => esc(nameOf(n.empId))).join(', ')}${g.open.length > 6 ? ` and ${g.open.length - 6} more` : ''}</td><td class="r">${g.open.length ? plan(g.skillId, g.topic) : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No development needs from reviews yet. Managers raise them in the manager review.</div>'}</div>
+    <div class="card"><div class="hd"><div><h2>Skills against what roles need</h2><p class="sub">${pool.length} people. A skill meets the role when the manager’s assessment or a training attended reaches the level the designation needs.</p></div><div class="tools"><button class="btn" data-act="sgExport">Download Excel</button>${isHR() ? '<a class="btn" href="#/masterdata?tab=skill">Skills and role requirements</a>' : ''}</div></div>
+    ${groups.length ? `<div class="scroll"><table class="t"><thead><tr><th>Skill</th><th class="r">Roles need it</th><th class="r">Meet it</th><th class="r">Below</th><th class="r">Not assessed</th><th style="width:20%">Coverage</th><th class="r">Open needs</th><th class="r">Trained this year</th><th></th></tr></thead><tbody>${groups.map((g) => { const pct = g.need ? Math.round(g.meets / g.need * 100) : 0;
+      return `<tr><td><b>${esc(skillName(g.id))}</b><div class="fine">${esc((skillById(g.id) || {}).category || '')}</div></td><td class="r">${g.need || ''}</td><td class="r">${g.meets || ''}</td><td class="r">${g.gap ? `<b>${g.gap}</b>` : ''}</td><td class="r">${g.unknown || ''}</td>
+        <td>${g.need ? `<div class="bar"><i style="width:${pct}%;background:${pct < 50 ? 'var(--bad)' : pct < 80 ? 'var(--mari-strong)' : 'var(--pri)'}"></i></div><span class="fine">${pct}%</span>` : ''}</td><td class="r">${g.open || ''}</td><td class="r">${g.trained || ''}</td><td class="r">${g.gap || g.open ? plan(g.id) : ''}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${isHR() ? 'Set the skills each designation needs (Standard lists › Skills), then managers assess them in reviews.' : 'No skills set for your team’s roles yet.'}</div>`}</div>` };
+};
+ACT.sgFilter = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set(el.dataset.k, el.value) : p.delete(el.dataset.k); go('#/skillgaps?' + p); };
+ACT.sgExport = () => {
+  const pool = isHR() ? coEmployees() : allReportees(me.id).map(empById).filter((e) => e && active(e));
+  writeBook(`Skills_${company().code}.xlsx`, { Skills: pool.flatMap((e) => skillProfile(e).map((r) => ({ 'Employee number': e.empNo, Employee: fullName(e), Designation: (desig(e.desigId) || {}).name || '', Department: (dept(e.deptId) || {}).name || '',
+    Skill: skillName(r.skillId), 'Role needs': SKILL_LEVELS[r.required] || '', Assessed: r.assessed ? SKILL_LEVELS[r.assessed.level] : '', 'Review cycle': r.assessed ? r.assessed.cycle : '', 'From training': r.trained.map((x) => `${x.t.title} (${SKILL_LEVELS[x.level] || ''})`).join('; '),
+    Declared: SKILL_LEVELS[r.self] || '', Status: (SK_ST[r.status] || [''])[0], 'Open needs': r.needs.filter((n) => trNeedStatus(n) === 'open').length }))) });
+};
+/* ---- skills each designation needs (Standard lists › Skills) */
+function skillRolesCard() {
+  const ds = S.desigs.filter((d) => d.companyId === CO).sort((a, b) => a.name.localeCompare(b.name)); const cur = ds.find((d) => d.id === R.q.get('d')) || ds[0];
+  if (!cur) return '';
+  const list = (cur.skills || []).filter((x) => skillById(x.skillId)); const free = skillOpts(CO).filter(([id]) => !list.some((x) => x.skillId === id));
+  return `<div class="card"><div class="hd"><div><h2>Skills each designation needs</h2><p class="sub">Managers assess these in reviews, and gaps show under Skills and gaps. ${coEmployees().filter((e) => e.desigId === cur.id).length} people are ${esc(cur.name)}.</p></div>
+    <select class="inp" data-ch="skRoleD">${ds.map((d) => `<option value="${d.id}" ${d.id === cur.id ? 'selected' : ''}>${esc(d.name)}${(d.skills || []).length ? ` (${d.skills.length})` : ''}</option>`).join('')}</select></div>
+    ${list.length ? `<table class="t"><thead><tr><th>Skill</th><th>Level needed</th><th></th></tr></thead><tbody>${list.map((x) => `<tr><td><b>${esc(skillName(x.skillId))}</b></td><td>${levelSel(`data-ch="skRoleLevel" data-d="${cur.id}" data-skill="${x.skillId}"`, x.level, 'Choose')}</td><td class="r"><button class="btn sm ghost" data-act="skRoleDel" data-d="${cur.id}" data-skill="${x.skillId}">Remove</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No skills set for this designation yet.</div>'}
+    ${free.length ? `<div class="tools" style="margin-top:8px"><select class="inp" data-ch="skRoleAdd" data-d="${cur.id}" style="max-width:320px"><option value="">Add a skill this designation needs…</option>${free.map(([id, n]) => `<option value="${id}">${esc(n)}</option>`).join('')}</select></div>` : ''}</div>`;
+}
+ACT.skRoleD = (el) => go(`#/masterdata?tab=skill&d=${el.value}`);
+ACT.skRoleAdd = (el) => { if (!el.value) return; const d = desig(el.dataset.d); d.skills = [...(d.skills || []), { skillId: el.value, level: 2 }]; audit('Role skills changed', d.name, 'training'); saveNow(); route(); };
+ACT.skRoleLevel = (el) => { const d = desig(el.dataset.d); const x = (d.skills || []).find((y) => y.skillId === el.dataset.skill); if (x) x.level = +el.value || 2; saveNow(); toast('Saved'); };
+ACT.skRoleDel = (b) => { const d = desig(b.dataset.d); d.skills = (d.skills || []).filter((y) => y.skillId !== b.dataset.skill); saveNow(); route(); };
+
+/* =====================================================================
+   Time and shift controls
+   ===================================================================== */
+const TC_RULES = {
+  rest: { label: 'Rest between two shifts', unit: 'hours at least', def: 11, roster: true, help: 'Time from the end of one shift to the start of the next.' },
+  consecutive: { label: 'Working days in a row', unit: 'days at most', def: 6, roster: true, help: 'After this many working days a weekly off is needed (weekly rest under the Factories Act and the OSH Code).' },
+  weekHrs: { label: 'Rostered hours in a week', unit: 'hours at most', def: 48, roster: true, help: 'Monday to Sunday, shift hours less breaks (48 under the OSH Code).' },
+  nights: { label: 'Night shifts in a row', unit: 'nights at most', def: 6, roster: true, help: 'A night shift runs past midnight or starts at 20:00 or later.' },
+  womenNight: { label: 'Women working before 6:00 or after 19:00 only with their consent', unit: '', roster: true, help: 'Record consent on the Job tab of the profile (OSH Code, section 43).' },
+  punchEarly: { label: 'Punching in before the shift starts', unit: 'minutes early at most', def: 120, help: 'Stops punches long before the shift, which would count as overtime.' },
+  corrDays: { label: 'Corrections and shift requests for past days', unit: 'days back at most', def: 7, help: 'Employees’ own attendance corrections and shift-change requests.' },
+  corrMonth: { label: 'Attendance corrections a month, per person', unit: 'at most', def: 3, help: 'Punch-time corrections a person may ask for in one calendar month.' },
+};
+const TC_MODES = { off: 'Off', warn: 'Warn', block: 'Block' };
+const TC_EXISTING = { rest: 'warn', consecutive: 'warn', weekHrs: 'warn', nights: 'warn', womenNight: 'warn', punchEarly: 'off', corrDays: 'off', corrMonth: 'off' };
+const TC_NEW = { rest: 'block', consecutive: 'block', weekHrs: 'warn', nights: 'warn', womenNight: 'block', punchEarly: 'warn', corrDays: 'block', corrMonth: 'warn' };
+function newTimeControls() { const o = { hrOverride: true }; Object.entries(TC_RULES).forEach(([k, r]) => { o[k] = { mode: TC_NEW[k], value: r.def }; }); return o; }
+function timeControls(coId = CO) {
+  const c = (coById(coId) || {}).timeControls; const o = { hrOverride: c ? c.hrOverride !== false : true };
+  Object.entries(TC_RULES).forEach(([k, r]) => { const x = (c && c[k]) || {}; o[k] = { mode: x.mode || (c ? 'off' : TC_EXISTING[k]), value: x.value === undefined || x.value === '' ? r.def : +x.value }; });
+  return o;
+}
+const afterHours = (sh) => !!sh && (sh.night || toMin(sh.start) < 360 || toMin(sh.end) > 1140);
+const isNightShift = (sh) => !!sh && (sh.night || toMin(sh.start) >= 1200);
+/* the work on a day, given proposed roster values (over), or null for a day off */
+function workOn(emp, iso, over, planEnd) {
+  const has = over && Object.prototype.hasOwnProperty.call(over, iso);
+  const v = has ? over[iso] : (S.roster[emp.id] || {})[iso] || '';
+  // on a rotation, days after the roster is filled to are not planned yet: the rotation fills them later
+  if (!has && !v && planEnd && iso > planEnd) return null;
+  const ef = effShift(emp, iso, v); if (ef === 'WO' || (!v && holidayOn(emp, iso))) return null;
+  const sh = shiftById(ef); if (!sh) return null;
+  const s = tsAt(iso, sh.start); let en = tsAt(iso, sh.end); if (en <= s) en += 86400000;
+  return { sh, start: s, end: en, hrs: Math.max(0, (en - s) / 3600000 - (+sh.breakMin || 0) / 60) };
+}
+/* Breaches of the time controls for one person. over: proposed roster days; all: check every day in [from, to] */
+function controlIssues(emp, over = {}, opt = {}) {
+  const pol = timeControls(emp.companyId); const days = Object.keys(over).sort();
+  const lo = opt.all ? opt.from : days[0], hi = opt.all ? opt.to : days[days.length - 1]; if (!lo) return [];
+  const planEnd = opt.planEnd !== undefined ? opt.planEnd : emp.patternId && emp.rotFilledTo ? emp.rotFilledTo : '';
+  const from = addDays(lo, -14), to = addDays(hi, 14); const w = {}; for (let d = from; d <= to; d = addDays(d, 1)) w[d] = workOn(emp, d, over, planEnd);
+  const touched = (d) => (opt.all ? d >= lo && d <= hi : Object.prototype.hasOwnProperty.call(over, d));
+  const out = []; const add = (rule, iso, msg) => { const m = pol[rule].mode; if (m !== 'off' && !out.some((x) => x.rule === rule && x.iso === iso)) out.push({ rule, mode: m, iso, msg, empId: emp.id }); };
+  const nm = fullName(emp); const ds = (d) => D(d).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+  for (let d = from; d < to; d = addDays(d, 1)) { const n = addDays(d, 1), a = w[d], b = w[n]; if (!a || !b || !(touched(d) || touched(n))) continue;
+    const rest = (b.start - a.end) / 3600000; if (rest < pol.rest.value) add('rest', n, `${nm}: ${rest < 0 ? 'overlapping shifts' : `only ${num(rest, 1)} hours’ rest`} before ${ds(n)} (at least ${pol.rest.value})`); }
+  const runs = (test) => { const r = []; let cur = null; for (let d = from; d <= to; d = addDays(d, 1)) { if (test(w[d])) { cur = cur || { s: d, n: 0, t: false }; cur.n++; cur.e = d; if (touched(d)) cur.t = true; } else if (cur) { r.push(cur); cur = null; } } if (cur) r.push(cur); return r; };
+  runs((x) => !!x).forEach((r) => { if (r.t && r.n > pol.consecutive.value) add('consecutive', r.e, `${nm}: ${r.n} working days in a row, ${ds(r.s)} to ${ds(r.e)} (at most ${pol.consecutive.value})`); });
+  runs((x) => x && isNightShift(x.sh)).forEach((r) => { if (r.t && r.n > pol.nights.value) add('nights', r.e, `${nm}: ${r.n} night shifts in a row from ${ds(r.s)} (at most ${pol.nights.value})`); });
+  const weeks = new Set(); for (let d = from; d <= to; d = addDays(d, 1)) if (touched(d)) weeks.add(addDays(d, -((D(d).getDay() + 6) % 7)));
+  weeks.forEach((mon) => { let h = 0; for (let i = 0; i < 7; i++) { const x = w[addDays(mon, i)] || workOn(emp, addDays(mon, i), over, planEnd); if (x) h += x.hrs; } if (h > pol.weekHrs.value) add('weekHrs', mon, `${nm}: ${num(h, 1)} hours rostered in the week of ${ds(mon)} (at most ${pol.weekHrs.value})`); });
+  if (emp.gender === 'F' && !emp.nightConsent) for (let d = lo; d <= hi; d = addDays(d, 1)) if (touched(d) && w[d] && afterHours(w[d].sh)) add('womenNight', d, `${nm}: ${w[d].sh.code} ${w[d].sh.start}–${w[d].sh.end} on ${ds(d)} is before 6:00 or after 19:00, and her consent is not recorded`);
+  return out;
+}
+/* what a change may do: block (refused), override (HR may go ahead with a reason), warn (allowed, noted) */
+function controlVerdict(emp, issues) {
+  const pol = timeControls(emp.companyId); const blocks = issues.filter((x) => x.mode === 'block'); const warns = issues.filter((x) => x.mode === 'warn');
+  return { blocks, warns, override: blocks.length > 0 && isHR(emp.companyId) && pol.hrOverride, refused: blocks.length > 0 && !(isHR(emp.companyId) && pol.hrOverride) };
+}
+async function confirmOverride(issues) {
+  const why = await askText('Override the time controls?', `${issues.map((x) => x.msg).join('. ')}. Give the reason; it is kept in the activity log.`, 'Override');
+  if (why === null) return false;
+  issues.forEach((x) => audit('Time control overridden', `${x.msg}. Reason: ${why}`, 'time', 'employee', x.empId)); return true;
+}
+/* own corrections and shift requests: how far back, and how many a month */
+function corrIssue(emp, iso, type) {
+  const pol = timeControls(emp.companyId); const out = [];
+  if (pol.corrDays.mode !== 'off' && iso < addDays(todayISO(), -pol.corrDays.value)) out.push({ mode: pol.corrDays.mode, msg: `Corrections and shift requests can go back ${pol.corrDays.value} days at most` });
+  if (type === 'time' && pol.corrMonth.mode !== 'off') { const n = S.regs.filter((r) => r.empId === emp.id && (r.type || 'time') === 'time' && (r.by === undefined || r.by === emp.id) && String(r.date).slice(0, 7) === iso.slice(0, 7) && r.status !== 'withdrawn').length;
+    if (n >= pol.corrMonth.value) out.push({ mode: pol.corrMonth.mode, msg: `You have already asked for ${n} attendance correction${n === 1 ? '' : 's'} in ${monthName(iso.slice(0, 7))} (at most ${pol.corrMonth.value})` }); }
+  return { block: out.find((x) => x.mode === 'block'), warn: out.find((x) => x.mode === 'warn') };
+}
+function punchIssue(emp) {
+  const pol = timeControls(emp.companyId).punchEarly; if (pol.mode === 'off') return null;
+  const t = todayISO(); const x = workOn(emp, t, {}); if (!x) return null;
+  const early = (x.start - Date.now()) / 60000; return early > pol.value ? { mode: pol.mode, msg: `Your shift starts at ${x.sh.start}. You can punch in from ${hm(x.start - pol.value * 60000)}.` } : null;
+}
+
+VIEWS.timecontrols = () => {
+  const tab = R.q.get('tab') || 'rules';
+  if (tab === 'rules') {
+    if (!isHR()) return { title: 'Time and shift controls', html: '<div class="empty">Only HR sets the controls.</div>' };
+    const pol = timeControls(CO); const set = !!company().timeControls;
+    return { title: 'Time and shift controls', html: `<form class="card" id="tcF" novalidate><h2>Time and shift controls for ${esc(company().name)}</h2>
+      <p class="sub">Each control is <b>Off</b>, <b>Warn</b> (the change goes through and is listed under Control exceptions) or <b>Block</b> (the change is refused, on the server too). The roster controls apply to every roster change: the roster grid, Change team shifts, rotations and approved shift requests.${set ? '' : ' These are the starting settings; nothing blocks until you save.'}</p>
+      <div class="scroll"><table class="t"><thead><tr><th>Control</th><th style="width:250px">Limit</th><th style="width:220px">When broken</th></tr></thead><tbody>${Object.entries(TC_RULES).map(([k, r]) => `<tr><td><b>${esc(r.label)}</b><div class="fine">${esc(r.help)}</div></td>
+        <td style="white-space:nowrap">${r.unit ? `<input class="inp" type="number" min="0" step="${k === 'rest' || k === 'weekHrs' ? 0.5 : 1}" name="v_${k}" value="${pol[k].value}" style="width:90px"> <span class="fine">${esc(r.unit)}</span>` : '<span class="fine">—</span>'}</td>
+        <td><div class="seg">${Object.entries(TC_MODES).map(([m, l]) => `<label><input type="radio" name="m_${k}" value="${m}" ${pol[k].mode === m ? 'checked' : ''}> ${l}</label>`).join('')}</div></td></tr>`).join('')}</tbody></table></div>
+      <label class="chk" style="margin-top:10px"><input type="checkbox" name="hrOverride" ${pol.hrOverride ? 'checked' : ''}> HR may override a blocked roster change, giving a reason (kept in the activity log)</label>
+      <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save controls</button><a class="btn" href="#/timecontrols?tab=exceptions">Control exceptions</a></div></form>`,
+    after: () => { $('#tcF').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target; const o = { hrOverride: f.elements.hrOverride.checked };
+      for (const k of Object.keys(TC_RULES)) { const v = f.elements[`v_${k}`]; const val = v ? parseNum(v.value) : TC_RULES[k].def; if (v && !(val > 0)) { toast(`Enter a limit above zero for: ${TC_RULES[k].label.toLowerCase()}.`); return; } o[k] = { mode: f.elements[`m_${k}`].value, value: val }; }
+      company().timeControls = o; audit('Time and shift controls changed', Object.entries(o).filter(([k]) => TC_RULES[k]).map(([k, x]) => `${k} ${x.mode}${TC_RULES[k].unit ? ` ${x.value}` : ''}`).join(', '), 'time'); saveNow(); toast('Saved'); route(); }; } };
+  }
+  const from = R.q.get('from') || addDays(todayISO(), -28), to = R.q.get('to') || addDays(todayISO(), 28);
+  const pool = lineEmps(CO); const pol = timeControls(CO); const rows = [];
+  pool.forEach((e) => controlIssues(e, {}, { all: true, from, to }).forEach((x) => rows.push({ ...x, kind: x.rule })));
+  if (pol.punchEarly.mode !== 'off') S.punches.filter((p) => p.date >= from && p.date <= to && p.in && pool.some((e) => e.id === p.empId)).forEach((p) => { const e = empById(p.empId); const x = workOn(e, p.date, {}); if (x && (x.start - p.in) / 60000 > pol.punchEarly.value) rows.push({ rule: 'punchEarly', mode: pol.punchEarly.mode, iso: p.date, empId: e.id, msg: `${fullName(e)}: punched in at ${hm(p.in)} for a shift at ${x.sh.start}` }); });
+  if (pol.corrMonth.mode !== 'off') { const by = {}; S.regs.filter((r) => (r.type || 'time') === 'time' && r.date >= from && r.date <= to && pool.some((e) => e.id === r.empId)).forEach((r) => { const k = `${r.empId}|${r.date.slice(0, 7)}`; by[k] = (by[k] || 0) + 1; });
+    Object.entries(by).forEach(([k, n]) => { if (n > pol.corrMonth.value) { const [id, ym] = k.split('|'); rows.push({ rule: 'corrMonth', mode: pol.corrMonth.mode, iso: `${ym}-01`, empId: id, msg: `${nameOf(id)}: ${n} attendance corrections in ${monthName(ym)}` }); } }); }
+  const overrides = isHR() ? S.audit.filter((a) => a.what === 'Time control overridden' && a.at >= D(from).getTime() - 86400000 && pool.some((e) => e.id === a.refId)) : [];
+  const counts = {}; rows.forEach((r) => { counts[r.rule] = (counts[r.rule] || 0) + 1; });
+  rows.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
+  // one line per person and control, with how often and when
+  const grp = {}; rows.forEach((r) => { const k = `${r.empId}|${r.rule}`; const g = grp[k] = grp[k] || { ...r, n: 0, first: r.iso, last: r.iso, next: '' }; g.n++; g.last = r.iso; if (!g.next && r.iso >= todayISO()) { g.next = r.iso; g.msg = r.msg; } });
+  const lines = Object.values(grp).sort((a, b) => (a.mode === b.mode ? 0 : a.mode === 'block' ? -1 : 1) || b.n - a.n);
+  return { title: 'Control exceptions', html: `<div class="grid g4" style="margin-bottom:16px">${['rest', 'consecutive', 'womenNight', 'weekHrs'].map((k) => `<div class="kpi"><span>${esc(TC_RULES[k].label)}</span><b>${new Set(rows.filter((r) => r.rule === k).map((r) => r.empId)).size}</b><small>${counts[k] || 0} times. ${TC_MODES[pol[k].mode]}${TC_RULES[k].unit ? `, limit ${pol[k].value}` : ''}</small></div>`).join('')}</div>
+    <div class="card"><div class="hd"><div><h2>Breaches of the time and shift controls</h2><p class="sub">The roster for ${isHR() ? 'everyone in the company' : 'your team'} from ${dmy(from)} to ${dmy(to)}, early punches and corrections. Breaches of a control set to Block come from rosters made before it was switched on, or from overrides.</p></div>
+      <div class="tools"><input type="date" class="inp" value="${from}" data-ch="tcRange" data-k="from"><input type="date" class="inp" value="${to}" data-ch="tcRange" data-k="to">${isHR() ? '<a class="btn" href="#/timecontrols?tab=rules">Controls</a>' : ''}</div></div>
+      ${lines.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Control</th><th class="r">Times</th><th>Between</th><th>${'Next or latest'}</th><th>Setting</th><th></th></tr></thead><tbody>${lines.map((g) => { const at = g.next || g.last;
+        return `<tr><td><b>${esc(nameOf(g.empId))}</b></td><td>${esc(TC_RULES[g.rule].label)}</td><td class="r">${g.n}</td><td style="white-space:nowrap">${dShort(g.first)}${g.last !== g.first ? ` to ${dShort(g.last)}` : ''}</td><td>${esc(g.msg)}</td>
+        <td><span class="badge ${g.mode === 'block' ? 'bad' : 'warn'}">${TC_MODES[g.mode]}</span></td><td class="r"><a class="btn sm" href="#/roster?tab=roster&w=${addDays(at, -((D(at).getDay() + 6) % 7))}&g=all">Roster</a></td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No breaches in this period.</div>'}</div>
+    ${overrides.length ? `<div class="card"><h2>Overrides by HR</h2><table class="t"><tbody>${overrides.map((a) => `<tr><td style="white-space:nowrap">${dt(a.at)}</td><td>${esc(nameOf(a.by))}</td><td>${esc(a.detail)}</td></tr>`).join('')}</tbody></table></div>` : ''}` };
+};
+ACT.tcRange = (el) => { const p = new URLSearchParams(R.q); p.set('tab', 'exceptions'); p.set(el.dataset.k, el.value); go('#/timecontrols?' + p); };
+
+
+/* =====================================================================
    Demo data: two companies, eighteen employees, six months of punches, leave and locked payroll
    ===================================================================== */
 function loadDemo() {
@@ -7496,7 +7870,7 @@ function loadDemo() {
   // attendance groups: store staff are shift staff on the fortnight rotation; everyone else regular
   emps.forEach((e, k) => { e.attGroup = k >= 13 && k <= 17 && k !== 16 ? 'shift' : 'regular'; if (e.attGroup === 'shift') { e.patternId = P1.id; e.patternFrom = '2026-04-01'; } });
   // rotation for store staff: a week of mornings, a week of evenings
-  emps.slice(13, 18).forEach((e, k) => { const m = S.roster[e.id] = {}; for (let d = '2026-04-01', i = 0; d <= '2026-12-31'; d = addDays(d, 1), i++) { const wk = Math.floor((i + k * 7) / 7) % 2; if (D(d).getDay() !== 0) m[d] = (wk ? EVE : MOR).id; } });
+  emps.slice(13, 18).forEach((e, k) => { const m = S.roster[e.id] = {}; for (let d = '2026-04-01', i = 0; d <= '2026-12-31'; d = addDays(d, 1), i++) { const wk = Math.floor((daysBetween('2026-03-30', d) + k * 7) / 7) % 2; /* weeks run Monday to Saturday, so the change follows the Sunday off */ if (D(d).getDay() !== 0) m[d] = (wk ? EVE : MOR).id; } });
   // 2.7: a contractor supplying three warehouse loaders on the three-shift rotation; Nilgiri Retail's rotation is automatic, with 24 hours' notice
   workforceDemo(A, B, emps, { dWh, lPUN, P2, genB, DB, gr });
   // leave: approved history, pending items for the inbox
@@ -7627,6 +8001,7 @@ function loadDemo() {
   const a8 = app(r3, ca8, 'interview', 3); iv(a8, 'Store manager round', addDays(todayISO(), 1), '16:00', [emps[12]], 'scheduled');
   trainingDemo(A);
   backgroundDemo(A, B, emps);
+  skillsDemo(A, B, emps);
   me = save0; S.audit = [];
 }
 

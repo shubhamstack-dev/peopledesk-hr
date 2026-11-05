@@ -290,3 +290,10 @@ ul.otree{display:flex;justify-content:center;margin:0;padding:0;transform-origin
 .greet-msg{font-size:15.5px;line-height:1.55;margin:4px auto;max-width:46ch}
 .dlg.greet .btns{justify-content:center}
 .dlg.greet .note{text-align:left}
+
+/* 2.8: Off / Warn / Block choice for each time control */
+.seg{display:inline-flex;border:1px solid var(--rule2);border-radius:8px;overflow:hidden}
+.seg label{display:flex;align-items:center;gap:4px;padding:5px 10px;font-size:13px;cursor:pointer;border-left:1px solid var(--rule2)}
+.seg label:first-child{border-left:0}
+.seg label:has(input:checked){background:var(--pri-soft);color:var(--ink);font-weight:600}
+.seg input{margin:0}

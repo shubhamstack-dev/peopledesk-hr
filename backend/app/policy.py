@@ -50,7 +50,7 @@ PROTECTED_SELF = {"id", "role", "companyId", "hrCompanies", "status", "blocked",
                   "salaryHist", "salaryOverrides", "doj", "exit", "stints", "gratuityFrom", "gradeId", "desigId",
                   "deptId", "locationId", "empType", "probationEnd", "attGroup", "otEligible", "shiftId", "source",
                   "pfOn", "epsOn", "esiOn", "ptOn", "lwfOn", "patternId", "patternFrom", "rotFilledTo",
-                  "workerCategory", "contractorId",
+                  "workerCategory", "contractorId", "nightConsent",
                   "matrixManagerIds", "reportingHist", "gradeHist", "pendingMoves", "variableHist",
                   # statutory details change only through an approved request; letters are issued by HR
                   "pan", "aadhaar", "uan", "pfNo", "esiNo", "esiRegDate", "esiDispensary", "vpfPct", "documents",

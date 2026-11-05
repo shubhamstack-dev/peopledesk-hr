@@ -391,6 +391,7 @@ def sync(body: SyncBody, me=Depends(current_user)):
                     for k in ("pwHash", "pwSalt", "googleSub"):
                         r.pop(k, None)
                 _guarded(guard.check_record, coll, r, olds.get(r["id"]), ctx.emps)
+                _guarded(guard.check_attendance_request, coll, r, olds.get(r["id"]), ctx.emps, ctx.id)
                 keep.append(policy.check_upsert(conn, coll, r, olds.get(r["id"]), ctx))
             repo.upsert(conn, coll, keep, me["id"])
             if coll == "payRuns":
@@ -428,6 +429,13 @@ def sync(body: SyncBody, me=Depends(current_user)):
             _guarded(guard.check_roster, e.get("empId"), e.get("date"), e.get("value") if e in body.rosterSet else None, ctx.emps, ctx.is_hr_for(emp.get("companyId")))
         repo.roster_set(conn, [{"empId": e["empId"], "date": e["date"], "value": str(e["value"])} for e in body.rosterSet])
         repo.roster_del(conn, [{"empId": e["empId"], "date": e["date"]} for e in body.rosterDel])
+        # time and shift controls, on the roster as saved (the whole batch is undone if a blocking control is broken)
+        touched: dict = {}
+        for e in body.rosterSet + body.rosterDel:
+            touched.setdefault(e.get("empId"), set()).add(e.get("date"))
+        for emp_id, days in touched.items():
+            emp = ctx.emps.get(emp_id) or {}
+            _guarded(guard.check_controls, emp_id, sorted(days), ctx.emps, ctx.is_hr_for(emp.get("companyId")))
         for a in body.audit[:200]:
             repo.audit_add(conn, a.get("what", ""), a.get("detail", ""), me["id"], a.get("at"), a.get("id"), a.get("module"), a.get("refType"), a.get("refId"))
         repo.bump_rev(conn)
