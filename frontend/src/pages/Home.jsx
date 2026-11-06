@@ -30,6 +30,8 @@ export default function Home() {
     ...S.feedback.filter((f) => f.type === 'kudos' && !f.private && (E.empById(f.to) || {}).companyId === me.companyId).map((f) => ({ ...f, kind: 'kudos' })),
   ].sort((a, b) => b.at - a.at).slice(0, 8);
   const tasks = E.pendingForMe();
+  const checklist = E.myDetailsChecklist();              // contract workers: what is left to fill in
+  const left = checklist.filter((x) => !x.done);
 
   let hr = null;
   if (E.isHR()) {
@@ -82,6 +84,18 @@ export default function Home() {
 
       <div className="grid g21">
         <div>
+          {left.length > 0 && (
+            <div className="card">
+              <div className="hd"><div><h2>Complete your details</h2>
+                <p className="sub">Your contractor has added you to {E.company().name}. Fill in these parts of your profile: {checklist.length - left.length} of {checklist.length} done.</p></div></div>
+              {checklist.map((x) => (
+                <div key={x.k} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--rule)' }}>
+                  <span className={`badge ${x.done ? 'ok' : 'warn'}`}>{x.done ? 'Done' : 'To do'}</span>
+                  <a href={x.href} style={{ flex: 1 }}>{x.label}</a>
+                </div>
+              ))}
+            </div>
+          )}
           {tasks.length > 0 && (
             <div className="card">
               <div className="hd"><div><h2>Waiting for your approval</h2></div><a className="btn sm" href="#/inbox">Open approvals</a></div>
@@ -152,7 +166,7 @@ export default function Home() {
             )) : <p className="mut">No birthdays or anniversaries this week.</p>}
           </div>
           <div className="card"><h2>Quick links</h2>
-            <div className="tools"><a className="btn sm" href="#/payslips">Latest payslip</a><a className="btn sm" href="#/performance">My goals</a><a className="btn sm" href="#/attendance">My attendance</a><a className="btn sm" href="#/org">Organisation chart</a></div>
+            <div className="tools">{!E.cwSelf() && <a className="btn sm" href="#/payslips">Latest payslip</a>}<a className="btn sm" href="#/performance">My goals</a><a className="btn sm" href="#/attendance">My attendance</a><a className="btn sm" href="#/org">Organisation chart</a></div>
           </div>
         </div>
       </div>

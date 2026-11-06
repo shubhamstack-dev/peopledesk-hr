@@ -38,7 +38,7 @@ export default function Shell({ resolved, onSignOut, onSwitchCompany, children }
 
   const cos = E.companiesForMe();
   const co = E.company();
-  const bottom = E.BOTTOM.filter(([id]) => id !== 'inbox' || E.isManager() || E.isHR());
+  const bottom = E.BOTTOM.filter(([id]) => (id !== 'inbox' || E.isManager() || E.isHR()) && (id !== 'payslips' || !E.cwSelf()));
 
   return (
     <div className={`shell${menuOpen ? ' open' : ''}`} id="shell">

@@ -861,3 +861,13 @@ CREATE TABLE IF NOT EXISTS auth_credentials (
   UNIQUE KEY ux_google_sub (google_sub),
   CONSTRAINT fk_auth_emp FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Passwords of contractors' portal users (the users themselves are on the contractor record)
+CREATE TABLE IF NOT EXISTS contractor_credentials (
+  user_id       VARCHAR(64)  NOT NULL PRIMARY KEY,
+  contractor_id VARCHAR(64)  NOT NULL,
+  pw_hash       VARCHAR(100) NULL,
+  last_login    BIGINT       NULL,
+  updated_at    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  KEY ix_contractor (contractor_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

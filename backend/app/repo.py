@@ -160,6 +160,7 @@ def bump_rev(conn: Connection):
 
 def wipe(conn: Connection):
     conn.execute(text("DELETE FROM auth_credentials"))
+    conn.execute(text("DELETE FROM contractor_credentials"))
     for c in COLLS:
         conn.execute(text(f"DELETE FROM {c.table}"))
     for t in ("roster", "audit_log", "app_kv"):

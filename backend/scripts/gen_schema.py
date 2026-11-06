@@ -110,6 +110,16 @@ out += [
     "  CONSTRAINT fk_auth_emp FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE",
     f") {TAIL};",
     "",
+    "-- Passwords of contractors' portal users (the users themselves are on the contractor record)",
+    "CREATE TABLE IF NOT EXISTS contractor_credentials (",
+    "  user_id       VARCHAR(64)  NOT NULL PRIMARY KEY,",
+    "  contractor_id VARCHAR(64)  NOT NULL,",
+    "  pw_hash       VARCHAR(100) NULL,",
+    "  last_login    BIGINT       NULL,",
+    "  updated_at    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),",
+    "  KEY ix_contractor (contractor_id)",
+    f") {TAIL};",
+    "",
 ]
 
 dest = pathlib.Path(__file__).resolve().parents[2] / "database" / "schema.sql"

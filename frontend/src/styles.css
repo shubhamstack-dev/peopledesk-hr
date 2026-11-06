@@ -297,3 +297,14 @@ ul.otree{display:flex;justify-content:center;margin:0;padding:0;transform-origin
 .seg label:first-child{border-left:0}
 .seg label:has(input:checked){background:var(--pri-soft);color:var(--ink);font-weight:600}
 .seg input{margin:0}
+
+/* 2.9: contractor portal */
+.portal{min-height:100vh;background:var(--bg)}
+.ptop{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:12px;padding:10px 24px;padding-top:calc(10px + env(safe-area-inset-top,0px));background:var(--side);color:var(--side-hi)}
+.ptop .sp{flex:1}
+.ptop .who b{color:var(--side-hi)}.ptop .who small{color:var(--side-ink)}
+.portal .content{margin:0 auto}
+.parts{display:flex;flex-wrap:wrap;gap:4px;max-width:300px}
+.pmodal{position:fixed;inset:0;z-index:100;background:rgba(10,20,17,.45);display:grid;place-items:center;padding:12px}
+.pmodal-box{background:var(--surface);color:var(--ink);border-radius:14px;width:min(640px,96vw);max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+@media (max-width:640px){.ptop{padding:10px 14px}.ptop .who .txt{display:none}.portal .content{padding:16px 12px 60px}}

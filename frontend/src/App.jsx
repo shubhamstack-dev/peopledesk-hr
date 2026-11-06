@@ -11,11 +11,13 @@ import Home from './pages/Home.jsx';
 import Approvals from './pages/Approvals.jsx';
 import Settings from './pages/Settings.jsx';
 import DocTemplates from './pages/DocTemplates.jsx';
+import ContractorPortal from './pages/ContractorPortal.jsx';
+import Welcome, { welcomeToken } from './pages/Welcome.jsx';
 
 const SESSION_ENDED = 'Your session has ended. Sign in again.';
 
 export default function App() {
-  const [phase, setPhase] = useState('loading');       // loading | setup | login | app | down
+  const [phase, setPhase] = useState('loading');       // loading | setup | login | welcome | app | contractor | down
   const [boot, setBoot] = useState(null);
   const [message, setMessage] = useState('');
   const [version, refresh] = useReducer((x) => x + 1, 0);
@@ -40,6 +42,9 @@ export default function App() {
   // After signing in, start at Home (as the original did); on a page reload, stay where you were
   const enter = useCallback(async (fromSignIn = true) => {
     try {
+      // a contractor's portal user has the contractor portal instead of the main app
+      const who = await api.get('/api/session');
+      if (who.kind === 'contractor') { E.clearSession(); setPhase('contractor'); return; }
       await loadState(); setPhase('app'); refresh(); if (fromSignIn || !window.location.hash) window.location.hash = '#/home';
       setTimeout(() => E.showLoginNotices(), 400);   // birthday, anniversary and shift-change greetings, once a day
     }
@@ -75,6 +80,7 @@ export default function App() {
         const b = await api.get('/api/bootstrap');
         setBoot(b);
         if (b.needsSetup) { setPhase('setup'); return; }
+        if (welcomeToken() !== '' || (window.location.hash || '').startsWith('#/welcome')) { setPhase('welcome'); return; }   // an access link
         await enter(false);
       } catch (e) { setMessage(e.message); setPhase('down'); }
     })();
@@ -108,6 +114,12 @@ export default function App() {
   if (phase === 'down') return (
     <div className="boot"><div className="card" style={{ maxWidth: 460 }}><h2>The server is not answering</h2>
       <p className="sub">{message}</p><button className="btn pri" onClick={() => window.location.reload()}>Try again</button></div></div>
+  );
+  if (phase === 'welcome') return <Welcome onSignedIn={() => enter(true)} onSignIn={() => toSignIn()} />;
+  if (phase === 'contractor') return (
+    <ContractorPortal
+      onSignOut={async () => { await api.post('/api/auth/logout').catch(() => {}); window.location.hash = ''; toSignIn(); }}
+      onSessionEnded={() => toSignIn(SESSION_ENDED)} />
   );
   if (phase === 'setup' || phase === 'register') return <Setup mode={phase === 'setup' ? 'first' : 'register'} onSignedIn={() => enter(true)} onSignIn={boot && !boot.needsSetup ? () => { setMessage(''); setPhase('login'); } : null} />;
   if (phase === 'login' || !resolved) return <Login boot={boot} message={message} onSignedIn={() => enter(true)} onRegister={() => setPhase(boot && boot.needsSetup ? 'setup' : 'register')} />;

@@ -55,6 +55,12 @@ PROTECTED_SELF = {"id", "role", "companyId", "hrCompanies", "status", "blocked",
                   # statutory details change only through an approved request; letters are issued by HR
                   "pan", "aadhaar", "uan", "pfNo", "esiNo", "esiRegDate", "esiDispensary", "vpfPct", "documents",
                   "mediclaim"}
+# Contract workers (employed through a contractor) do not see or handle pay and money here: payslips, salary,
+# tax declarations, expense claims, leave encashment. Nor awards. Their own record arrives without these, and
+# a save of it keeps what is stored.
+CW_HIDDEN_SELF = {"salaryHist": [], "salaryOverrides": {}, "variableHist": [], "awards": []}
+CW_NO_WRITE = {"expenseClaims", "declarations"}
+CW_NO_REQUEST = {"encash"}
 # Employee fields a manager may change for someone in their reporting line (resignation flow, shift rotation)
 MANAGER_MAY = {"exit", "history", "status", "patternId", "patternFrom", "rotFilledTo"}
 
@@ -83,6 +89,11 @@ class Ctx:
     @property
     def is_hr(self):
         return self.is_super or bool(self.hr_scope)
+
+    @property
+    def is_contract_worker(self):
+        """A third-party contract worker without HR access: no payslips, salary, awards or money matters here."""
+        return not self.is_hr and workforce.register_of(self.me) == "contract"
 
 
 def make_ctx(me: dict, emps: dict, private: set | None = None) -> Ctx:
@@ -181,11 +192,26 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     st["masterItems"] = [x for x in st.get("masterItems", []) if x.get("companyId") in hr_cos] + \
         workforce.visible_masters([x for x in st.get("masterItems", []) if x.get("companyId") not in hr_cos], ctx.id)
     st["contractors"] = [x if x.get("companyId") in hr_cos else {k: x.get(k) for k in ("id", "companyId", "name", "code")} for x in st.get("contractors", [])]
+    if ctx.is_contract_worker:
+        _contract_worker_view(st, ctx)
     if not ctx.is_hr:
         st["docTemplates"] = []          # only HR makes documents; employees see the finished letters on their profile
     s = st.get("settings") or {}
     st["settings"] = s if ctx.is_hr else {k: s.get(k) for k in ("googleClientId", "allowDemo", "allowPassword", "idleMin") if k in s}
     return st
+
+
+def _contract_worker_view(st: dict, ctx: Ctx):
+    for run in st.get("payRuns", []):
+        run["results"] = {}                       # no payslips
+    st["payInputs"], st["declarations"] = [], []
+    st["expenseClaims"] = [x for x in st.get("expenseClaims", []) if x.get("empId") != ctx.id]
+    st["requests"] = [x for x in st.get("requests", []) if not (x.get("empId") == ctx.id and x.get("kind") in CW_NO_REQUEST)]
+    for e in st.get("employees", []):
+        if e.get("id") == ctx.id:
+            e.update({k: (v.copy() if hasattr(v, "copy") else v) for k, v in CW_HIDDEN_SELF.items()})
+            for s in e.get("stints") or []:
+                s.pop("ctc", None)
 
 
 # ---------------------------------------------------------------- writing
@@ -232,6 +258,11 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
 
     if hr_ok:
         return new
+    if ctx.is_contract_worker:
+        if coll in CW_NO_WRITE:
+            raise Rejected("contract workers do not handle expense claims or tax declarations here: ask your contractor")
+        if coll == "requests" and (new.get("kind") or (old or {}).get("kind")) in CW_NO_REQUEST:
+            raise Rejected("contract workers do not encash leave here: ask your contractor")
     if coll in COMP:
         return _comp(conn, coll, new, old, ctx)
     if coll in TRAIN:
@@ -431,7 +462,7 @@ def _employee(new: dict, old: dict | None, ctx: Ctx, hr_ok: bool) -> dict:
         raise Rejected("only HR can add employees")
     if new["id"] == ctx.id:
         merged = dict(new)
-        for k in PROTECTED_SELF:
+        for k in PROTECTED_SELF | (set(CW_HIDDEN_SELF) if ctx.is_contract_worker else set()):
             if k in old:
                 merged[k] = old[k]
             else:

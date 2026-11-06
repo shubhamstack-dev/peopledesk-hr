@@ -20,6 +20,15 @@ PeopleDesk HR API (the middle tier between the React app and MySQL).
   POST /api/doc-templates/scan       upload a .docx template and list its placeholders (HR)
   POST /api/doc-templates/preview    fill a template for one employee and download it, nothing saved (HR)
   POST /api/doc-templates/generate   fill it, give it a letter number and keep the file (HR)
+  GET  /api/session          who is signed in: an employee or a contractor's portal user
+  POST /api/auth/invite/check    what an access link is for (no session)
+  POST /api/auth/invite/accept   set a password with an access link and sign in (no session)
+  POST /api/access-link      HR: an access link for an employee or a contractor's portal user
+  GET  /api/contractor/state         contractor portal: the contractor, its workers, the company's lists
+  POST /api/contractor/workers       contractor portal: add a worker
+  POST /api/contractor/workers/{id}  contractor portal: correct a worker before they sign in
+  POST /api/contractor/workers/{id}/access   contractor portal: an access link for a worker
+  POST /api/contractor/password      contractor portal: change your password
 """
 import logging
 import os
@@ -35,11 +44,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import doctemplates, mailer, migrate, policy, repo, training, workforce
+from . import doctemplates, mailer, migrate, policy, portal, repo, training, workforce
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
-                       set_google_sub, set_pw_hash, start_session, verify_password)
+                       session_subject, set_google_sub, set_pw_hash, start_session, verify_password)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("peopledesk")
@@ -113,7 +122,7 @@ def _public_settings(conn) -> dict:
     s = repo.get_singleton(conn, "settings") or {}
     return {"googleClientId": s.get("googleClientId", ""), "msClientId": s.get("msClientId", ""), "msTenantId": s.get("msTenantId", ""),
             "allowPassword": s.get("allowPassword", True),
-            "allowDemo": False, "idleMin": s.get("idleMin", 30)}
+            "allowDemo": False, "idleMin": s.get("idleMin", 30), "externalPassword": True}
 
 
 def _find_by_email(conn, email: str):
@@ -252,14 +261,27 @@ def setup_demo(body: StateBody):
 
 @app.post("/api/auth/login", dependencies=[Depends(require_csrf)])
 def login(body: LoginBody, resp: Response):
+    """E-mail (or mobile number) and password. Contract workers and contractors' portal users usually have no
+    company Google or Microsoft account, so they may use a password even where passwords are off for staff."""
     time.sleep(0.3)   # slows down password guessing
     bad = HTTPException(401, "E-mail or password is incorrect. Employees added from Google or Microsoft sign in with Google or Microsoft.")
     with repo.engine.begin() as conn:
-        if not _public_settings(conn)["allowPassword"]:
-            raise HTTPException(403, "Password sign-in is switched off. Sign in with Google.")
-        emp = _find_by_email(conn, body.email)
+        allow = _public_settings(conn)["allowPassword"]
+        emp = _find_by_email(conn, body.email) if "@" in body.email else portal.find_employee_by_phone(conn, body.email)
         if not emp:
-            raise bad
+            con, user = portal.find_user_by_login(conn, body.email)
+            if not user:
+                raise bad
+            if not verify_password(portal.get_pw(conn, user["id"]), body.password)[0]:
+                raise bad
+            if not portal.is_open(con, user):
+                raise HTTPException(403, "This account is not active. Ask the company's HR.")
+            start_session(resp, portal.PORTAL_PREFIX + user["id"])
+            portal.note_login(conn, user["id"])
+            repo.audit_add(conn, "Contractor signed in", f"{user.get('name')} ({con.get('name')})", None)
+            return {"ok": True, "kind": "contractor"}
+        if not allow and workforce.register_of(emp) != "contract":
+            raise HTTPException(403, "Password sign-in is switched off. Sign in with Google.")
         ok, rehash = verify_password(get_pw_hash(conn, emp["id"]), body.password)
         if not ok:
             raise bad
@@ -346,6 +368,228 @@ def logout(resp: Response):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- access links and the contractor portal
+class InviteBody(BaseModel):
+    token: str
+    password: str = ""
+
+
+class AccessLinkBody(BaseModel):
+    empId: str = ""
+    contractorId: str = ""
+    userId: str = ""
+    send: bool = True
+
+
+class WorkerBody(BaseModel):
+    firstName: str = ""
+    lastName: str = ""
+    gender: str = ""
+    dob: str = ""
+    phone: str = ""
+    email: str = ""
+    doj: str = ""
+    deptId: str = ""
+    desigId: str = ""
+    locationId: str = ""
+    shiftId: str = ""
+
+
+class PortalPasswordBody(BaseModel):
+    current: str
+    new: str = Field(min_length=10, max_length=200)
+
+
+def _base_url(request: Request) -> str:
+    return APP_URL or str(request.base_url).rstrip("/")
+
+
+def _portal_problem(fn, *args):
+    try:
+        return fn(*args)
+    except portal.Problem as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@app.get("/api/session")
+def session_kind(request: Request):
+    """Whether the signed-in person is an employee (the main app) or a contractor's portal user (the portal)."""
+    sub = session_subject(request)
+    with repo.engine.connect() as conn:
+        if sub.startswith(portal.PORTAL_PREFIX):
+            con, user = portal.get_user(conn, sub[len(portal.PORTAL_PREFIX):])
+            if not portal.is_open(con, user):
+                raise HTTPException(401, "This account is not active.")
+            return {"kind": "contractor"}
+        emp = repo.get_records(conn, "employees", [sub]).get(sub)
+        if not active_employee(emp):
+            raise HTTPException(401, "This account is not active.")
+        return {"kind": "employee"}
+
+
+def _invite_target(conn, claims: dict):
+    """(name, company name, sign-in name, current password hash, save the password, sign in)"""
+    if claims["k"] == "emp":
+        emp = repo.get_records(conn, "employees", [claims["sub"]]).get(claims["sub"])
+        if not active_employee(emp):
+            raise portal.Problem("This account is not active. Ask the company's HR.")
+        co = repo.get_records(conn, "companies", [emp.get("companyId")]).get(emp.get("companyId")) or {}
+        return (f"{emp.get('firstName', '')} {emp.get('lastName', '')}".strip(), co.get("legalName") or co.get("name", ""),
+                emp.get("email") or emp.get("phone") or "", get_pw_hash(conn, emp["id"]), emp)
+    con, user = portal.get_user(conn, claims["sub"])
+    if not portal.is_open(con, user):
+        raise portal.Problem("This account is not active. Ask the company's HR.")
+    co = repo.get_records(conn, "companies", [con.get("companyId")]).get(con.get("companyId")) or {}
+    return (user.get("name", ""), co.get("legalName") or co.get("name", ""), user.get("email") or user.get("phone") or "",
+            portal.get_pw(conn, user["id"]), (con, user))
+
+
+@app.post("/api/auth/invite/check", dependencies=[Depends(require_csrf)])
+def invite_check(body: InviteBody):
+    with repo.engine.connect() as conn:
+        claims = _portal_problem(portal.read_invite, body.token)
+        name, company, login_as, pw, _ = _portal_problem(_invite_target, conn, claims)
+        _portal_problem(portal.invite_still_valid, claims, pw)
+        return {"name": name, "company": company, "login": login_as, "kind": "contractor" if claims["k"] == "con" else "employee"}
+
+
+@app.post("/api/auth/invite/accept", dependencies=[Depends(require_csrf)])
+def invite_accept(body: InviteBody, resp: Response):
+    if len(body.password) < 10 or len(body.password) > 200:
+        raise HTTPException(400, "Use a password of at least 10 characters.")
+    time.sleep(0.2)
+    with repo.engine.begin() as conn:
+        claims = _portal_problem(portal.read_invite, body.token)
+        name, _company, _login, pw, who = _portal_problem(_invite_target, conn, claims)
+        _portal_problem(portal.invite_still_valid, claims, pw)
+        if claims["k"] == "emp":
+            set_pw_hash(conn, who["id"], hash_password(body.password))
+            repo.audit_add(conn, "Password set with an access link", name, who["id"])
+            return _signed_in(resp, conn, who, "access link")
+        con, user = who
+        portal.set_pw(conn, user["id"], con["id"], hash_password(body.password))
+        portal.note_login(conn, user["id"])
+        start_session(resp, portal.PORTAL_PREFIX + user["id"])
+        repo.audit_add(conn, "Contractor set a password with an access link", f"{name} ({con.get('name')})", None)
+        return {"ok": True, "kind": "contractor"}
+
+
+def _send_link(to: str, name: str, who: str, company: str, url: str, want: bool) -> bool:
+    if not (want and to and "@" in to and mailer.configured()):
+        return False
+    subject, text_ = portal.invite_mail(name, who, company, url)
+    try:
+        mailer.send([to], subject, text_)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("Access link mail failed: %s", e)
+        return False
+
+
+@app.post("/api/access-link")
+def access_link(body: AccessLinkBody, request: Request, me=Depends(current_user)):
+    """HR: a link with which an employee (a contract worker, or anyone without Google or Microsoft) or a contractor's
+    portal user sets a password. It works once, for 7 days. Sent by e-mail when the server can; always returned so
+    HR can pass it on another way (a text message, for instance)."""
+    with repo.engine.begin() as conn:
+        ctx = _ctx(conn, me)
+        if body.empId:
+            emp = repo.get_records(conn, "employees", [body.empId]).get(body.empId)
+            if not emp or not ctx.is_hr_for(emp.get("companyId")):
+                raise HTTPException(403, "Only HR for this employee's company can give access.")
+            if not active_employee(emp):
+                raise HTTPException(400, "This employee is not active.")
+            token = portal.make_invite("emp", emp["id"], get_pw_hash(conn, emp["id"]))
+            name = f"{emp.get('firstName', '')} {emp.get('lastName', '')}".strip()
+            to, co_id = emp.get("email") or "", emp.get("companyId")
+            portal.mark_link_sent(conn, emp)
+        else:
+            con = repo.get_records(conn, "contractors", [body.contractorId]).get(body.contractorId)
+            if not con or not ctx.is_hr_for(con.get("companyId")):
+                raise HTTPException(403, "Only HR for this contractor's company can give access.")
+            user = next((u for u in portal.portal_users(con) if u["id"] == body.userId), None)
+            if not portal.is_open(con, user):
+                raise HTTPException(400, "Save the portal user first, and make sure they and the contractor are active.")
+            token = portal.make_invite("con", user["id"], portal.get_pw(conn, user["id"]))
+            name, to, co_id = user.get("name", ""), user.get("email") or "", con.get("companyId")
+        co = repo.get_records(conn, "companies", [co_id]).get(co_id) or {}
+        url = portal.invite_url(_base_url(request), token)
+        repo.audit_add(conn, "Access link created", name, me["id"])
+    sent = _send_link(to, name, f"{me.get('firstName', '')} {me.get('lastName', '')}".strip() or "HR", co.get("legalName") or co.get("name", ""), url, body.send)
+    return {"url": url, "sent": sent, "to": to if sent else "", "days": portal.INVITE_DAYS}
+
+
+def current_portal_user(request: Request, _=Depends(require_csrf)):
+    sub = session_subject(request)
+    if not sub.startswith(portal.PORTAL_PREFIX):
+        raise HTTPException(403, "This is for contractors' portal users.")
+    with repo.engine.connect() as conn:
+        con, user = portal.get_user(conn, sub[len(portal.PORTAL_PREFIX):])
+    if not portal.is_open(con, user):
+        raise HTTPException(401, "This account is not active.")
+    return con, user
+
+
+@app.get("/api/contractor/state")
+def contractor_state(who=Depends(current_portal_user)):
+    con, user = who
+    with repo.engine.connect() as conn:
+        return {"state": portal.state(conn, con, user, mailer.configured()), "rev": repo.rev(conn)}
+
+
+@app.post("/api/contractor/workers")
+def contractor_add(body: WorkerBody, who=Depends(current_portal_user)):
+    con, user = who
+    with repo.engine.begin() as conn:
+        e = _portal_problem(portal.add_worker, conn, con, user, body.model_dump())
+        return {"ok": True, "id": e["id"], "empNo": e["empNo"]}
+
+
+@app.post("/api/contractor/workers/{emp_id}")
+def contractor_update(emp_id: str, body: WorkerBody, who=Depends(current_portal_user)):
+    con, user = who
+    with repo.engine.begin() as conn:
+        _portal_problem(portal.update_worker, conn, con, user, emp_id, body.model_dump())
+        return {"ok": True}
+
+
+class SendBody(BaseModel):
+    send: bool = True
+
+
+@app.post("/api/contractor/workers/{emp_id}/access")
+def contractor_access(emp_id: str, body: SendBody, request: Request, who=Depends(current_portal_user)):
+    con, user = who
+    with repo.engine.begin() as conn:
+        emp = repo.get_records(conn, "employees", [emp_id]).get(emp_id)
+        if not emp or emp.get("contractorId") != con.get("id") or emp.get("companyId") != con.get("companyId"):
+            raise HTTPException(403, "That worker is not one of yours.")
+        if not active_employee(emp):
+            raise HTTPException(400, "This worker is not active.")
+        if portal.employees_with_access(conn, [emp_id]):
+            # a link sets a new password: once the worker is in, only HR may do that
+            raise HTTPException(400, f"{emp.get('firstName')} has already signed in. If they forgot their password, ask the company's HR for a new link.")
+        token = portal.make_invite("emp", emp["id"], get_pw_hash(conn, emp["id"]))
+        portal.mark_link_sent(conn, emp)
+        co = repo.get_records(conn, "companies", [con.get("companyId")]).get(con.get("companyId")) or {}
+        repo.audit_add(conn, "Access link created by contractor", f"{emp.get('firstName', '')} {emp.get('lastName', '')} ({user.get('name')}, {con.get('name')})",
+                       emp["id"], module="org", ref_type="employee", ref_id=emp["id"])
+    url = portal.invite_url(_base_url(request), token)
+    name = f"{emp.get('firstName', '')} {emp.get('lastName', '')}".strip()
+    sent = _send_link(emp.get("email") or "", name, con.get("name", "Your contractor"), co.get("legalName") or co.get("name", ""), url, body.send)
+    return {"url": url, "sent": sent, "to": emp.get("email") if sent else "", "days": portal.INVITE_DAYS}
+
+
+@app.post("/api/contractor/password")
+def contractor_password(body: PortalPasswordBody, who=Depends(current_portal_user)):
+    con, user = who
+    with repo.engine.begin() as conn:
+        if not verify_password(portal.get_pw(conn, user["id"]), body.current)[0]:
+            raise HTTPException(400, "Your current password is not right.")
+        portal.set_pw(conn, user["id"], con["id"], hash_password(body.new))
+    return {"ok": True}
+
+
 @app.post("/api/auth/password")
 def change_password(body: PasswordBody, me=Depends(current_user)):
     with repo.engine.begin() as conn:
@@ -392,7 +636,13 @@ def sync(body: SyncBody, me=Depends(current_user)):
                         r.pop(k, None)
                 _guarded(guard.check_record, coll, r, olds.get(r["id"]), ctx.emps)
                 _guarded(guard.check_attendance_request, coll, r, olds.get(r["id"]), ctx.emps, ctx.id)
-                keep.append(policy.check_upsert(conn, coll, r, olds.get(r["id"]), ctx))
+                rec = policy.check_upsert(conn, coll, r, olds.get(r["id"]), ctx)
+                if coll == "contractors":
+                    try:
+                        rec = portal.check_contractor(conn, rec, olds.get(r["id"]))
+                    except portal.Problem as e:
+                        raise policy.Rejected(str(e)) from None
+                keep.append(rec)
             repo.upsert(conn, coll, keep, me["id"])
             if coll == "payRuns":
                 guard.forget_runs()

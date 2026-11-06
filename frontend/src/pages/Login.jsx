@@ -11,6 +11,7 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
   const [err, setErr] = useState(message || '');
   const [busy, setBusy] = useState(false);
   const [msBusy, setMsBusy] = useState(false);
+  const [showPw, setShowPw] = useState(false);       // passwords off for staff: contract workers and contractors still use one
   const gRef = useRef(null);
 
   useEffect(() => { setErr(message || ''); }, [message]);
@@ -45,7 +46,7 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
   };
   const submit = (e) => {
     e.preventDefault();
-    if (!email.trim() || !pw) { setErr('Enter your work e-mail and password.'); return; }
+    if (!email.trim() || !pw) { setErr('Enter your e-mail or mobile number, and your password.'); return; }
     run(() => api.post('/api/auth/login', { email: email.trim(), password: pw }));
   };
 
@@ -56,7 +57,7 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
       <div className="art">
         <div className="brand" style={{ padding: 0 }}>
           <span className="logo"><img src="/aequm-mark.png" alt="Aequm" /></span>
-          <div><b>{group}</b><small>HR{n > 1 ? ` · ${n} companies` : ''}</small></div>
+          <div><b>{group}</b><small>HR</small></div>
         </div>
         <div>
           <h1>Your work, leave and pay in one place.</h1>
@@ -75,12 +76,16 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
             <span>{msBusy ? 'Opening Microsoft…' : 'Sign in with Microsoft'}</span>
           </button>
         )}
-        {s.allowPassword !== false && (
+        {s.allowPassword === false && !showPw && (
+          <button type="button" className="btn" onClick={() => setShowPw(true)}>Contract worker or contractor? Sign in with a password</button>
+        )}
+        {(s.allowPassword !== false || showPw) && (
           <>
             {(googleOK || msOK) && <div className="or">or with a password</div>}
-            <label className="field">Work e-mail<input className="inp" type="email" autoComplete="username" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+            <label className="field">E-mail or mobile number<input className="inp" type="text" inputMode="email" autoComplete="username" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /></label>
             <label className="field">Password<input className="inp" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} /></label>
             <button className="btn pri lg" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+            <p className="fine" style={{ margin: 0 }}>First time? Open the access link you were sent to set your password.</p>
           </>
         )}
         <p className="err" role="alert">{err}</p>

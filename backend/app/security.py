@@ -76,7 +76,8 @@ def active_employee(emp: dict | None) -> bool:
     return bool(emp) and emp.get("status") != "exited" and not emp.get("blocked")
 
 
-def current_user(request: Request, _=Depends(require_csrf)) -> dict:
+def session_subject(request: Request) -> str:
+    """Who the session cookie is for: an employee id, or "cu:" and the id of a contractor's portal user."""
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         raise HTTPException(401, "Sign in to continue")
@@ -84,8 +85,16 @@ def current_user(request: Request, _=Depends(require_csrf)) -> dict:
         claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError:
         raise HTTPException(401, "Your session has ended. Sign in again.")
+    if claims.get("p"):                     # an access link is not a session
+        raise HTTPException(401, "Sign in to continue")
+    return str(claims.get("sub") or "")
+
+
+def current_user(request: Request, _=Depends(require_csrf)) -> dict:
+    """The signed-in employee. A contractor's portal user is not one, so the main app's data is refused to them."""
+    sub = session_subject(request)
     with repo.engine.connect() as conn:
-        emp = repo.get_records(conn, "employees", [claims["sub"]]).get(claims["sub"])
+        emp = repo.get_records(conn, "employees", [sub]).get(sub)
     if not active_employee(emp):
         raise HTTPException(401, "This account is not active.")
     return emp

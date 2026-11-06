@@ -7,6 +7,7 @@
 import * as XLSX from 'xlsx';
 import { PublicClientApplication } from '@azure/msal-browser';
 import { createSync } from './sync.js';
+import { api } from '../api.js';
 
 /* What the React app plugs in */
 const hooks = { refresh: () => {}, logout: () => {}, onSyncRejected: () => {}, onSessionEnded: () => {} };
@@ -820,7 +821,7 @@ const MENU = [
     { page: 'org', label: 'Organisation chart' },
     { page: 'masters', label: 'Departments, designations and grades', show: HR },
     { page: 'masterdata', label: 'Standard lists: institutions, qualifications, employers', show: HR },
-    { page: 'contractors', label: 'Contractors (third party)', show: HR },
+    { page: 'contractors', label: 'Contractors (third party)', show: HR, badge: () => (isHR() ? conWorkersToComplete().length : 0) },
     { page: 'greetings', label: 'Greetings and notifications', show: HR },
     { page: 'reporting', label: 'Reporting structure', show: MGR },
     { page: 'onboarding', label: 'Employee enrolment', show: () => isHR() || onboardTasksFor(me.id).length > 0 || S.onboardings.some((o) => o.empId === me.id) },
@@ -847,7 +848,7 @@ const MENU = [
     { page: 'leaveadmin', tab: 'types', label: 'Leave policies', show: HR },
     { page: 'leaveadmin', tab: 'holidays', label: 'Holiday calendar', show: HR },
     { page: 'leaveadmin', tab: 'balances', label: 'Balances and adjustments', show: HR },
-    { page: 'encash', label: 'Leave encashment', show: () => isHR() || leaveTypesFor(me).some((t) => t.encashAnytime) },
+    { page: 'encash', label: 'Leave encashment', show: () => isHR() || (!cwSelf() && leaveTypesFor(me).some((t) => t.encashAnytime)) },
     { page: 'yearend', label: 'Year-end carry forward', show: HR },
   ] },
   { grp: 'time', label: 'Time Management', items: [
@@ -874,7 +875,7 @@ const MENU = [
     { page: 'calibration', label: 'Calibration', show: HR },
   ] },
   { grp: 'pay', label: 'Payroll', items: [
-    { page: 'payslips', label: 'My payslips and tax' },
+    { page: 'payslips', label: 'My payslips and tax', show: () => !cwSelf() },
     { page: 'payroll', tab: 'own', label: 'Payroll runs: own employees', show: HR },
     { page: 'payroll', tab: 'contract', label: 'Payroll runs: contract workers', show: () => HR() && hasContract() },
     { page: 'form130', label: 'TDS certificates (Form 130 / 16)', show: HR },
@@ -905,7 +906,7 @@ const MENU = [
     { page: 'compplan', label: 'Salary revision planning', show: () => isHR() || S.compBudgets.length > 0 },
   ] },
   { grp: 'exp', label: 'Expenses', items: [
-    { page: 'expenses', label: 'My expense claims' },
+    { page: 'expenses', label: 'My expense claims', show: () => !cwSelf() },
     { page: 'expenses', tab: 'team', label: 'Claims to approve and pay', show: () => isHR() || isManager() || S.expenseClaims.some((c) => (c.participants || []).includes(me.id) && c.empId !== me.id) },
     { page: 'expcats', label: 'Expense categories and limits', show: HR },
   ] },
@@ -1167,7 +1168,8 @@ VIEWS.profile = () => {
   const tabs = [['personal', 'Personal'], ['family', 'Family'], ['background', 'Background'], ['statutory', 'Statutory'], ['bank', 'Bank'], ['salary', 'Salary'], ['documents', 'Documents'],
     ['career', 'Career'], ['job', 'Job'], ['reporting', 'Reporting'], ['reimbursements', 'Reimbursements'], ['assets', 'Assets'], ['performance', 'Performance'], ['skills', 'Skills'], ['training', 'Training'],
     ['history', 'History'], ['activity', 'Activity log']]
-    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance', 'training', 'background', 'skills'].includes(k)) && (k !== 'activity' || hr));
+    .filter(([k]) => (hr || mine || ['job', 'reporting', 'career', 'history', 'performance', 'training', 'background', 'skills'].includes(k)) && (k !== 'activity' || hr)
+      && !(!hr && catOf(e) === 'contract' && CW_HIDDEN_TABS.includes(k)));
   // Opens on the first tab this person may see (Personal for oneself and HR, Career for a manager)
   const tab = tabs.some(([k]) => k === R.q.get('tab')) ? R.q.get('tab') : tabs[0][0];
   const base = `#/profile/${e.id}?tab=`;
@@ -1213,7 +1215,7 @@ VIEWS.profile = () => {
   return { title: mine ? 'My profile' : fullName(e), html: `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><div class="av lg">${esc(initials(fullName(e)))}</div>
       <div style="flex:1;min-width:220px"><h2 style="font-size:22px">${esc(fullName(e))}</h2><div class="mut">${esc((desig(e.desigId) || {}).name || 'No designation')}, ${esc((dept(e.deptId) || {}).name || 'no department')}</div>
         <div class="fine">${esc(e.empNo)}, ${esc(co ? co.name : '')}, ${esc((loc(e.locationId) || {}).name || '')}. Joined ${dmy(e.doj)}. Reports to ${esc(nameOf(e.managerId))}${(e.matrixManagerIds || []).length ? `; dotted line to ${esc(e.matrixManagerIds.map(nameOf).join(', '))}` : ''}.</div></div>
-      <div class="tools">${statusBadge(e)}${hr && e.status === 'active' ? `<button class="btn" data-act="empActions" data-id="${e.id}">Personnel action</button>` : ''}
+      <div class="tools">${statusBadge(e)}${hr && e.status === 'active' ? `<button class="btn" data-act="empActions" data-id="${e.id}">Personnel action</button><button class="btn" data-act="empLink" data-id="${e.id}" title="A link to set a password, for people without a company Google or Microsoft account">Access link</button>` : ''}
         ${exitOf(e.id) && !mine && (hr || e.managerId === me.id) && e.status !== 'active' ? `<a class="btn" href="#/exit/${exitOf(e.id).id}">Exit process</a>` : ''}${mine && e.status === 'active' && !openExitOf(e.id) ? '<button class="btn" data-act="resign">Resign</button>' : ''}
         ${mine && openExitOf(e.id) ? `<a class="btn" href="#/exit/${openExitOf(e.id).id}">My resignation</a>` : ''}${hr && e.status === 'exited' ? `<button class="btn pri" data-act="rehireStart" data-id="${e.id}">Rehire</button>` : ''}</div></div></div>
     ${(e.stints || []).length ? `<div class="note">Rehired. Earlier service: ${e.stints.map((s) => `${dmy(s.doj)} to ${dmy(s.lwd)} as ${esc((desig(s.desigId) || {}).name || 'employee')} (${esc(s.empNo)})`).join('; ')}.</div>` : ''}
@@ -4883,10 +4885,10 @@ PROFILE_TABS.documents = (e, { hr }) => {
   return `<div class="card"><div class="hd"><div><h2>Letters and service documents</h2><p class="sub">Joining, salary revision, bonus, promotion and other letters issued by HR, and the proofs you submitted.</p></div>${hr ? `<div class="tools"><button class="btn" data-act="docGen" data-emp="${e.id}">Create from a template</button><button class="btn pri" data-act="docAdd" data-emp="${e.id}">Upload a document</button></div>` : ''}</div>
     ${docs.length ? `<table class="t"><thead><tr><th>Date</th><th>Document</th><th>Type</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr><td>${dmy(d.date)}</td><td><a href="/api/files/${d.fileId}" target="_blank" rel="noopener"><b>${esc(d.name)}</b></a>${d.templateId ? '<div class="fine">Made from a template</div>' : ''}</td><td class="fine">${esc(d.category)}</td>
       <td class="r">${hr ? `<button class="btn sm ghost" data-act="docDel" data-emp="${e.id}" data-id="${d.id}">Remove</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No letters uploaded yet.</div>'}</div>
-  <div class="grid g2"><div class="card"><h2>Payslips</h2>${runs.length ? `<table class="t"><tbody>${runs.slice(0, 24).map((r) => `<tr><td>${monthName(r.month)}</td><td class="r">${inr0((r.results[e.id] || {}).net || 0)} net</td><td class="r">${e.id === me.id ? `<a class="btn sm" href="#/payslips">Open</a>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No payslips yet.</div>'}</div>
+  ${!hr && catOf(e) === 'contract' ? '' : `<div class="grid g2"><div class="card"><h2>Payslips</h2>${runs.length ? `<table class="t"><tbody>${runs.slice(0, 24).map((r) => `<tr><td>${monthName(r.month)}</td><td class="r">${inr0((r.results[e.id] || {}).net || 0)} net</td><td class="r">${e.id === me.id ? `<a class="btn sm" href="#/payslips">Open</a>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No payslips yet.</div>'}</div>
     <div class="card"><h2>Salary revisions and bonuses</h2>${revs.length || bonuses.length ? `<table class="t"><tbody>${revs.map((s) => `<tr><td>${dmy(s.effective)}</td><td>Salary: fixed CTC ${inr0(s.ctc)}${s.variable ? `, variable ${inr0(s.variable)}` : ''}</td><td class="fine">${esc(s.reason || '')}</td></tr>`).join('')}
       ${bonuses.map((i) => `<tr><td>${monthName(i.month)}</td><td>${i.code === '1550' ? 'Variable pay' : 'Bonus'} ${inr0(i.amount)}</td><td class="fine">${esc(i.note || '')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">None yet.</div>'}
-      <p class="fine">Letters for each revision or bonus appear above once HR uploads them.</p></div></div>`;
+      <p class="fine">Letters for each revision or bonus appear above once HR uploads them.</p></div></div>`}`;
 };
 ACT.docAdd = (b) => {
   const e = empById(b.dataset.emp);
@@ -6985,15 +6987,16 @@ function bgCard(e, k, { hr, mine }) {
       : `<div class="empty">${can ? `Nothing added yet. Add each ${esc(def.one)} so HR can confirm it.` : 'Nothing added yet.'}</div>`}</div>`;
 }
 PROFILE_TABS.background = (e, { hr, mine }) => {
-  const all = BG_KEYS.flatMap((k) => (hr || mine || k !== 'references' ? (e[k] || []) : []));
+  const noAwards = !hr && catOf(e) === 'contract';      // contract workers do not record awards here
+  const all = BG_KEYS.filter((k) => !(noAwards && k === 'awards')).flatMap((k) => (hr || mine || k !== 'references' ? (e[k] || []) : []));
   const done = all.filter((x) => x.verify && x.verify.status === 'verified').length, bad = all.filter((x) => x.verify && x.verify.status === 'discrepancy').length;
   const exp = (e.prevJobs || []).reduce((s, x) => { if (!x.from) return s; const end = x.to || (e.doj || todayISO()).slice(0, 7); return s + Math.max(0, (+end.slice(0, 4) - +x.from.slice(0, 4)) * 12 + (+end.slice(5, 7) - +x.from.slice(5, 7)) + 1); }, 0);
   return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Experience before joining</span><b>${exp ? `${Math.floor(exp / 12)} yr${exp % 12 ? ` ${exp % 12} mo` : ''}` : '—'}</b><small>${(e.prevJobs || []).length} employer${(e.prevJobs || []).length === 1 ? '' : 's'}</small></div>
       <div class="kpi"><span>Highest qualification</span><b style="font-size:18px">${esc(((e.education || []).slice().sort(BG.education.sort)[0] || {}).qualification || '—')}</b><small>${esc(((e.education || []).slice().sort(BG.education.sort)[0] || {}).institution || '')}</small></div>
       <div class="kpi"><span>Checked by HR</span><b>${done} of ${all.length}</b><small>${bad ? `${bad} do not match` : all.length ? 'entries confirmed' : 'nothing to check yet'}</small></div>
-      <div class="kpi"><span>Awards</span><b>${(e.awards || []).length}</b><small>${esc(((e.awards || []).slice().sort(BG.awards.sort)[0] || {}).title || '')}</small></div></div>
+      ${noAwards ? '' : `<div class="kpi"><span>Awards</span><b>${(e.awards || []).length}</b><small>${esc(((e.awards || []).slice().sort(BG.awards.sort)[0] || {}).title || '')}</small></div>`}</div>
     ${bad && hr ? `<div class="note bad">${bad} ${bad === 1 ? 'entry does' : 'entries do'} not match what was checked. See the notes below.</div>` : ''}
-    ${bgCard(e, 'prevJobs', { hr, mine })}${bgCard(e, 'education', { hr, mine })}${bgCard(e, 'awards', { hr, mine })}${hr || mine ? bgCard(e, 'references', { hr, mine }) : ''}`;
+    ${bgCard(e, 'prevJobs', { hr, mine })}${bgCard(e, 'education', { hr, mine })}${noAwards ? '' : bgCard(e, 'awards', { hr, mine })}${hr || mine ? bgCard(e, 'references', { hr, mine }) : ''}`;
 };
 const BG_KEYS = ['prevJobs', 'education', 'awards', 'references'];
 const bgContent = (x) => JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'verify').sort()));
@@ -7216,6 +7219,7 @@ VIEWS.contractors = () => {
       { label: 'Workers', cls: 'r', fmt: (r) => { const n = coEmployees().filter((e) => e.contractorId === r.id).length; return `${n}${+r.maxWorkers && n > +r.maxWorkers ? ` <span class="badge bad">over ${r.maxWorkers}</span>` : ''}`; } },
       { label: 'Charges', fmt: (r) => `${num(r.servicePct || 0)}% service, GST ${num(r.gstPct === '' || r.gstPct == null ? 18 : r.gstPct)}%` },
       { label: 'Billed', cls: 'r', fmt: (r) => inr0(conLedger(r.id).billed) }, { label: 'Paid', cls: 'r', fmt: (r) => inr0(conLedger(r.id).paid) }, { label: 'Outstanding', cls: 'r', fmt: (r) => `<b>${inr0(conLedger(r.id).due)}</b>` }] })}
+    ${conAddedCard()}${portalCard()}
     <div class="card"><div class="hd"><div><h2>Bills to pay</h2><p class="sub">Bills from locked contract payroll. Record each payment the company makes; when a bill is paid in full it is knocked off.</p></div><a class="btn" href="#/payroll?tab=contract">Contract workers' payroll</a></div>
       ${open.length ? `<div class="scroll"><table class="t"><thead><tr><th>Month</th><th>Contractor</th><th class="r">Bill</th><th class="r">Paid</th><th class="r">Outstanding</th><th></th></tr></thead><tbody>${open.map((x) => `<tr><td>${monthName(x.r.month)}</td><td>${esc(conName(x.cid))}</td><td class="r">${inr0(x.r.bills[x.cid].total)}</td><td class="r">${inr0(billPaid(x.r, x.cid))}</td><td class="r"><b>${inr0(x.due)}</b></td>
         <td class="r"><button class="btn sm pri" data-act="conPay" data-run="${x.r.id}" data-con="${x.cid}">Record payment</button> <a class="btn sm" href="#/payroll/${x.r.id}?tab=contract">Open</a></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing outstanding. Every contractor bill is paid and knocked off.</div>'}</div>` };
@@ -8008,6 +8012,121 @@ function loadDemo() {
 
 
 /* ---------------------------------------------------------------- used by the React components */
+/* =====================================================================
+   PeopleDesk 2.9: contractor portal and contract workers' access
+   - HR gives each contractor portal users (Personnel Information › Contractors). They sign in to a separate
+     contractor portal (pages/ContractorPortal.jsx), add their workers and send each an access link.
+   - Contract workers enter their own details, but do not see payslips, salary or awards, and do not raise
+     expense claims, tax declarations or leave encashment here. The server enforces the same (policy.py, portal.py).
+   ===================================================================== */
+const CW_HIDDEN_TABS = ['salary', 'reimbursements'];
+/* the signed-in person is a contract worker, and not HR */
+const cwSelf = () => !!me && catOf(me) === 'contract' && !isHR(me.companyId);
+const phone10 = (v) => { const d = String(v || '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : ''; };
+
+/* What a contract worker still has to fill in on their profile (Home shows it until it is all done) */
+function myDetailsChecklist() {
+  if (!me || catOf(me) !== 'contract') return [];
+  const e = me, p = `#/profile/${e.id}?tab=`;
+  const statPending = S.requests.some((r) => r.kind === 'statutory' && r.empId === e.id && r.status === 'pending');
+  return [
+    { k: 'personal', label: 'Personal details: date of birth, address, emergency contact', done: !!(e.dob && e.gender && e.address && (e.emergencyPhone || e.emergency)), href: p + 'personal' },
+    { k: 'family', label: 'Family members and nominees', done: (e.family || []).length > 0, href: p + 'family' },
+    { k: 'background', label: 'Education and previous jobs', done: (e.education || []).length > 0 || (e.prevJobs || []).length > 0, href: p + 'background' },
+    { k: 'statutory', label: statPending ? 'Aadhaar, PAN and UAN: waiting for HR to check' : 'Aadhaar, PAN and UAN (HR checks them)', done: !!(e.aadhaar || e.uan || e.pan) || statPending, href: p + 'statutory' },
+    { k: 'bank', label: 'Bank account for your wages', done: !!(e.bankAcc && e.ifsc), href: p + 'bank' },
+  ];
+}
+
+/* Workers contractors added that HR still has to complete: wages for the contract payroll, and who they report to */
+function conWorkersToComplete() {
+  return S.employees.filter((e) => e.companyId === CO && active(e) && catOf(e) === 'contract' && e.source === 'contractor' && (!(e.salaryHist || []).length || !e.managerId));
+}
+function conAddedCard() {
+  const since = Date.now() - 60 * 86400000;
+  const list = S.employees.filter((e) => e.companyId === CO && catOf(e) === 'contract' && e.source === 'contractor' && active(e)
+    && (((e.addedBy || {}).at || 0) > since || !(e.salaryHist || []).length || !e.managerId)).sort((a, b) => ((b.addedBy || {}).at || 0) - ((a.addedBy || {}).at || 0));
+  if (!list.length) return '';
+  return `<div class="card"><div class="hd"><div><h2>Workers added by contractors</h2><p class="sub">Contractors add their workers in the contractor portal. Set each one's wages (Salary tab) for the contract payroll, and who they report to (Personnel action › Reporting lines).</p></div></div>
+    <div class="scroll"><table class="t"><thead><tr><th>Worker</th><th>Contractor</th><th>Added by</th><th>Joins</th><th>Still to do</th></tr></thead><tbody>
+    ${list.map((e) => { const todo = [!(e.salaryHist || []).length && 'wages', !e.managerId && 'reports to'].filter(Boolean);
+      return `<tr class="click" data-act="openEmp" data-id="${e.id}"><td><b>${esc(fullName(e))}</b> <span class="fine mono">${esc(e.empNo)}</span><div class="fine">${esc((desig(e.desigId) || {}).name || '')}${e.deptId ? `, ${esc((dept(e.deptId) || {}).name || '')}` : ''}</div></td>
+        <td>${esc(conName(e.contractorId))}</td><td>${esc((e.addedBy || {}).name || '')}<div class="fine">${(e.addedBy || {}).at ? dt((e.addedBy || {}).at) : ''}</div></td><td>${dmy(e.doj)}</td>
+        <td>${todo.length ? `<span class="badge warn">Set ${todo.join(' and ')}</span>` : '<span class="badge ok">Done</span>'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+}
+
+/* Portal users: who signs in for each contractor */
+function portalCard() {
+  const cons = S.contractors.filter((c) => c.companyId === CO).sort((a, b) => a.name.localeCompare(b.name));
+  if (!cons.length) return '';
+  const rows = cons.flatMap((c) => (c.portalUsers || []).map((u) => ({ c, u })));
+  return `<div class="card"><div class="hd"><div><h2>Contractor portal: who signs in</h2><p class="sub">People at each contractor who add their workers in PeopleDesk and send them their access links. They see only their own contractor and its workers, never your staff, pay or bills. Give each one an access link to set a password; they sign in with their e-mail or mobile number.</p></div>
+    <button class="btn pri" data-act="puEdit">Add portal user</button></div>
+    ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Name</th><th>Contractor</th><th>Signs in with</th><th>Access</th><th></th></tr></thead><tbody>
+      ${rows.map(({ c, u }) => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(c.name)}${c.active === false ? ' <span class="badge">Inactive</span>' : ''}</td><td>${esc([u.email, u.phone].filter(Boolean).join(', '))}</td>
+        <td>${u.active === false ? '<span class="badge">Turned off</span>' : u.linkAt ? `<span class="badge info">Link created ${dShort(isoOf(new Date(u.linkAt)))}</span>` : '<span class="badge warn">No link yet</span>'}</td>
+        <td class="r" style="white-space:nowrap"><button class="btn sm" data-act="puEdit" data-con="${c.id}" data-id="${u.id}">Edit</button>${u.active !== false && c.active !== false ? ` <button class="btn sm pri" data-act="puLink" data-con="${c.id}" data-id="${u.id}">Access link</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">No one signs in for a contractor yet. Add a portal user so the contractor can add their own workers.</div>'}</div>`;
+}
+ACT.puEdit = (b) => {
+  const c0 = contractorById(b.dataset.con); const u0 = c0 && b.dataset.id ? (c0.portalUsers || []).find((x) => x.id === b.dataset.id) : null;
+  const fields = [{ k: 'contractorId', label: 'Contractor', type: 'select', opts: () => S.contractors.filter((c) => c.companyId === CO && (c.active !== false || c === c0)).map((c) => [c.id, `${c.name} (${c.code})`]), req: true },
+    { k: 'name', label: 'Name', req: true }, { k: 'email', label: 'E-mail', type: 'email' }, { k: 'phone', label: 'Mobile number' },
+    { k: 'active', label: 'May sign in', type: 'check', wide: true }];
+  const v = u0 ? { ...u0, contractorId: c0.id, active: u0.active !== false } : { active: true, contractorId: (S.contractors.find((c) => c.companyId === CO && c.active !== false) || {}).id };
+  openDlg(`<form class="dlg" id="puF" novalidate><h2>${u0 ? 'Edit' : 'Add'} a contractor portal user</h2><p class="fine" style="margin:0">They sign in with the e-mail or the mobile number, after setting a password with an access link.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="puE"></p>
+    <div class="btns">${u0 ? '<button type="button" class="btn danger" id="puDel">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${u0 ? 'Save' : 'Add and create access link'}</button></div></form>`);
+  if ($('#puDel')) $('#puDel').onclick = async () => {
+    if (!(await confirmBox('Remove this portal user?', `${u0.name} will no longer be able to sign in for ${c0.name}. Their workers stay.`, 'Remove'))) return;
+    c0.portalUsers = (c0.portalUsers || []).filter((x) => x !== u0); audit('Contractor portal user removed', `${u0.name}, ${c0.name}`); saveNow(); route();
+  };
+  $('#puF').onsubmit = async (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields); const err = (m) => { $('#puE').textContent = m; };
+    d.email = d.email.toLowerCase();
+    if (!d.name) return err('Enter the name.'); if (!d.contractorId) return err('Choose the contractor.');
+    if (!d.email && !phone10(d.phone)) return err('Enter an e-mail address or a 10-digit mobile number: they sign in with it.');
+    if (d.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.email)) return err('That is not an e-mail address.');
+    if (d.phone && !phone10(d.phone)) return err('Enter a 10-digit mobile number.');
+    const others = S.contractors.flatMap((c) => (c.portalUsers || []).filter((x) => x !== u0));
+    if (d.email && (S.employees.some((e) => (e.email || '').toLowerCase() === d.email) || others.some((x) => (x.email || '').toLowerCase() === d.email))) return err('Someone in PeopleDesk already has this e-mail address.');
+    const ph = phone10(d.phone);
+    if (ph && (S.employees.some((e) => active(e) && phone10(e.phone) === ph) || others.some((x) => phone10(x.phone) === ph))) return err('Someone in PeopleDesk already has this mobile number.');
+    const con = contractorById(d.contractorId);
+    const u = u0 || { id: uid(), addedAt: Date.now() };
+    Object.assign(u, { name: d.name, email: d.email, phone: d.phone, active: d.active });
+    if (c0 && c0 !== con) c0.portalUsers = (c0.portalUsers || []).filter((x) => x !== u);
+    if (!(con.portalUsers || []).includes(u)) (con.portalUsers = con.portalUsers || []).push(u);
+    audit(u0 ? 'Contractor portal user changed' : 'Contractor portal user added', `${u.name}, ${con.name}`);
+    saveNow(); closeDlg(); route();
+    if (!u0 && u.active) { await sync.flush(); if (!sync.pending()) accessLink({ contractorId: con.id, userId: u.id }, u.name, u.phone, (x) => { u.linkAt = Date.now(); x && saveNow(); }); }
+  };
+};
+ACT.puLink = async (b) => {
+  const c = contractorById(b.dataset.con); const u = (c.portalUsers || []).find((x) => x.id === b.dataset.id);
+  await sync.flush();
+  accessLink({ contractorId: c.id, userId: u.id }, u.name, u.phone, () => { u.linkAt = Date.now(); saveNow(); route(); });
+};
+ACT.empLink = async (b) => { const e = empById(b.dataset.id); await sync.flush(); accessLink({ empId: e.id }, fullName(e), e.phone, () => {}); };
+
+/* Asks the server for an access link, then shows it to copy or send on WhatsApp */
+async function accessLink(body, name, phone, onMade) {
+  let res;
+  try { res = await api.post('/api/access-link', body); } catch (e) { toast(e.message); return; }
+  onMade(res);
+  showAccessLink(res, name, phone);
+}
+function showAccessLink(res, name, phone) {
+  const ph = phone10(phone);
+  const msg = `Hello ${name}, set your PeopleDesk password with this link (it works once, for ${res.days} days): ${res.url}`;
+  openDlg(`<div class="dlg"><h2>Access link for ${esc(name)}</h2>
+    ${res.sent ? `<div class="note ok">Sent by e-mail to ${esc(res.to)}.</div>` : '<p class="fine" style="margin:0">Send this link to them: by WhatsApp, a text message or e-mail.</p>'}
+    <label class="field">Link (works once, for ${res.days} days)<textarea class="inp" id="alU" readonly rows="3" style="font-family:var(--mono,monospace);font-size:12px">${esc(res.url)}</textarea></label>
+    <p class="fine" style="margin:0">Anyone with this link can set the password, so send it only to ${esc(name)}. A new link stops nothing already set up; a link already used no longer works.</p>
+    <div class="btns"><button class="btn" id="alC">Copy link</button>${ph ? `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/91${ph}?text=${encodeURIComponent(msg)}">Send on WhatsApp</a>` : ''}<button class="btn pri" data-act="close">Done</button></div></div>`);
+  $('#alC').onclick = async () => { try { await navigator.clipboard.writeText(res.url); toast('Link copied'); } catch (e) { $('#alU').select(); document.execCommand('copy'); toast('Link copied'); } };
+}
+
 export {
   hooks, sync, ACT, VIEWS, MENU, BOTTOM, ROLES, STATES, R,
   getS, getMe, getCO, loadServerState, clearSession, switchCompany, resolvePage, buildSetupState, buildRegisterRecords, buildDemoState,
@@ -8016,5 +8135,5 @@ export {
   shiftFor, punchOf, leaveOn, holidayOn, todayISO, addDays, D, ymAdd, monthName, yearsBetween,
   num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin, regAsked,
   uid, coById, DOC_CATEGORIES, docTypesFor, docPreview, downloadBlob,
-  myNotices, showLoginNotices, mdOf, runReg
+  myNotices, showLoginNotices, mdOf, runReg, cwSelf, myDetailsChecklist
 };
