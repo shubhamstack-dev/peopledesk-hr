@@ -1,0 +1,150 @@
+import { useEffect, useRef, useState } from 'react';
+import { api } from '../api.js';
+import * as E from '../engine/engine.js';
+
+/* Opened from the link HR sends a candidate (#/apply?t=…): no sign-in. The candidate fills in their details and
+   attaches their CV, saves as they go and sends the form. When they join, HR converts them into an employee and
+   these details become their employee record. The server checks and keeps the form (backend/app/candform.py). */
+export const applyToken = () => {
+  const h = window.location.hash || '';
+  if (!h.startsWith('#/apply')) return '';
+  return new URLSearchParams(h.split('?')[1] || '').get('t') || '';
+};
+
+const GENDERS = [['M', 'Male'], ['F', 'Female'], ['O', 'Other']];
+const MARITAL = [['single', 'Single'], ['married', 'Married'], ['divorcee', 'Divorcee'], ['widowed', 'Widowed'], ['other', 'Other']];
+const BLANK_ROW = {
+  education: { level: 'Graduate', qualification: '', specialisation: '', institution: '', university: '', mode: 'full', fromYear: '', toYear: '', score: '', scoreType: 'pct' },
+  prevJobs: { employer: '', designation: '', location: '', from: '', to: '', empCode: '', lastCtc: '', reason: '', duties: '', contact: '' },
+  references: { name: '', organisation: '', designation: '', relation: '', phone: '', email: '', years: '' },
+  family: { relation: 'Father', name: '', dob: '', gender: '', occupation: '', phone: '', dependant: false },
+};
+const LIST_FIELDS = {
+  education: [['level', 'Level', 'select', () => E.EDU_LEVELS.map((x) => [x, x])], ['qualification', 'Qualification (e.g. B.E., B.Com, ITI Fitter)'], ['specialisation', 'Subject or specialisation'],
+    ['institution', 'School, college or institute'], ['university', 'Board or university'], ['mode', 'Mode', 'select', () => [['full', 'Full time'], ['part', 'Part time'], ['distance', 'Distance or online']]],
+    ['fromYear', 'From (year)', 'number'], ['toYear', 'Passed in (year)', 'number'], ['score', 'Result (e.g. 78.4 or First class)'], ['scoreType', 'Result as', 'select', () => [['pct', 'Percentage'], ['cgpa', 'CGPA'], ['grade', 'Grade or class']]]],
+  prevJobs: [['employer', 'Employer'], ['designation', 'Designation'], ['location', 'City'], ['from', 'From', 'month'], ['to', 'To (empty if current)', 'month'], ['empCode', 'Employee number there'],
+    ['lastCtc', 'Last annual CTC (₹)', 'number'], ['reason', 'Reason for leaving'], ['duties', 'Main responsibilities', 'textarea'], ['contact', 'HR contact there (name, e-mail or phone)']],
+  references: [['name', 'Name'], ['organisation', 'Organisation'], ['designation', 'Their designation'], ['relation', 'How they know you (e.g. former manager)'], ['phone', 'Phone'], ['email', 'E-mail', 'email'], ['years', 'Known for (years)', 'number']],
+  family: [['relation', 'Relationship', 'select', () => E.FAMILY_RELATIONS.map((x) => [x, x])], ['name', 'Name'], ['dob', 'Date of birth', 'date'], ['gender', 'Gender', 'select', () => [['', '—'], ...GENDERS]],
+    ['occupation', 'Occupation'], ['phone', 'Phone'], ['dependant', 'Depends on me', 'check']],
+};
+const LIST_TITLES = { education: ['Education', 'qualification', 'Your schooling, degrees, diplomas and certifications, highest first.'], prevJobs: ['Previous employment', 'job', 'Your employers so far, latest first. Leave empty if this is your first job.'],
+  references: ['References', 'reference', 'People who can confirm your work, such as a former manager.'], family: ['Family', 'family member', 'Parents, spouse and children: for medical insurance and nominations.'] };
+
+function Field({ label, type = 'text', value, onChange, opts, wide, help, disabled }) {
+  let input;
+  if (type === 'select') input = <select className="inp" value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled}>{opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
+  else if (type === 'textarea') input = <textarea className="inp" value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} />;
+  else if (type === 'check') return <label className="chk" style={{ alignSelf: 'end' }}><input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} disabled={disabled} /> {label}</label>;
+  else input = <input className="inp" type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} inputMode={type === 'number' ? 'decimal' : undefined} />;
+  return <label className={`field${wide ? ' wide' : ''}`}>{label}{input}{help && <small>{help}</small>}</label>;
+}
+
+export default function CandidateForm({ onDone }) {
+  const token = applyToken();
+  const [info, setInfo] = useState(null);
+  const [d, setD] = useState(null);
+  const [bad, setBad] = useState('');
+  const [msg, setMsg] = useState({ text: '', err: false });
+  const [busy, setBusy] = useState(false);
+  const [cv, setCv] = useState(null);
+  const top = useRef(null);
+
+  useEffect(() => {
+    if (!token) { setBad('This link is not complete. Open it again from the message you were sent.'); return; }
+    api.post('/api/apply/open', { token }).then((r) => { setInfo(r); setD({ education: [], prevJobs: [], references: [], family: [], ...r.data }); }).catch((e) => setBad(e.message));
+  }, [token]);
+
+  if (bad) return (
+    <div className="apply"><div className="card"><h2>This link cannot be used</h2><p className="sub">{bad}</p>{onDone && <button className="btn" onClick={onDone}>Close</button>}</div></div>
+  );
+  if (!info || !d) return <div className="boot">Loading…</div>;
+  const ro = !info.editable;
+  const set = (k) => (v) => setD({ ...d, [k]: v });
+  const setRow = (list, i, k) => (v) => setD({ ...d, [list]: d[list].map((r, j) => (j === i ? { ...r, [k]: v } : r)) });
+  const F = (k, label, type, extra = {}) => <Field label={label} type={type} value={d[k]} onChange={set(k)} disabled={ro} {...extra} />;
+  const states = [['', 'Choose'], ...E.IN_STATES.map((x) => [x, x]), ['Outside India', 'Outside India']];
+
+  const pickCv = (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { setMsg({ text: 'The CV is larger than 2 MB.', err: true }); ev.target.value = ''; return; }
+    const fr = new FileReader(); fr.onload = () => setCv({ name: f.name, type: f.type || 'application/pdf', size: f.size, data: fr.result }); fr.readAsDataURL(f);
+  };
+  const send = async (submit) => {
+    setBusy(true); setMsg({ text: '', err: false });
+    try {
+      const r = await api.post('/api/apply/save', { token, data: d, cv, submit });
+      setInfo(r); setCv(null);
+      setMsg({ text: submit ? 'Thank you. Your details have been sent.' : 'Saved. You can come back to this link to finish.', err: false });
+    } catch (x) { setMsg({ text: x.message, err: true }); }
+    finally { setBusy(false); if (top.current) top.current.scrollIntoView({ behavior: 'smooth' }); }
+  };
+
+  const listCard = (list) => {
+    const [title, one, sub] = LIST_TITLES[list];
+    return (
+      <div className="card" key={list}><div className="hd"><div><h2>{title}</h2><p className="sub">{sub}</p></div>
+        {!ro && <button type="button" className="btn" onClick={() => setD({ ...d, [list]: [...d[list], { ...BLANK_ROW[list] }] })}>Add {one}</button>}</div>
+        {d[list].length ? d[list].map((r, i) => (
+          <div key={r.id || i} className="apply-row"><div className="form">
+            {LIST_FIELDS[list].map(([k, label, type, opts]) => <Field key={k} label={label} type={type} opts={opts && opts()} value={r[k]} onChange={setRow(list, i, k)} disabled={ro} wide={type === 'textarea'} />)}</div>
+            {!ro && <button type="button" className="btn sm ghost" onClick={() => setD({ ...d, [list]: d[list].filter((_x, j) => j !== i) })}>Remove</button>}</div>
+        )) : <p className="fine">None added.</p>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="apply" ref={top}>
+      <div className="apply-head"><span className="logo"><img src="/aequm-mark.png" alt="" /></span>
+        <div><b>{info.company}</b><small>Your details{info.jobs.length ? ` for ${info.jobs.join(', ')}` : ''}</small></div></div>
+      <div className="card"><h2>Hello {info.name.split(' ')[0]}</h2>
+        <p className="sub">{ro ? (info.status === 'submitted' ? 'Your details have been sent to HR. If something needs to change, HR will contact you.' : 'This form is closed.')
+          : 'Please fill in your details and attach your CV. You can save and come back to this link before you send it. When you join, these details go into your employee record, so you do not need to enter them again.'}</p>
+        {info.note && !ro && <div className="note warn">HR asked you to change: {info.note}</div>}
+        {msg.text && <div className={`note ${msg.err ? 'bad' : 'ok'}`} role="alert">{msg.text}</div>}
+      </div>
+
+      <div className="card"><h2>About you</h2><div className="form">
+        {F('firstName', 'First name')}{F('lastName', 'Last name')}{F('gender', 'Gender', 'select', { opts: [['', 'Choose'], ...GENDERS] })}{F('dob', 'Date of birth', 'date')}
+        {F('marital', 'Marital status', 'select', { opts: [['', '—'], ...MARITAL] })}{d.marital === 'married' && F('anniversary', 'Wedding anniversary', 'date')}
+        {F('fatherName', 'Father’s or husband’s name', 'text', { help: 'As on your PF and identity records' })}{F('blood', 'Blood group', 'select', { opts: [['', 'Not known'], ...E.BLOOD_GROUPS.map((x) => [x, x])] })}
+        {F('nationality', 'Nationality')}{F('phone', 'Mobile')}{F('altPhone', 'Other phone')}
+        <Field label="E-mail" value={info.email} onChange={() => {}} disabled help="To change it, ask HR" />
+        {F('languages', 'Languages you speak')}{F('linkedin', 'LinkedIn profile')}</div></div>
+
+      <div className="card"><h2>Address and emergency contact</h2><div className="form">
+        {F('address', 'Current address: house, street and area', 'textarea', { wide: true })}{F('addrCity', 'City')}{F('addrState', 'State or union territory', 'select', { opts: states })}
+        {F('addrPin', 'PIN code')}{F('addrCountry', 'Country', 'select', { opts: E.COUNTRIES.map((x) => [x, x]) })}{F('permAddress', 'Permanent address, if different', 'textarea', { wide: true })}
+        {F('emergencyName', 'Emergency contact: name')}{F('emergencyRelation', 'Relationship', 'select', { opts: [['', 'Choose'], ...E.EMERGENCY_RELATIONS.map((x) => [x, x])] })}{F('emergencyPhone', 'Emergency contact: phone')}</div></div>
+
+      <div className="card"><h2>Identity and bank account</h2><p className="sub">Needed for payroll, PF and income tax from your first month. Seen only by HR and payroll.</p><div className="form">
+        {F('pan', 'PAN')}{F('aadhaar', 'Aadhaar number')}{F('uan', 'UAN (PF), if you have one')}
+        {F('bankName', 'Bank', 'select', { opts: [['', 'Choose'], ...E.BANKS.map((b) => [b[0], b[0]])] })}{F('bankAcc', 'Account number')}{F('ifsc', 'IFSC')}</div></div>
+
+      <div className="card"><h2>Your current job</h2><div className="form">
+        {F('currentCompany', 'Current or last employer')}{F('currentTitle', 'Current role')}{F('expYears', 'Total experience (years)', 'number')}
+        {F('currentCtc', 'Current annual CTC (₹)', 'number')}{F('expectedCtc', 'Expected annual CTC (₹)', 'number')}{F('noticeDays', 'Notice period (days)', 'number')}
+        {F('skills', 'Key skills', 'text', { wide: true })}{F('about', 'Anything else you would like us to know', 'textarea', { wide: true })}</div></div>
+
+      {listCard('education')}{listCard('prevJobs')}{listCard('references')}{listCard('family')}
+
+      <div className="card"><h2>CV</h2>
+        <p className="sub">{info.cv ? `Attached: ${info.cv.name}.` : 'No CV attached yet.'}{cv ? ` Ready to save: ${cv.name}.` : ''}</p>
+        {!ro && <label className="field">{info.cv ? 'Replace it' : 'Attach your CV'} (PDF or Word, up to 2 MB)<input className="inp" type="file" accept=".pdf,.doc,.docx,.rtf,.txt" onChange={pickCv} /></label>}
+      </div>
+
+      {!ro && (
+        <div className="card">
+          <label className="chk"><input type="checkbox" checked={!!d.declaration} onChange={(e) => set('declaration')(e.target.checked)} /> I declare that these details are true and complete. I understand that the company may check them, and that false details may lead to the offer being withdrawn or my employment ending.</label>
+          <div className="btns" style={{ justifyContent: 'flex-start' }}>
+            <button className="btn" disabled={busy} onClick={() => send(false)}>{busy ? 'Saving…' : 'Save and finish later'}</button>
+            <button className="btn pri" disabled={busy} onClick={() => send(true)}>Send my details</button>
+          </div>
+          {msg.text && <p className={msg.err ? 'err' : 'fine'} role="alert">{msg.text}</p>}
+        </div>
+      )}
+    </div>
+  );
+}

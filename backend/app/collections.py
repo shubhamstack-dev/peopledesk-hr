@@ -85,6 +85,15 @@ COLLS = [
     # attendance register and payroll
     Coll("masterItems", "master_items", {"kind": ("kind", "str"), "name": ("name", "str"), "status": ("status", "str")}),
     Coll("contractors", "contractors", {"name": ("name", "str"), "code": ("code", "str")}),
+    # v2.10: kinds of asset (products) and which team issues them: IT (laptops, phones, TVs) or Administration
+    # (ID cards, access cards). Each team keeps its own list (see policy.py)
+    Coll("assetTypes", "asset_types", {"name": ("name", "str"), "team": ("team", "str")}),
+    # v2.11: performance. A library of goals and competencies with how each is measured, independent of roles
+    # (roles give them weightages in performance_templates); review meetings with an employee and management
+    # meetings with their decisions (promotions, exits); succession plans (see perf.py)
+    Coll("goalLib", "goal_library", {"code": ("code", "str"), "title": ("title", "str"), "kind": ("kind", "str")}),
+    Coll("perfMeetings", "performance_meetings", {"kind": ("kind", "str"), "cycle_id": ("cycleId", "str"), "status": ("status", "str"), "day": ("date", "date")}),
+    Coll("succession", "succession_plans", {"cycle_id": ("cycleId", "str"), "incumbent_id": ("incumbentId", "str"), "status": ("status", "str")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 

@@ -13,11 +13,12 @@ import Settings from './pages/Settings.jsx';
 import DocTemplates from './pages/DocTemplates.jsx';
 import ContractorPortal from './pages/ContractorPortal.jsx';
 import Welcome, { welcomeToken } from './pages/Welcome.jsx';
+import CandidateForm from './pages/CandidateForm.jsx';
 
 const SESSION_ENDED = 'Your session has ended. Sign in again.';
 
 export default function App() {
-  const [phase, setPhase] = useState('loading');       // loading | setup | login | welcome | app | contractor | down
+  const [phase, setPhase] = useState('loading');       // loading | setup | login | welcome | apply | app | contractor | down
   const [boot, setBoot] = useState(null);
   const [message, setMessage] = useState('');
   const [version, refresh] = useReducer((x) => x + 1, 0);
@@ -77,6 +78,8 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
+        // a candidate filling in their details from HR's link: no sign-in
+        if ((window.location.hash || '').startsWith('#/apply')) { setPhase('apply'); return; }
         const b = await api.get('/api/bootstrap');
         setBoot(b);
         if (b.needsSetup) { setPhase('setup'); return; }
@@ -115,6 +118,7 @@ export default function App() {
     <div className="boot"><div className="card" style={{ maxWidth: 460 }}><h2>The server is not answering</h2>
       <p className="sub">{message}</p><button className="btn pri" onClick={() => window.location.reload()}>Try again</button></div></div>
   );
+  if (phase === 'apply') return <CandidateForm onDone={() => { window.history.replaceState(null, '', window.location.pathname); window.location.reload(); }} />;
   if (phase === 'welcome') return <Welcome onSignedIn={() => enter(true)} onSignIn={() => toSignIn()} />;
   if (phase === 'contractor') return (
     <ContractorPortal

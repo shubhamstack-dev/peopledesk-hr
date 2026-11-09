@@ -8,13 +8,15 @@ import { api, ApiError } from '../api.js';
 export const COLLECTIONS = ['companies', 'employees', 'depts', 'desigs', 'grades', 'locations', 'holidays',
   'leaveTypes', 'leaveReqs', 'leaveAdj', 'shifts', 'punches', 'regs', 'cycles', 'goals', 'reviews', 'feedback', 'posts',
   'payComps', 'payInputs', 'payRuns', 'declarations', 'exits', 'reqs', 'cands', 'apps', 'interviews', 'otRecs', 'shiftPatterns',
-  'requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets', 'docTypes', 'docTemplates',
+  'requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assetTypes', 'assets', 'docTypes', 'docTemplates',
   // salary planning: cycles, then budgets, then recommendations (the server checks recommendations against the saved budgets)
   'compCycles', 'compBudgets', 'compRecs',
   // training: trainings before enrolments and feedback (the server checks those against the saved training)
   'trainings', 'trainingEnrols', 'trainingFeedback', 'trainingNeeds',
   // workforce (2.7): standard lists and contractors
-  'masterItems', 'contractors'];
+  'masterItems', 'contractors',
+  // performance (2.11): goal library, review and management meetings, succession plans
+  'goalLib', 'perfMeetings', 'succession'];
 const SINGLETONS = ['group', 'settings', 'stat', 'seq'];
 const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 

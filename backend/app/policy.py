@@ -14,15 +14,25 @@ that company or it is their own record.
 Writing: HR may change anything in the companies they look after. Others may
 change their own requests and those of people in their reporting line, and
 cannot approve their own requests, change their access, salary or job record.
+
+Teams (2.10), given by HR on the employee record (`teams`), for their own company:
+- "it" and "admin" keep their own kinds of asset (IT: laptops, phones, TVs; Administration: ID cards, access
+  cards) and add, issue and take back assets of those kinds.
+- "finance" runs payroll (payroll runs, inputs, tax declarations, statutory registers) and checks and pays
+  expense claims. Finance sees what payroll needs of each employee (salary, bank, PAN, UAN, ESI, date of birth),
+  not their address, family or background.
 """
 from dataclasses import dataclass, field
 
-from . import comp, repo, training, workforce
+from . import candform, comp, perf, repo, training, workforce
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
            "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns",
-           "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles", "contractors"}
+           "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles", "contractors",
+           "goalLib"}
+# Performance meetings and succession plans follow their own rules (perf.py)
+PERF = {"perfMeetings", "succession"}
 # Compensation planning: budgets and recommendations follow their own rules (comp.py)
 COMP = {"compBudgets", "compRecs"}
 # Training: trainings are HR's, but internal trainers add content and mark completion; enrolments and feedback
@@ -50,7 +60,7 @@ PROTECTED_SELF = {"id", "role", "companyId", "hrCompanies", "status", "blocked",
                   "salaryHist", "salaryOverrides", "doj", "exit", "stints", "gratuityFrom", "gradeId", "desigId",
                   "deptId", "locationId", "empType", "probationEnd", "attGroup", "otEligible", "shiftId", "source",
                   "pfOn", "epsOn", "esiOn", "ptOn", "lwfOn", "patternId", "patternFrom", "rotFilledTo",
-                  "workerCategory", "contractorId", "nightConsent",
+                  "workerCategory", "contractorId", "nightConsent", "teams",
                   "matrixManagerIds", "reportingHist", "gradeHist", "pendingMoves", "variableHist",
                   # statutory details change only through an approved request; letters are issued by HR
                   "pan", "aadhaar", "uan", "pfNo", "esiNo", "esiRegDate", "esiDispensary", "vpfPct", "documents",
@@ -61,6 +71,14 @@ PROTECTED_SELF = {"id", "role", "companyId", "hrCompanies", "status", "blocked",
 CW_HIDDEN_SELF = {"salaryHist": [], "salaryOverrides": {}, "variableHist": [], "awards": []}
 CW_NO_WRITE = {"expenseClaims", "declarations"}
 CW_NO_REQUEST = {"encash"}
+TEAMS = {"admin", "it", "finance"}
+ASSET_TEAMS = {"admin", "it"}
+# What finance sees of employees for payroll (others' records arrive without these)
+FINANCE_SEES = {"salaryHist", "salaryOverrides", "pan", "aadhaar", "uan", "pfNo", "esiNo", "esiRegDate", "esiDispensary",
+                "bankName", "bankAcc", "ifsc", "payMode", "vpfPct", "gratuityFrom", "addrState"}
+FINANCE_WRITE = {"payRuns", "payInputs", "declarations"}
+# An employee field finance may change (the tax regime, on the TDS pages)
+FINANCE_MAY = {"taxRegime"}
 # Employee fields a manager may change for someone in their reporting line (resignation flow, shift rotation)
 MANAGER_MAY = {"exit", "history", "status", "patternId", "patternFrom", "rotFilledTo"}
 
@@ -89,6 +107,19 @@ class Ctx:
     @property
     def is_hr(self):
         return self.is_super or bool(self.hr_scope)
+
+    @property
+    def teams(self) -> set:
+        return {t for t in (self.me.get("teams") or []) if t in TEAMS}
+
+    def in_team(self, team: str, company_id) -> bool:
+        """HR counts as every team. A team member acts for their own company only."""
+        if self.is_hr_for(company_id):
+            return True
+        return team in self.teams and company_id is not None and company_id == self.me.get("companyId")
+
+    def is_finance_for(self, company_id) -> bool:
+        return self.in_team("finance", company_id)
 
     @property
     def is_contract_worker(self):
@@ -162,36 +193,54 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     emp_co = {e["id"]: e.get("companyId") for e in st["employees"]}
     sees_all = lambda emp_id: emp_id == ctx.id or ctx.is_hr_for(emp_co.get(emp_id))  # noqa: E731
 
+    fin = lambda co: ctx.is_finance_for(co)  # noqa: E731
     for e in st["employees"]:
         if e["id"] == ctx.id and not ctx.is_hr_for(e.get("companyId")):
             workforce.redact_employee(e, "self")
         elif not sees_all(e["id"]):
             workforce.redact_employee(e, "line" if e["id"] in ctx.line else "other")
+            pay = fin(e.get("companyId"))           # finance keeps what payroll needs
             for k, blank in SENSITIVE_EMP.items():
-                if k in e:
+                if k in e and not (pay and k in FINANCE_SEES):
                     e[k] = blank
-            if isinstance(e.get("dob"), str) and len(e["dob"]) == 10:
+            if not pay and isinstance(e.get("dob"), str) and len(e["dob"]) == 10:
                 e["dob"] = "1900" + e["dob"][4:]          # keeps birthdays on the home page, hides age
             for s in e.get("stints") or []:
-                s.pop("ctc", None)
+                if not pay:
+                    s.pop("ctc", None)
     for run in st["payRuns"]:
-        if not ctx.is_hr_for(run.get("companyId")):
+        if not ctx.is_hr_for(run.get("companyId")) and not fin(run.get("companyId")):
             run["results"] = {k: v for k, v in (run.get("results") or {}).items() if k == ctx.id}
             run["skipped"] = []
             run["bills"], run["payments"] = {}, []        # what is owed and paid to contractors is for HR
-    st["payInputs"] = [x for x in st["payInputs"] if sees_all(x.get("empId")) and (x.get("empId") == ctx.id or ctx.is_hr_for(x.get("companyId")))]
-    st["declarations"] = [x for x in st["declarations"] if sees_all(x.get("empId"))]
+    st["payInputs"] = [x for x in st["payInputs"] if fin(x.get("companyId")) or (sees_all(x.get("empId")) and (x.get("empId") == ctx.id or ctx.is_hr_for(x.get("companyId"))))]
+    st["declarations"] = [x for x in st["declarations"] if sees_all(x.get("empId")) or fin(emp_co.get(x.get("empId")))]
     st["leaveAdj"] = [x for x in st["leaveAdj"] if x.get("empId") == ctx.id or x.get("empId") in ctx.line or ctx.is_hr_for(emp_co.get(x.get("empId")))]
     st["audit"] = [a for a in st["audit"] if ctx.is_hr_for(emp_co.get(a.get("by")))] if ctx.is_hr else []
+    type_team = {t.get("id"): t.get("team") for t in st.get("assetTypes", [])}
+    type_team_by_name = {(t.get("companyId"), str(t.get("name") or "").strip().lower()): t.get("team") for t in st.get("assetTypes", [])}
+
+    def team_sees(coll, x):
+        co = x.get("companyId") or emp_co.get(x.get("empId"))
+        if coll == "expenseClaims":
+            return fin(co) and x.get("status") != "draft"
+        if coll == "assets":
+            team = type_team.get(x.get("typeId")) or type_team_by_name.get((co, str(x.get("type") or "").strip().lower()))
+            return bool(team) and ctx.in_team(team, co)
+        return False
     for coll in PARTICIPANT:
         st[coll] = [x for x in st.get(coll, []) if ctx.is_hr_for(x.get("companyId") or emp_co.get(x.get("empId")))
-                    or ctx.id in (x.get("participants") or []) or x.get("empId") == ctx.id]
+                    or ctx.id in (x.get("participants") or []) or x.get("empId") == ctx.id or team_sees(coll, x)]
     comp.visible(st, ctx)
     training.visible(st, ctx)
+    perf.visible(st, ctx)
+    st["cands"] = [x if ctx.is_hr_for(x.get("companyId")) else candform.redact(x) for x in st.get("cands", [])]
     hr_cos = {c.get("id") for c in st.get("companies", []) if ctx.is_hr_for(c.get("id"))}
     st["masterItems"] = [x for x in st.get("masterItems", []) if x.get("companyId") in hr_cos] + \
         workforce.visible_masters([x for x in st.get("masterItems", []) if x.get("companyId") not in hr_cos], ctx.id)
-    st["contractors"] = [x if x.get("companyId") in hr_cos else {k: x.get(k) for k in ("id", "companyId", "name", "code")} for x in st.get("contractors", [])]
+    st["contractors"] = [x if x.get("companyId") in hr_cos else
+                         {k: v for k, v in x.items() if k != "portalUsers"} if fin(x.get("companyId")) else     # bills need the charges
+                         {k: x.get(k) for k in ("id", "companyId", "name", "code")} for x in st.get("contractors", [])]
     if ctx.is_contract_worker:
         _contract_worker_view(st, ctx)
     if not ctx.is_hr:
@@ -199,6 +248,61 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     s = st.get("settings") or {}
     st["settings"] = s if ctx.is_hr else {k: s.get(k) for k in ("googleClientId", "allowDemo", "allowPassword", "idleMin") if k in s}
     return st
+
+
+def asset_team(conn, rec: dict | None):
+    """The team (it or admin) that issues an asset, from its kind."""
+    if not rec:
+        return None
+    if rec.get("typeId"):
+        t = repo.get_records(conn, "assetTypes", [rec["typeId"]]).get(rec["typeId"])
+        if t:
+            return t.get("team")
+    name = str(rec.get("type") or "").strip().lower()
+    if name and rec.get("companyId"):
+        for t in repo.records_where(conn, "assetTypes", "company_id", rec["companyId"]):
+            if str(t.get("name") or "").strip().lower() == name:
+                return t.get("team")
+    return None
+
+
+def _team_write(conn, coll: str, new: dict, old: dict | None, ctx: Ctx, co_new, co_old):
+    """A change a team member (not HR) may make for their team. Returns the record, None when the team rules do not
+    apply (the usual rules follow), or raises Rejected."""
+    if not ctx.teams:
+        return None
+    if co_old is not None and co_new != co_old:
+        return None
+    if coll == "assetTypes":
+        teams = {new.get("team"), (old or {}).get("team")} - {None}
+        if not teams <= ASSET_TEAMS:
+            raise Rejected("a kind of asset belongs to IT or Administration")
+        if all(ctx.in_team(t, co_new) for t in teams):
+            return new
+        raise Rejected("only that team or HR keeps this list")
+    if coll == "assets":
+        teams = {asset_team(conn, new), asset_team(conn, old)} - {None}
+        if teams and all(ctx.in_team(t, co_new) for t in teams if t in ASSET_TEAMS):
+            if not new.get("typeId") and not new.get("type"):
+                raise Rejected("say what kind of asset this is")
+            return new
+        return None                        # legacy assets and employees confirming receipt: the participant rules
+    if not ctx.is_finance_for(co_new):
+        return None
+    if coll in FINANCE_WRITE:
+        return new
+    if coll == "payComps":
+        if old:
+            raise Rejected("pay components are set up by HR")
+        return new                         # payroll and reimbursements add a missing component (e.g. 1900)
+    if coll == "expenseClaims":
+        subject = new.get("empId") or (old or {}).get("empId")
+        if subject == ctx.id:
+            return None                    # one's own claim: the usual rules (nobody approves their own)
+        if old and old.get("status") == "draft" and new.get("status") == "draft":
+            raise Rejected("a draft belongs to the person writing it")
+        return new
+    return None
 
 
 def _contract_worker_view(st: dict, ctx: Ctx):
@@ -241,6 +345,12 @@ def record_company(conn, coll: str, rec: dict, ctx: Ctx):
 def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
     """Returns the record to store, or raises Rejected."""
     co_new, co_old = record_company(conn, coll, new, ctx), record_company(conn, coll, old, ctx)
+    if coll == "cands":
+        # what the candidate entered through their link is kept as stored (candform.py)
+        try:
+            new = candform.merge_from_app(dict(new), old, ctx.id)
+        except candform.Problem as e:
+            raise Rejected(str(e)) from None
     if ctx.is_super:
         if ctx.private and ({co_new, co_old} & ctx.private or (coll == "employees" and set(new.get("hrCompanies") or []) & ctx.private)):
             raise Rejected("this belongs to another company")
@@ -258,6 +368,9 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
 
     if hr_ok:
         return new
+    team_ok = _team_write(conn, coll, new, old, ctx, co_new, co_old)
+    if team_ok is not None:
+        return team_ok
     if ctx.is_contract_worker:
         if coll in CW_NO_WRITE:
             raise Rejected("contract workers do not handle expense claims or tax declarations here: ask your contractor")
@@ -267,6 +380,15 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         return _comp(conn, coll, new, old, ctx)
     if coll in TRAIN:
         return _train(conn, coll, new, old, ctx)
+    if coll in PERF:
+        if any(c not in (None, ctx.me.get("companyId")) for c in (co_new, co_old)):
+            raise Rejected("belongs to another company")
+        try:
+            if coll == "perfMeetings":
+                return perf.check_meeting(new, old, ctx.id, ctx.line)
+            return perf.check_plan(new, old, ctx.id, ctx.line)
+        except perf.Problem as e:
+            raise Rejected(str(e)) from None
     if coll in PARTICIPANT:
         return _participant(coll, new, old, ctx)
     if coll == "masterItems":
@@ -471,6 +593,10 @@ def _employee(new: dict, old: dict | None, ctx: Ctx, hr_ok: bool) -> dict:
             return workforce.keep_verification(merged, old)
         except workforce.Problem as e:
             raise Rejected(str(e)) from None
+    if ctx.is_finance_for(old.get("companyId")) and new["id"] not in ctx.line:
+        # finance works from a copy without the person's private details: only the tax regime is taken from it
+        if any(k in new and new.get(k) != old.get(k) for k in FINANCE_MAY):
+            return {**old, **{k: new[k] for k in FINANCE_MAY if k in new}}
     if new["id"] in ctx.line:
         merged = dict(old)
         for k in MANAGER_MAY:
@@ -496,6 +622,10 @@ def check_delete(conn, coll: str, old: dict, ctx: Ctx):
         return
     if coll in ("requests", "expenseClaims") and old.get("empId") == ctx.id and old.get("status") in ("draft", "withdrawn", None):
         return
+    if coll in ("payRuns", "payInputs") and ctx.is_finance_for(co):
+        return
+    if coll == "assetTypes" and old.get("team") in ASSET_TEAMS and ctx.in_team(old["team"], co):
+        return
     if coll == "compBudgets":
         cycle, pools = _comp_context(conn, old)
         try:
@@ -505,6 +635,10 @@ def check_delete(conn, coll: str, old: dict, ctx: Ctx):
         return
     if coll == "compRecs":
         raise Rejected("only HR can take someone out of a salary plan")
+    if coll in PERF:
+        if co == ctx.me.get("companyId") and perf.may_delete(coll, old, ctx.id, ctx.line):
+            return
+        raise Rejected("not yours to delete")
     if coll in HR_ONLY or coll not in WORKFLOW or coll == "employees":
         raise Rejected("only HR can delete this")
     subject = old.get("empId")

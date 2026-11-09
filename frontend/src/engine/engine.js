@@ -101,7 +101,8 @@ function blank() {
     requests: [], expenseCats: [], expenseClaims: [], perfTemplates: [], onboardings: [], onboardTemplates: [], assets: [], docTypes: [], docTemplates: [],
     compCycles: [], compBudgets: [], compRecs: [],
     trainings: [], trainingEnrols: [], trainingFeedback: [], trainingNeeds: [],
-    contractors: [], masterItems: [],
+    contractors: [], masterItems: [], assetTypes: [],
+    goalLib: [], perfMeetings: [], succession: [],
   };
 }
 /* Storage: the MySQL database behind the Python API. Changes are sent as they happen (see sync.js). */
@@ -811,7 +812,7 @@ function fnf(emp) {
    Shell: sign-in (Google, password, demo), setup, menu, routing, home, approvals
    ===================================================================== */
 /* Menu: groups with subsections. An item is {page, tab?, label, show?}; tab links straight to a tab of a page. */
-const HR = () => isHR(), MGR = () => isManager() || isHR();
+const HR = () => isHR(), MGR = () => isManager() || isHR(), PAY = () => canPay();
 const MENU = [
   { page: 'home', label: 'Home' },
   { page: 'inbox', label: 'Approvals', badge: () => pendingForMe().length, show: () => isManager() || isHR() || pendingForMe().length > 0 },
@@ -827,7 +828,7 @@ const MENU = [
     { page: 'onboarding', label: 'Employee enrolment', show: () => isHR() || onboardTasksFor(me.id).length > 0 || S.onboardings.some((o) => o.empId === me.id) },
     { page: 'onbsetup', label: 'Enrolment checklists', show: HR },
     { page: 'insurance', label: 'Medical insurance policies', show: HR },
-    { page: 'assets', label: 'Assets: ID cards, laptops and more', show: () => isHR() || isCustodian() || S.assets.some((a) => a.empId === me.id) },
+    { page: 'assets', label: 'Assets: ID cards, laptops and more', show: () => isHR() || assetTeams().length > 0 || isCustodian() || S.assets.some((a) => a.empId === me.id) },
     { page: 'promotions', label: 'Promotions and progression', show: MGR },
     { page: 'companies', label: 'Companies', show: HR },
     { page: 'google', label: 'Users from Google and Microsoft', show: HR },
@@ -864,8 +865,8 @@ const MENU = [
     { page: 'timecontrols', tab: 'rules', label: 'Time and shift controls', show: HR },
     { page: 'timecontrols', tab: 'exceptions', label: 'Control exceptions', show: MGR },
     { page: 'timemode', label: 'Shifts or time management', show: HR },
-    { page: 'register', tab: 'own', label: 'Attendance register: own employees', show: MGR },
-    { page: 'register', tab: 'contract', label: 'Attendance register: contract workers', show: () => MGR() && hasContract() },
+    { page: 'register', tab: 'own', label: 'Attendance register: own employees', show: () => MGR() || PAY() },
+    { page: 'register', tab: 'contract', label: 'Attendance register: contract workers', show: () => (MGR() || PAY()) && hasContract() },
   ] },
   { grp: 'perf', label: 'Performance Management', items: [
     { page: 'performance', label: 'My goals and reviews' },
@@ -876,13 +877,13 @@ const MENU = [
   ] },
   { grp: 'pay', label: 'Payroll', items: [
     { page: 'payslips', label: 'My payslips and tax', show: () => !cwSelf() },
-    { page: 'payroll', tab: 'own', label: 'Payroll runs: own employees', show: HR },
-    { page: 'payroll', tab: 'contract', label: 'Payroll runs: contract workers', show: () => HR() && hasContract() },
-    { page: 'form130', label: 'TDS certificates (Form 130 / 16)', show: HR },
-    { page: 'esi', label: 'ESI', show: HR },
-    { page: 'statreg', tab: 'pf', label: 'PF register', show: HR },
-    { page: 'statreg', tab: 'esi', label: 'ESI register', show: HR },
-    { page: 'statreg', tab: 'pt', label: 'Professional tax register', show: HR },
+    { page: 'payroll', tab: 'own', label: 'Payroll runs: own employees', show: PAY },
+    { page: 'payroll', tab: 'contract', label: 'Payroll runs: contract workers', show: () => PAY() && hasContract() },
+    { page: 'form130', label: 'TDS certificates (Form 130 / 16)', show: PAY },
+    { page: 'esi', label: 'ESI', show: PAY },
+    { page: 'statreg', tab: 'pf', label: 'PF register', show: PAY },
+    { page: 'statreg', tab: 'esi', label: 'ESI register', show: PAY },
+    { page: 'statreg', tab: 'pt', label: 'Professional tax register', show: PAY },
     { page: 'statreg', tab: 'moves', label: 'PF and ESI joiners and leavers', show: HR },
     { page: 'paysetup', tab: 'comps', label: 'Pay components', show: HR },
     { page: 'otpolicy', tab: 'pay', label: 'Overtime pay', show: HR },
@@ -890,8 +891,8 @@ const MENU = [
     { page: 'paysetup', tab: 'pt', label: 'Professional tax', show: HR },
     { page: 'paysetup', tab: 'lwf', label: 'Labour welfare fund', show: HR },
     { page: 'paysetup', tab: 'tax', label: 'Income tax', show: HR },
-    { page: 'varpay', label: 'Variable pay', show: HR },
-    { page: 'sap', label: 'SAP HR export', show: HR },
+    { page: 'varpay', label: 'Variable pay', show: PAY },
+    { page: 'sap', label: 'SAP HR export', show: PAY },
   ] },
   { grp: 'learn', label: 'Training and development', items: [
     { page: 'training', tab: 'mine', label: 'My training' },
@@ -907,10 +908,10 @@ const MENU = [
   ] },
   { grp: 'exp', label: 'Expenses', items: [
     { page: 'expenses', label: 'My expense claims', show: () => !cwSelf() },
-    { page: 'expenses', tab: 'team', label: 'Claims to approve and pay', show: () => isHR() || isManager() || S.expenseClaims.some((c) => (c.participants || []).includes(me.id) && c.empId !== me.id) },
+    { page: 'expenses', tab: 'team', label: 'Claims to approve and pay', show: () => isHR() || isFinance() || isManager() || S.expenseClaims.some((c) => (c.participants || []).includes(me.id) && c.empId !== me.id) },
     { page: 'expcats', label: 'Expense categories and limits', show: HR },
   ] },
-  { grp: 'admin', label: 'Administration', items: [{ page: 'flows', label: 'Approval workflows', show: HR },
+  { grp: 'admin', label: 'Administration', items: [{ page: 'teams', label: 'Teams: Administration, IT and Finance', show: HR }, { page: 'flows', label: 'Approval workflows', show: HR },
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
     { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
@@ -1818,11 +1819,11 @@ VIEWS.register = () => {
   const ym = R.q.get('m') || todayISO().slice(0, 7); const days = daysInMonth(ym);
   const grp = R.q.get('g') || 'all';
   const reg = R.q.get('tab') === 'contract' ? 'contract' : 'own', con = R.q.get('con') || '';
-  const emps = visibleEmps().filter((e) => e.companyId === CO && regOf(e) === reg && (!con || e.contractorId === con) && (grp === 'all' || attGroup(e) === grp));
+  const emps = (canPay() && !isHR() ? coEmployees() : visibleEmps()).filter((e) => e.companyId === CO && regOf(e) === reg && (!con || e.contractorId === con) && (grp === 'all' || attGroup(e) === grp));
   const upTo = ym === todayISO().slice(0, 7) ? todayISO() : undefined;
   const lk = attLockOf(CO, reg, ym);
   return { title: `Attendance register: ${REGS[reg].toLowerCase()}`, html: `<div class="card"><div class="hd"><div><h2>${monthName(ym)}, ${esc(REGS[reg].toLowerCase())}</h2><p class="sub">${reg === 'contract' ? 'Contract workers supplied by contractors: this register feeds the contract workers’ payroll and each contractor’s bill. ' : 'Your own employees; contract workers have their own register. '}Daily status and the loss-of-pay days payroll will use (absent, half days, unpaid leave and late-mark penalties).</p></div>
-    <div class="tools"><input type="month" class="inp" value="${ym}" data-ch="regMonth">${reg === 'contract' ? `<select class="inp" data-ch="regCon"><option value="">All contractors</option>${S.contractors.filter((c) => c.companyId === CO).map((c) => `<option value="${c.id}" ${c.id === con ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}${isHR() && !lk && ym <= todayISO().slice(0, 7) ? `<button class="btn" data-act="attLockFor" data-m="${ym}" data-reg="${reg}">Lock for payroll</button>` : ''}<select class="inp" data-ch="regGrp">${[['all', 'Everyone'], ['regular', 'Regular staff'], ['shift', 'Shift staff']].map(([v, l]) => `<option value="${v}" ${v === grp ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn" data-act="regExport" data-m="${ym}" data-reg="${reg}" data-con="${con}">Download Excel</button>${isHR() ? '<button class="btn" data-act="punchImport">Import biometric punches</button>' : ''}</div></div>
+    <div class="tools"><input type="month" class="inp" value="${ym}" data-ch="regMonth">${reg === 'contract' ? `<select class="inp" data-ch="regCon"><option value="">All contractors</option>${S.contractors.filter((c) => c.companyId === CO).map((c) => `<option value="${c.id}" ${c.id === con ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}${canPay() && !lk && ym <= todayISO().slice(0, 7) ? `<button class="btn" data-act="attLockFor" data-m="${ym}" data-reg="${reg}">Lock for payroll</button>` : ''}<select class="inp" data-ch="regGrp">${[['all', 'Everyone'], ['regular', 'Regular staff'], ['shift', 'Shift staff']].map(([v, l]) => `<option value="${v}" ${v === grp ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn" data-act="regExport" data-m="${ym}" data-reg="${reg}" data-con="${con}">Download Excel</button>${isHR() ? '<button class="btn" data-act="punchImport">Import biometric punches</button>' : ''}</div></div>
     ${lockNote(CO, reg, ym)}${emps.length ? '' : `<div class="empty">${reg === 'contract' ? 'No contract workers here. Set a person’s category to Contract worker on the Job tab of their profile.' : 'Nobody here.'}</div>`}
     <div class="scroll"><table class="reg"><thead><tr><th class="nm">Employee</th>${Array.from({ length: days }, (_, i) => `<th>${i + 1}</th>`).join('')}<th>Paid days</th><th>LOP</th><th>Late</th><th>OT worked</th><th>OT approved</th></tr></thead><tbody>
     ${emps.map((e) => { const a = monthAttendance(e, ym, upTo); return `<tr><td class="nm"><a href="#/attendance?emp=${e.id}&m=${ym}">${esc(fullName(e))}</a> <span class="fine">${esc(reg === 'contract' ? conName(e.contractorId) : CAT_SHORT[catOf(e)])}</span></td>${Array.from({ length: days }, (_, i) => { const s = dayStatus(e, `${ym}-${pad(i + 1)}`);
@@ -2461,7 +2462,7 @@ ACT.tcUpMany = async (el) => {
   else toast(`${ok} Part A files attached`);
 };
 VIEWS.form130 = () => {
-  if (!isHR()) return { title: 'TDS certificates', html: '<div class="empty">Only HR can open this page.</div>' };
+  if (!canPay()) return { title: 'TDS certificates', html: '<div class="empty">Only HR and Finance can open this page.</div>' };
   const co = company(); const years = tdsYears(CO); const fy = years.includes(R.q.get('fy')) ? R.q.get('fy') : years[0];
   if (!fy) return { title: 'TDS certificates (Form 130 / Form 16)', html: '<div class="card"><h2>TDS certificates</h2><div class="empty">Lock a month of payroll first. Certificates are made from locked payroll.</div></div>' };
   const name = certName(fy); const sg = co.tdsSigner || {}; const rc = (co.tdsReceipts || {})[fy] || {};
@@ -3746,7 +3747,7 @@ PROFILE_TABS.activity = (e) => {
 /* Each company sets, per request type, the chain of approvers. The chain is resolved to
    people when a request is submitted, so later reorganisations do not change open requests. */
 const FLOW_TYPES = {
-  expense: { label: 'Expense claims', def: [{ level: 'manager' }, { level: 'hr' }], hrLast: false },
+  expense: { label: 'Expense claims', def: [{ level: 'manager' }, { level: 'finance' }], hrLast: false, note: 'The Finance team checks each claim and its receipts after the manager, and pays it. Without a Finance team, HR does.' },
   encash: { label: 'Leave encashment', def: [{ level: 'manager' }, { level: 'hr' }], hrLast: true },
   promotion: { label: 'Promotion proposals', def: [{ level: 'skip' }, { level: 'hr' }], hrLast: true },
   statutory: { label: 'Statutory details changes', def: [{ level: 'hr' }], hrLast: true, note: 'Employees request changes to PAN, Aadhaar, UAN and other statutory details with supporting documents. HR is e-mailed and approves last.' },
@@ -3754,7 +3755,7 @@ const FLOW_TYPES = {
   shiftchange: { label: 'Shift changes', def: [{ level: 'manager' }], hrLast: false, note: 'When an employee asks to work a different shift, or a weekly off, on a day. Approved changes update the roster.' },
   leave: { label: 'Leave', def: [{ level: 'manager' }], hrLast: false, unit: 'days', note: 'Applies to new leave requests. A step “only from” a number of days applies to longer leave. HR is added when the leave type or the company’s HR approval limit requires it.' },
 };
-const LEVELS = { manager: 'Line manager', matrix: 'Dotted-line manager', skip: 'Manager’s manager', deptHead: 'Head of department', payroll: 'Payroll approver', person: 'A named person', hr: 'HR' };
+const LEVELS = { manager: 'Line manager', matrix: 'Dotted-line manager', skip: 'Manager’s manager', deptHead: 'Head of department', payroll: 'Payroll approver', person: 'A named person', finance: 'Finance team', hr: 'HR' };
 const flowFor = (coId, type) => (((coById(coId) || {}).flows || {})[type] || FLOW_TYPES[type].def);
 function buildSteps(type, emp, amount, requesterId) {
   const co = coById(emp.companyId) || {};
@@ -3768,6 +3769,7 @@ function buildSteps(type, emp, amount, requesterId) {
     if (l.level === 'payroll') return [co.payrollApproverId];
     if (l.level === 'person') return [l.personId];
     if (l.level === 'hr') return hrIdsOf(emp.companyId);
+    if (l.level === 'finance') { const f = teamIdsOf(emp.companyId, 'finance'); return f.length ? f : hrIdsOf(emp.companyId); }
     return [];
   };
   const unit = FLOW_TYPES[type].unit;
@@ -3783,9 +3785,9 @@ function buildSteps(type, emp, amount, requesterId) {
   return steps;
 }
 const stepNow = (rec) => (rec.steps || []).find((s) => !s.decision);
-const canDecide = (rec) => { const s = stepNow(rec); return rec.status === 'pending' && s && me.id !== rec.empId && (s.approverIds.includes(me.id) || (s.level === 'hr' && isHR(rec.companyId))); };
-function participantsOf(rec, extra = []) { return uniq([rec.empId, rec.by, ...(rec.steps || []).flatMap((s) => s.approverIds), ...hrIdsOf(rec.companyId), ...extra]); }
-const stepsHtml = (rec) => `<ol class="steps">${(rec.steps || []).map((s) => `<li class="${s.decision || (s === stepNow(rec) && rec.status === 'pending' ? 'now' : '')}"><b>${esc(s.label)}</b>: ${esc(s.level === 'hr' ? 'any HR administrator' : s.approverIds.map(nameOf).join(' or '))}
+const canDecide = (rec) => { const s = stepNow(rec); return rec.status === 'pending' && s && me.id !== rec.empId && (s.approverIds.includes(me.id) || (s.level === 'hr' && isHR(rec.companyId)) || (s.level === 'finance' && inTeam('finance', rec.companyId))); };
+function participantsOf(rec, extra = []) { return uniq([rec.empId, rec.by, ...(rec.steps || []).flatMap((s) => s.approverIds), ...hrIdsOf(rec.companyId), ...(rec.lines ? teamIdsOf(rec.companyId, 'finance') : []), ...extra]); }
+const stepsHtml = (rec) => `<ol class="steps">${(rec.steps || []).map((s) => `<li class="${s.decision || (s === stepNow(rec) && rec.status === 'pending' ? 'now' : '')}"><b>${esc(s.label)}</b>: ${esc(s.level === 'hr' ? 'any HR administrator' : s.level === 'finance' ? 'the Finance team' : s.approverIds.map(nameOf).join(' or '))}
   ${s.decision ? `<div class="fine">${s.decision === 'approved' ? 'Approved' : 'Rejected'} by ${esc(nameOf(s.by))}, ${dt(s.at)}${s.note ? `: ${esc(s.note)}` : ''}</div>` : s === stepNow(rec) && rec.status === 'pending' ? '<div class="fine">Waiting</div>' : ''}</li>`).join('') || '<li>No approval needed.</li>'}</ol>`;
 /* records a decision; returns true when the whole chain is approved */
 function decide(rec, ok, note) {
@@ -4204,12 +4206,12 @@ function lineIssues(c, l) {
 VIEWS.expenses = () => {
   const tab = R.q.get('tab') || 'mine';
   const mine = S.expenseClaims.filter((c) => c.empId === me.id).sort((a, b) => (b.at || 0) - (a.at || 0));
-  const team = S.expenseClaims.filter((c) => c.empId !== me.id && (isHR(c.companyId) || (c.participants || []).includes(me.id)) && c.status !== 'draft').sort((a, b) => (b.at || 0) - (a.at || 0));
+  const team = S.expenseClaims.filter((c) => c.empId !== me.id && (canPay(c.companyId) || (c.participants || []).includes(me.id)) && c.status !== 'draft').sort((a, b) => (b.at || 0) - (a.at || 0));
   const st = R.q.get('s') || 'open';
   const shown = tab === 'team' ? team.filter((c) => (st === 'open' ? ['pending', 'approved'].includes(c.status) : st === 'all' || c.status === st)) : mine;
   const table = (cs, who) => (cs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Claim</th>${who ? '<th>Employee</th>' : ''}<th>Submitted</th><th class="r">Amount</th><th>Status</th><th>Waiting for</th></tr></thead><tbody>${cs.map((c) => `<tr class="click" data-act="claimOpen" data-id="${c.id}"><td><b>${esc(c.title || c.no)}</b><div class="fine">${esc(c.no || '')}, ${(c.lines || []).length} item${(c.lines || []).length === 1 ? '' : 's'}</div></td>${who ? `<td>${esc(nameOf(c.empId))}</td>` : ''}
-    <td class="fine">${c.submittedAt ? dShort(isoOf(new Date(c.submittedAt))) : '—'}</td><td class="r">${inr0(claimTotal(c))}</td><td>${pill(c.status)}</td><td class="fine">${c.status === 'pending' ? esc((stepNow(c) || {}).label || '') : c.status === 'approved' ? 'HR to pay' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No claims here.</div>');
-  return { title: tab === 'team' ? 'Claims to approve and pay' : 'My expense claims', html: tab === 'team' ? `<div class="card"><div class="hd"><div><h2>Claims</h2><p class="sub">Claims where you are an approver${isHR() ? ', and every claim in the company' : ''}. Approved claims are paid by HR through payroll as a reimbursement, or marked paid.</p></div>
+    <td class="fine">${c.submittedAt ? dShort(isoOf(new Date(c.submittedAt))) : '—'}</td><td class="r">${inr0(claimTotal(c))}</td><td>${pill(c.status)}</td><td class="fine">${c.status === 'pending' ? esc((stepNow(c) || {}).label || '') : c.status === 'approved' ? 'Finance to pay' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No claims here.</div>');
+  return { title: tab === 'team' ? 'Claims to approve and pay' : 'My expense claims', html: tab === 'team' ? `<div class="card"><div class="hd"><div><h2>Claims</h2><p class="sub">Claims where you are an approver${canPay() ? ', and every claim in the company' : ''}. Finance checks each claim and its receipts, then pays approved claims with salary as a reimbursement, or records a payment made outside payroll.</p></div>
       <div class="tabs" style="border:0;margin:0">${[['open', 'Open'], ['pending', 'Waiting'], ['approved', 'To pay'], ['paid', 'Paid'], ['rejected', 'Rejected'], ['all', 'All']].map(([k, n]) => `<a href="#/expenses?tab=team&s=${k}" class="${st === k ? 'on' : ''}">${n}</a>`).join('')}</div></div>${table(shown, true)}</div>`
     : `<div class="card"><div class="hd"><div><h2>My expense claims</h2><p class="sub">Add each expense with its receipt, then send the claim. It goes through the approvers set by HR and is paid with your salary.</p></div><button class="btn pri" data-act="claimEdit">New claim</button></div>${table(mine)}</div>` };
 };
@@ -4277,7 +4279,7 @@ VIEWS.claim = () => {
   return { title: `${c.no}: ${c.title || ''}`, html: `<div class="grid g21"><div class="card"><div class="hd"><div><h2>${esc(c.title || 'Expense claim')}</h2><p class="sub">${esc(c.no)} · ${esc(nameOf(c.empId))} · ${pill(c.status)}${c.payMonth ? ` paid in ${monthName(c.payMonth)} payroll` : c.paidRef ? ` paid, ${esc(c.paidRef)}` : ''}</p></div>
       <div class="tools">${mine && ['draft', 'rejected'].includes(c.status) ? `<button class="btn pri" data-act="claimEdit" data-id="${c.id}">${c.status === 'rejected' ? 'Correct and send again' : 'Edit and send'}</button>` : ''}
         ${mine && c.status === 'pending' && !(c.steps || []).some((s) => s.decision) ? `<button class="btn" data-act="claimWithdraw" data-id="${c.id}">Withdraw</button>` : ''}
-        ${canDecide(c) ? `<button class="btn pri" data-act="claimDecide" data-id="${c.id}">Approve or reject</button>` : ''}${hr && c.status === 'approved' ? `<button class="btn pri" data-act="claimPay" data-id="${c.id}">Pay</button>` : ''}</div></div>
+        ${canDecide(c) ? `<button class="btn pri" data-act="claimDecide" data-id="${c.id}">Approve or reject</button>` : ''}${canPay(c.companyId) && !mine && c.status === 'approved' ? `<button class="btn pri" data-act="claimPay" data-id="${c.id}">Pay</button>` : ''}</div></div>
       <div class="scroll"><table class="t"><thead><tr><th>Date</th><th>Category</th><th>Details</th><th class="r">Amount</th><th>Receipt</th></tr></thead><tbody>${(c.lines || []).map((l) => { const cat = catById(l.catId) || {}; const iss = lineIssues(c, l); return `<tr><td>${dmy(l.date)}</td><td>${esc(cat.name || '')}<div class="fine mono">${esc(cat.code || '')}</div></td><td>${esc(l.desc || '')}${l.qty ? `<div class="fine">${num(l.qty)} × ${inr0(cat.rate)}</div>` : ''}${iss.length ? `<div class="fine" style="color:var(--warn)">${esc(iss.join('; '))}</div>` : ''}</td><td class="r">${inr0(l.amount)}</td><td>${l.fileId ? `<a href="/api/files/${l.fileId}" target="_blank" rel="noopener">${esc(l.fileName || 'View')}</a>` : '—'}</td></tr>`; }).join('')}</tbody>
       <tfoot><tr><td colspan="3"><b>Total</b></td><td class="r"><b>${inr0(claimTotal(c))}</b></td><td></td></tr></tfoot></table></div></div>
     <div><div class="card"><h2>Approvals</h2>${c.status === 'draft' ? '<p class="fine">Not sent yet.</p>' : stepsHtml(c)}</div><div class="card"><h2>Activity</h2>${logTable(c.log)}</div></div></div>` };
@@ -4313,23 +4315,23 @@ ACT.claimPay = (b) => {
 /* ---------------------------------------------------------------- employee enrolment: HR and the departments together */
 /* Checklists per department. Owners are people (for example the IT administrator), or a role:
    HR, the new joiner's manager, the head of their department, or the new joiner. */
-const OWNER_KINDS = { people: 'Named people', hr: 'HR', manager: 'The new joiner’s manager', head: 'Head of the new joiner’s department', employee: 'The new joiner' };
+const OWNER_KINDS = { people: 'Named people', hr: 'HR', it: 'The IT team', admin: 'The Administration team', finance: 'The Finance team', manager: 'The new joiner’s manager', head: 'Head of the new joiner’s department', employee: 'The new joiner' };
 function seedOnboardTemplates(coId) {
   if (S.onboardTemplates.some((t) => t.companyId === coId)) return false;
   [['HR', 'hr', -3, ['Offer letter signed', 'Documents collected and verified', 'PF and ESI enrolment', 'Policies and handbook shared']],
-   ['IT', 'people', -2, [{ name: 'Laptop', asset: 'Laptop' }, 'E-mail account', 'System and VPN access']],
-   ['Administration', 'people', -1, [{ name: 'ID card', asset: 'ID card' }, { name: 'Access card', asset: 'Access card' }, 'Seat and stationery']],
-   ['Finance', 'people', 0, ['Salary account verified', 'Reimbursement set-up']],
+   ['IT', 'it', -2, [{ name: 'Laptop', asset: 'Laptop' }, 'E-mail account', 'System and VPN access']],
+   ['Administration', 'admin', -1, [{ name: 'ID card', asset: 'ID card' }, { name: 'Access card', asset: 'Access card' }, 'Seat and stationery']],
+   ['Finance', 'finance', 0, ['Salary account verified', 'Reimbursement set-up']],
    ['Manager', 'manager', 0, ['Welcome and team introductions', 'Buddy assigned', 'First-week plan shared']],
    ['New joiner', 'employee', 3, ['Complete personal, bank and statutory details', 'Confirm assets received']]]
     .forEach(([deptName, ownerKind, dueDays, items], i) => S.onboardTemplates.push({ id: uid(), companyId: coId, dept: deptName, ownerKind, ownerIds: [], dueDays, order: i,
       items: items.map((x) => (typeof x === 'string' ? { name: x } : x)), active: true }));
   return true;
 }
-const isCustodian = () => S.onboardTemplates.some((t) => (t.ownerIds || []).includes(me.id) && (t.items || []).some((x) => x.asset));
+const isCustodian = () => S.onboardTemplates.some((t) => ((t.ownerIds || []).includes(me.id) || (TEAMS[t.ownerKind] && inTeam(t.ownerKind, t.companyId))) && (t.items || []).some((x) => x.asset));
 function ownersFor(t, e) {
   const k = t.ownerKind;
-  const ids = k === 'hr' ? hrIdsOf(e.companyId) : k === 'manager' ? [e.managerId] : k === 'head' ? [(dept(e.deptId) || {}).headId] : k === 'employee' ? [e.id] : t.ownerIds || [];
+  const ids = k === 'hr' ? hrIdsOf(e.companyId) : TEAMS[k] ? teamIdsOf(e.companyId, k) : k === 'manager' ? [e.managerId] : k === 'head' ? [(dept(e.deptId) || {}).headId] : k === 'employee' ? [e.id] : t.ownerIds || [];
   const ok = uniq(ids).filter((id) => empById(id));
   return ok.length ? ok : hrIdsOf(e.companyId);          // nobody named yet: HR takes the task
 }
@@ -4419,18 +4421,18 @@ ACT.onbAsset = (b) => {
   $('#oaF').onsubmit = (ev) => {
     ev.preventDefault(); const f = ev.target; let a = f.elements.stock && f.elements.stock.value ? S.assets.find((x) => x.id === f.elements.stock.value) : null;
     if (!a && !f.elements.tag.value.trim()) { $('#oaE').textContent = 'Enter the asset tag, or choose one from stock.'; return; }
-    if (!a) { a = { id: uid(), companyId: o.companyId, type: t.asset, tag: f.elements.tag.value.trim(), serial: f.elements.serial.value.trim(), make: f.elements.make.value.trim(), custodianIds: uniq([...t.ownerIds]), log: [] }; S.assets.push(a); }
+    if (!a) { const ty = typeByName(o.companyId, t.asset); a = { id: uid(), companyId: o.companyId, type: t.asset, typeId: ty ? ty.id : '', tag: f.elements.tag.value.trim(), serial: f.elements.serial.value.trim(), make: f.elements.make.value.trim(), custodianIds: uniq([...t.ownerIds]), log: [] }; S.assets.push(a); }
     issueAsset(a, o.empId, f.elements.on.value || todayISO(), f.elements.note.value.trim());
     t.assetId = a.id; onbTaskDone(o, t, 'done', `${a.tag}${a.serial ? `, ${a.serial}` : ''}`); t.note = '';
     saveNow(); closeDlg(); toast(`${t.asset} allocated`); route();
   };
 };
 VIEWS.onbsetup = () => {
-  if (isHR() && seedOnboardTemplates(CO)) setTimeout(saveNow, 0);
+  if (isHR() && (seedOnboardTemplates(CO) | teamChecklists(CO))) setTimeout(saveNow, 0);
   const ts = S.onboardTemplates.filter((t) => t.companyId === CO).sort((a, b) => (a.order || 0) - (b.order || 0));
   return { title: 'Enrolment checklists', html: `<div class="card"><div class="hd"><div><h2>Enrolment checklists</h2><p class="sub">What each department sets up for a new joiner, who does it, and when, counted from the joining date (−2 is two days before). Items marked as assets go into the assets register when allocated.</p></div><button class="btn pri" data-act="obtEdit">Add department</button></div>
     <table class="t"><thead><tr><th>Department</th><th>Done by</th><th>Items</th><th class="r">Due</th></tr></thead><tbody>${ts.map((t) => `<tr class="click" data-act="obtEdit" data-id="${t.id}"><td><b>${esc(t.dept)}</b>${t.active === false ? ' <span class="badge">Off</span>' : ''}</td>
-      <td>${t.ownerKind === 'people' ? ((t.ownerIds || []).length ? esc(t.ownerIds.map(nameOf).join(', ')) : '<span class="badge warn">Nobody named: HR does it</span>') : esc(OWNER_KINDS[t.ownerKind])}</td>
+      <td>${t.ownerKind === 'people' ? ((t.ownerIds || []).length ? esc(t.ownerIds.map(nameOf).join(', ')) : '<span class="badge warn">Nobody named: HR does it</span>') : TEAMS[t.ownerKind] ? `${esc(OWNER_KINDS[t.ownerKind])}${teamIdsOf(t.companyId, t.ownerKind).length ? `<div class="fine">${esc(teamIdsOf(t.companyId, t.ownerKind).map(nameOf).join(', '))}</div>` : '<div><span class="badge warn">Nobody in the team: HR does it</span></div>'}` : esc(OWNER_KINDS[t.ownerKind])}</td>
       <td class="fine">${(t.items || []).map((x) => esc(x.name) + (x.asset ? ' <span class="badge">asset</span>' : '')).join(', ')}</td><td class="r">${+t.dueDays > 0 ? '+' : ''}${+t.dueDays || 0} days</td></tr>`).join('')}</tbody></table></div>` };
 };
 ACT.obtEdit = (b) => {
@@ -4468,45 +4470,12 @@ ACT.obtEdit = (b) => {
 function issueAsset(a, empId, on, note) {
   const e = empById(empId);
   Object.assign(a, { empId, status: 'issued', issuedOn: on, returnedOn: '', ackAt: 0 });
-  a.custodianIds = uniq(a.custodianIds || []); a.participants = uniq([...a.custodianIds, ...hrIdsOf(a.companyId), empId]);
+  a.custodianIds = uniq(a.custodianIds || []); a.participants = uniq([...a.custodianIds, ...hrIdsOf(a.companyId), ...(assetTeamOf(a) ? teamIdsOf(a.companyId, assetTeamOf(a)) : []), empId]);
   logEntry(a, `Issued to ${fullName(e)}`, note);
   audit(`${a.type} issued`, `${a.tag} to ${fullName(e)}`, 'assets', 'employee', empId);
 }
-VIEWS.assets = () => {
-  const hr = isHR(); const f = R.q.get('f') || 'issued'; const ty = R.q.get('t') || '';
-  const mine = S.assets.filter((a) => a.empId === me.id && a.status === 'issued');
-  const all = S.assets.filter((a) => a.companyId === CO && (hr || (a.custodianIds || []).includes(me.id)));
-  const types = uniq(all.map((a) => a.type)).sort();
-  const shown = all.filter((a) => (f === 'all' || a.status === f) && (!ty || a.type === ty));
-  const leaving = all.filter((a) => a.status === 'issued' && S.exits.some((x) => x.empId === a.empId && ['notice', 'hr', 'requested'].includes(x.status)));
-  return { title: 'Assets', html: `${mine.length ? `<div class="card"><h2>With you</h2><table class="t"><tbody>${mine.map((a) => `<tr><td><b>${esc(a.type)}</b> ${esc(a.tag)}<div class="fine">${esc([a.make, a.serial].filter(Boolean).join(', '))} · since ${dmy(a.issuedOn)}</div></td><td class="r">${a.ackAt ? '<span class="badge ok">Received</span>' : `<button class="btn sm" data-act="assetAck" data-id="${a.id}">Confirm I have it</button>`}</td></tr>`).join('')}</tbody></table></div>` : ''}
-    ${hr || isCustodian() ? `${leaving.length ? `<div class="note warn">${leaving.length} asset${leaving.length > 1 ? 's are' : ' is'} with people who are leaving: ${esc(leaving.map((a) => `${a.type} ${a.tag} (${nameOf(a.empId)})`).join(', '))}.</div>` : ''}
-    <div class="card"><div class="hd"><div><h2>Assets register</h2><p class="sub">Everything issued to employees, with who issued it and when. Returns are recorded at exit or any time.</p></div>
-      <div class="tools"><select class="inp" data-ch="assetF" data-k="f">${[['issued', 'Issued'], ['in stock', 'In stock'], ['returned', 'Returned'], ['all', 'All']].map(([v, l]) => `<option value="${v}" ${v === f ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        <select class="inp" data-ch="assetF" data-k="t"><option value="">All types</option>${types.map((x) => `<option ${x === ty ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select><button class="btn pri" data-act="assetEdit">Add asset</button></div></div>
-      ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Type</th><th>Tag</th><th>Make and serial</th><th>With</th><th>Since</th><th>Status</th><th></th></tr></thead><tbody>${shown.map((a) => `<tr><td>${esc(a.type)}</td><td><b>${esc(a.tag)}</b></td><td class="fine">${esc([a.make, a.serial].filter(Boolean).join(', '))}</td><td>${a.empId && a.status === 'issued' ? `<a href="#/profile/${a.empId}?tab=assets">${esc(nameOf(a.empId))}</a>` : '—'}</td>
-        <td class="fine">${a.status === 'issued' ? dmy(a.issuedOn) : a.returnedOn ? dmy(a.returnedOn) : ''}</td><td>${pill(a.status)}${a.status === 'issued' && a.ackAt ? ' <span class="fine">received</span>' : ''}</td>
-        <td class="r" style="white-space:nowrap">${a.status === 'issued' ? `<button class="btn sm" data-act="assetReturn" data-id="${a.id}">Returned</button>` : a.status === 'in stock' ? `<button class="btn sm" data-act="assetIssue" data-id="${a.id}">Issue</button>` : ''} <button class="btn sm" data-act="assetLog" data-id="${a.id}">History</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing here.</div>'}</div>` : ''}` };
-};
 ACT.assetF = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set(el.dataset.k, el.value) : p.delete(el.dataset.k); go('#/assets?' + p); };
 ACT.assetAck = (b) => { const a = S.assets.find((x) => x.id === b.dataset.id); a.ackAt = Date.now(); logEntry(a, 'Receipt confirmed by the employee'); saveNow(); toast('Thank you'); route(); };
-ACT.assetEdit = () => {
-  openDlg(`<form class="dlg" id="asF" novalidate><h2>Add asset to stock</h2><div class="form"><label class="field">Type<input class="inp" name="type" list="asTypes" placeholder="Laptop, ID card, Phone…"><datalist id="asTypes">${uniq(S.assets.map((a) => a.type)).map((x) => `<option value="${esc(x)}">`).join('')}</datalist></label>
-    <label class="field">Tag<input class="inp" name="tag"></label><label class="field">Serial number<input class="inp" name="serial"></label><label class="field">Make and model<input class="inp" name="make"></label></div>
-    <p class="err" id="asE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`);
-  $('#asF').onsubmit = (ev) => {
-    ev.preventDefault(); const f = ev.target; if (!f.elements.type.value.trim() || !f.elements.tag.value.trim()) { $('#asE').textContent = 'Enter the type and tag.'; return; }
-    if (S.assets.some((a) => a.companyId === CO && a.tag === f.elements.tag.value.trim())) { $('#asE').textContent = 'That tag is already in the register.'; return; }
-    const a = { id: uid(), companyId: CO, type: f.elements.type.value.trim(), tag: f.elements.tag.value.trim(), serial: f.elements.serial.value.trim(), make: f.elements.make.value.trim(), status: 'in stock', custodianIds: [me.id], log: [] };
-    a.participants = uniq([me.id, ...hrIdsOf(CO)]); logEntry(a, 'Added to stock'); S.assets.push(a); audit(`${a.type} added`, a.tag, 'assets'); saveNow(); closeDlg(); route();
-  };
-};
-ACT.assetIssue = (b) => {
-  const a = S.assets.find((x) => x.id === b.dataset.id);
-  openDlg(`<form class="dlg" id="aiF"><h2>Issue ${esc(a.type)} ${esc(a.tag)}</h2><label class="field">To<select class="inp" name="emp">${coEmployees().sort((x, y) => fullName(x).localeCompare(fullName(y))).map((e) => `<option value="${e.id}">${esc(fullName(e))}</option>`).join('')}</select></label>
-    <label class="field">On<input class="inp" type="date" name="on" value="${todayISO()}"></label><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Issue</button></div></form>`);
-  $('#aiF').onsubmit = (ev) => { ev.preventDefault(); issueAsset(a, ev.target.elements.emp.value, ev.target.elements.on.value || todayISO(), ''); saveNow(); closeDlg(); route(); };
-};
 ACT.assetReturn = (b) => {
   const a = S.assets.find((x) => x.id === b.dataset.id);
   openDlg(`<form class="dlg" id="arF"><h2>${esc(a.type)} ${esc(a.tag)} returned by ${esc(nameOf(a.empId))}</h2><label class="field">On<input class="inp" type="date" name="on" value="${todayISO()}"></label>
@@ -4520,12 +4489,6 @@ ACT.assetReturn = (b) => {
   };
 };
 ACT.assetLog = (b) => { const a = S.assets.find((x) => x.id === b.dataset.id); openDlg(`<div class="dlg"><h2>${esc(a.type)} ${esc(a.tag)}</h2>${logTable(a.log)}<div class="btns"><button class="btn ghost" data-act="close">Close</button></div></div>`, true); };
-PROFILE_TABS.assets = (e, { hr }) => {
-  const as = S.assets.filter((a) => a.empId === e.id || (a.log || []).some((l) => (l.what || '').includes(fullName(e))));
-  const o = onbOf(e.id);
-  return `<div class="card"><div class="hd"><div><h2>Assets</h2><p class="sub">ID cards, laptops and anything else issued to ${esc(e.firstName)}.</p></div>${hr ? `${o ? `<a class="btn" href="#/onboarding/${o.id}">Enrolment</a>` : active(e) ? `<button class="btn" data-act="onbStart" data-id="${e.id}">Start enrolment</button>` : ''}` : ''}</div>
-    ${as.length ? `<table class="t"><thead><tr><th>Type</th><th>Tag</th><th>Issued</th><th>Status</th></tr></thead><tbody>${as.map((a) => `<tr><td>${esc(a.type)}</td><td>${esc(a.tag)} <span class="fine">${esc(a.serial || '')}</span></td><td>${dmy(a.issuedOn)}</td><td>${a.empId === e.id && a.status === 'issued' ? pill('issued') : pill('returned')}${a.ackAt && a.empId === e.id ? ' <span class="fine">received</span>' : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing issued.</div>'}</div>`;
-};
 
 /* ---------------------------------------------------------------- promotions and progression */
 function monthsInGrade(e) {
@@ -4634,6 +4597,7 @@ function extPending() {
   cpPending().forEach((x) => out.push(x));
   trPending().forEach((x) => out.push(x));
   wfPending().forEach((x) => out.push(x));
+  p11Pending().forEach((x) => out.push(x));
   return out;
 }
 function extEnsureSchema() {
@@ -4641,6 +4605,7 @@ function extEnsureSchema() {
   S.companies.forEach((co) => { if (!co.timeMode) co.timeMode = 'shift'; });
   ['requests', 'expenseCats', 'expenseClaims', 'perfTemplates', 'onboardings', 'onboardTemplates', 'assets', 'docTypes', 'docTemplates', 'compCycles', 'compBudgets', 'compRecs', 'trainings', 'trainingEnrols', 'trainingFeedback', 'trainingNeeds'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
   wfEnsureSchema();
+  p11EnsureSchema();
 }
 
 
@@ -5312,7 +5277,7 @@ ACT.statExit = (b) => {
 };
 function statPending() {
   if (!me) return [];
-  return S.exits.filter((x) => isHR(x.companyId) && ['notice', 'completed'].includes(x.status) && x.lwd && x.lwd <= todayISO()).map((x) => ({ x, e: empById(x.empId) }))
+  return S.exits.filter((x) => canPay(x.companyId) && ['notice', 'completed'].includes(x.status) && x.lwd && x.lwd <= todayISO()).map((x) => ({ x, e: empById(x.empId) }))
     .filter(({ e }) => e).map(({ x, e }) => ({ x, e, sx: statExitOf(e) })).filter(({ x, sx }) => sx && (!sx.pfDone || !sx.esiDone) && sx.x === x)
     .map(({ x, e, sx }) => ({ kind: 'statexit', r: { empId: e.id, lwd: x.lwd }, what: `Mark exit on ${[!sx.pfDone && 'EPFO', !sx.esiDone && 'ESIC'].filter(Boolean).join(' and ')}`, link: '#/exit/' + x.id }));
 }
@@ -6824,7 +6789,7 @@ const monthEnd = (ym) => `${ym}-${pad(daysInMonth(ym))}`;
 const daysBetween = (a, b) => Math.round((D(b) - D(a)) / 86400000);
 
 function wfEnsureSchema() {
-  ['contractors', 'masterItems'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+  ['contractors', 'masterItems', 'assetTypes'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
   S.employees.forEach((e) => { if (!e.workerCategory) e.workerCategory = catOf(e); });
 }
 
@@ -8127,6 +8092,1155 @@ function showAccessLink(res, name, phone) {
   $('#alC').onclick = async () => { try { await navigator.clipboard.writeText(res.url); toast('Link copied'); } catch (e) { $('#alU').select(); document.execCommand('copy'); toast('Link copied'); } };
 }
 
+/* =====================================================================
+   PeopleDesk 2.10: teams (Administration, IT, Finance) and kinds of asset
+   - HR puts people in teams (Administration › Teams). A team acts for its own company.
+   - IT and Administration each keep their kinds of asset (IT: laptops, phones, TVs…; Administration: ID cards,
+     access cards…), add assets of those kinds and issue them to employees and take them back.
+   - Finance runs payroll and checks and pays expense claims.
+   The server enforces the same (backend/app/policy.py).
+   ===================================================================== */
+const TEAMS = { admin: 'Administration', it: 'IT', finance: 'Finance' };
+const TEAM_HELP = {
+  admin: 'Issue and take back ID cards, access cards and other administration items, and keep the list of those kinds.',
+  it: 'Issue and take back laptops, phones, TVs and other IT equipment, and add new kinds of IT equipment.',
+  finance: 'Run payroll for own employees and contract workers, TDS, PF, ESI and PT registers, and check and pay expense claims.',
+};
+const ASSET_TEAMS = ['it', 'admin'];
+/* HR counts as every team; a team member acts for their own company */
+const inTeam = (t, coId = CO) => !!me && (isHR(coId) || ((me.teams || []).includes(t) && me.companyId === coId));
+const isFinance = (coId = CO) => !!me && !isHR(coId) && (me.teams || []).includes('finance') && me.companyId === coId;
+const canPay = (coId = CO) => isHR(coId) || inTeam('finance', coId);
+const teamIdsOf = (coId, t) => S.employees.filter((e) => e.companyId === coId && active(e) && (e.teams || []).includes(t)).map((e) => e.id);
+const teamLabel = (e) => (e.teams || []).filter((t) => TEAMS[t]).map((t) => TEAMS[t]).join(', ');
+/* the asset teams the signed-in person works in (HR: both) */
+const assetTeams = (coId = CO) => (me ? ASSET_TEAMS.filter((t) => inTeam(t, coId)) : []);
+const typesOf = (coId = CO) => S.assetTypes.filter((t) => t.companyId === coId);
+const typeById = (id) => S.assetTypes.find((t) => t.id === id);
+const typeByName = (coId, name) => typesOf(coId).find((t) => t.name.trim().toLowerCase() === String(name || '').trim().toLowerCase());
+function assetTeamOf(a) { const t = typeById(a.typeId) || typeByName(a.companyId, a.type); return t ? t.team : ''; }
+/* may the signed-in person look after this asset: HR, its team, or (older assets) a named custodian */
+const canManageAsset = (a) => isHR(a.companyId) || (assetTeamOf(a) && inTeam(assetTeamOf(a), a.companyId)) || (!assetTeamOf(a) && (a.custodianIds || []).includes(me.id));
+
+const STARTER_TYPES = {
+  it: [['Laptop', 'Laptops and notebooks', true], ['Desktop', 'Desktop computers', true], ['Monitor', 'Screens', true], ['Mobile phone', 'Company phones', true],
+    ['SIM card', 'Company mobile connections', true], ['Headset', 'Headsets and webcams', false], ['Data card', 'Dongles and hotspots', true]],
+  admin: [['ID card', 'Employee identity cards', false], ['Access card', 'Door and floor access', false], ['Locker key', 'Lockers', false], ['Uniform', 'Uniforms and safety wear', false],
+    ['Parking sticker', 'Vehicle parking', false]],
+};
+/* starting kinds for the teams this person works in, once per company and team */
+function seedAssetTypes(coId) {
+  let n = 0;
+  assetTeams(coId).forEach((team) => {
+    if (typesOf(coId).some((t) => t.team === team)) return;
+    STARTER_TYPES[team].forEach(([name, desc, serial]) => { if (!typeByName(coId, name)) { S.assetTypes.push({ id: uid(), companyId: coId, team, name, desc, serial, active: true, by: me.id, at: Date.now() }); n++; } });
+  });
+  // assets recorded before kinds existed: link them to a kind of the same name
+  S.assets.filter((a) => a.companyId === coId && !a.typeId).forEach((a) => { const t = typeByName(coId, a.type); if (t && inTeam(t.team, coId)) { a.typeId = t.id; n++; } });
+  return n > 0;
+}
+/* enrolment checklists named IT, Administration and Finance with nobody named are done by the teams */
+function teamChecklists(coId) {
+  let n = 0;
+  S.onboardTemplates.filter((t) => t.companyId === coId && t.ownerKind === 'people' && !(t.ownerIds || []).length).forEach((t) => {
+    const k = { it: 'it', administration: 'admin', admin: 'admin', finance: 'finance' }[String(t.dept || '').trim().toLowerCase()];
+    if (k) { t.ownerKind = k; n++; }
+  });
+  return n > 0;
+}
+
+/* ---------------------------------------------------------------- teams (HR) */
+VIEWS.teams = () => {
+  return { title: 'Teams', html: `<div class="note">People in a team get that team’s access in ${esc(company().name)}, on top of their own. HR can do everything the teams do. A team’s enrolment tasks (laptop, ID card, salary account) go to everyone in it.</div>
+    <div class="grid g3">${Object.entries(TEAMS).map(([k, name]) => { const ids = teamIdsOf(CO, k); return `<div class="card"><div class="hd"><div><h2>${esc(name)}</h2><p class="sub">${esc(TEAM_HELP[k])}</p></div><button class="btn sm pri" data-act="teamEdit" data-t="${k}">Change</button></div>
+      ${ids.length ? `<table class="t"><tbody>${ids.map((id) => { const e = empById(id); return `<tr><td><a href="#/profile/${id}"><b>${esc(fullName(e))}</b></a><div class="fine">${esc((desig(e.desigId) || {}).name || '')}${e.deptId ? `, ${esc((dept(e.deptId) || {}).name || '')}` : ''}</div></td></tr>`; }).join('')}</tbody></table>`
+        : `<div class="empty">Nobody yet. ${k === 'finance' ? 'HR runs payroll and pays claims.' : 'HR issues these assets.'}</div>`}</div>`; }).join('')}</div>
+    <div class="card"><h2>What each team can do</h2><div class="scroll"><table class="t"><thead><tr><th>Area</th><th>Administration</th><th>IT</th><th>Finance</th></tr></thead><tbody>
+      <tr><td>Assets: kinds, adding, issuing and taking back</td><td>Administration items</td><td>IT equipment</td><td>—</td></tr>
+      <tr><td>Payroll runs, attendance locks, payslips, bank files, contractor bill payments</td><td>—</td><td>—</td><td>Yes</td></tr>
+      <tr><td>TDS certificates, PF, ESI and PT registers, variable pay, SAP export</td><td>—</td><td>—</td><td>Yes</td></tr>
+      <tr><td>Expense claims: check receipts, approve at the Finance step, pay</td><td>—</td><td>—</td><td>Yes</td></tr>
+      <tr><td>Employees’ salary, bank, PAN, UAN and ESI numbers</td><td>—</td><td>—</td><td>Sees them, for payroll</td></tr>
+      <tr><td>Pay components, statutory rates, policies, employees’ records</td><td colspan="3">HR only</td></tr></tbody></table></div>
+</div>` };
+};
+ACT.teamEdit = (b) => {
+  const k = b.dataset.t;
+  const opts = coEmployees().sort((a, c) => fullName(a).localeCompare(fullName(c))).map((x) => [x.id, `${fullName(x)}${x.deptId ? `, ${(dept(x.deptId) || {}).name || ''}` : ''}`]);
+  openDlg(`<form class="dlg" id="tmF"><h2>${esc(TEAMS[k])} team</h2><p class="fine" style="margin:0">${esc(TEAM_HELP[k])}</p>
+    <div class="field">People in the team${checkList('tm', opts, teamIdsOf(CO, k))}</div>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#tmF').onsubmit = (ev) => {
+    ev.preventDefault(); const want = new Set(checked(ev.target, 'tm')); const added = [], removed = [];
+    coEmployees().forEach((e) => { const has = (e.teams || []).includes(k);
+      if (want.has(e.id) && !has) { e.teams = uniq([...(e.teams || []), k]); added.push(fullName(e)); (e.history = e.history || []).push({ date: todayISO(), type: `Added to the ${TEAMS[k]} team`, by: me.id }); }
+      if (!want.has(e.id) && has) { e.teams = (e.teams || []).filter((x) => x !== k); removed.push(fullName(e)); (e.history = e.history || []).push({ date: todayISO(), type: `Removed from the ${TEAMS[k]} team`, by: me.id }); } });
+    if (added.length || removed.length) audit(`${TEAMS[k]} team changed`, [added.length && `added ${added.join(', ')}`, removed.length && `removed ${removed.join(', ')}`].filter(Boolean).join('; '), 'org');
+    saveNow(); closeDlg(); toast('Saved'); route();
+  };
+};
+
+/* ---------------------------------------------------------------- assets: register and kinds */
+VIEWS.assets = () => {
+  if (assetTeams().length && seedAssetTypes(CO)) setTimeout(saveNow, 0);
+  const tab = R.q.get('tab') === 'kinds' ? 'kinds' : 'register';
+  const mine = S.assets.filter((a) => a.empId === me.id && a.status === 'issued');
+  const manages = isHR() || assetTeams().length > 0 || isCustodian();
+  const head = mine.length ? `<div class="card"><h2>With you</h2><table class="t"><tbody>${mine.map((a) => `<tr><td><b>${esc(a.type)}</b> ${esc(a.tag)}<div class="fine">${esc([a.make, a.serial].filter(Boolean).join(', '))} · since ${dmy(a.issuedOn)}</div></td><td class="r">${a.ackAt ? '<span class="badge ok">Received</span>' : `<button class="btn sm" data-act="assetAck" data-id="${a.id}">Confirm I have it</button>`}</td></tr>`).join('')}</tbody></table></div>` : '';
+  if (!manages) return { title: 'Assets', html: head || '<div class="empty">Nothing is issued to you.</div>' };
+  const teamsHere = assetTeams();
+  const tabs = `<nav class="tabs"><a href="#/assets" class="${tab === 'register' ? 'on' : ''}">Assets register</a>${teamsHere.length ? `<a href="#/assets?tab=kinds" class="${tab === 'kinds' ? 'on' : ''}">Kinds of asset</a>` : ''}</nav>`;
+  if (tab === 'kinds') return { title: 'Kinds of asset', html: head + tabs + teamsHere.map((t) => kindsCard(t)).join('') };
+  const f = R.q.get('f') || 'issued'; const ty = R.q.get('t') || '';
+  const all = S.assets.filter((a) => a.companyId === CO && canManageAsset(a));
+  const types = uniq(all.map((a) => a.type)).sort();
+  const shown = all.filter((a) => (f === 'all' || a.status === f) && (!ty || a.type === ty)).sort((a, b) => String(a.type).localeCompare(String(b.type)) || String(a.tag).localeCompare(String(b.tag)));
+  const leaving = all.filter((a) => a.status === 'issued' && S.exits.some((x) => x.empId === a.empId && ['notice', 'hr', 'requested'].includes(x.status)));
+  const count = (st) => all.filter((a) => a.status === st).length;
+  const who = isHR() ? 'all teams' : teamsHere.map((t) => TEAMS[t]).join(' and ');
+  return { title: 'Assets', html: `${head}${tabs}
+    <div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Issued</span><b>${count('issued')}</b><small>${esc(who)}</small></div><div class="kpi"><span>In stock</span><b>${count('in stock')}</b><small>ready to issue</small></div>
+      <div class="kpi"><span>Not yet confirmed</span><b>${all.filter((a) => a.status === 'issued' && !a.ackAt).length}</b><small>employee has not confirmed receipt</small></div><div class="kpi"><span>With people leaving</span><b>${leaving.length}</b><small>to collect at exit</small></div></div>
+    ${leaving.length ? `<div class="note warn">To collect from people who are leaving: ${esc(leaving.map((a) => `${a.type} ${a.tag} (${nameOf(a.empId)})`).join(', '))}.</div>` : ''}
+    <div class="card"><div class="hd"><div><h2>Assets register</h2><p class="sub">${isHR() ? 'Everything issued to employees.' : `The ${esc(who)} assets you look after.`} Add assets to stock, issue them, and record returns at exit or any time.</p></div>
+      <div class="tools"><select class="inp" data-ch="assetF" data-k="f">${[['issued', 'Issued'], ['in stock', 'In stock'], ['returned', 'Returned or retired'], ['all', 'All']].map(([v, l]) => `<option value="${v}" ${v === f ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <select class="inp" data-ch="assetF" data-k="t"><option value="">All kinds</option>${types.map((x) => `<option ${x === ty ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>${teamsHere.length ? '<button class="btn" data-act="assetAllocate">Issue to an employee</button><button class="btn pri" data-act="assetEdit">Add to stock</button>' : ''}</div></div>
+      ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Kind</th><th>Tag</th><th>Make and serial</th><th>With</th><th>Since</th><th>Status</th><th></th></tr></thead><tbody>${shown.map((a) => `<tr><td>${esc(a.type)}${assetTeamOf(a) ? `<div class="fine">${esc(TEAMS[assetTeamOf(a)])}</div>` : ''}</td><td><b>${esc(a.tag)}</b></td><td class="fine">${esc([a.make, a.serial].filter(Boolean).join(', '))}</td><td>${a.empId && a.status === 'issued' ? `<a href="#/profile/${a.empId}?tab=assets">${esc(nameOf(a.empId))}</a>` : '—'}</td>
+        <td class="fine">${a.status === 'issued' ? dmy(a.issuedOn) : a.returnedOn ? dmy(a.returnedOn) : ''}</td><td>${pill(a.status)}${a.status === 'issued' && a.ackAt ? ' <span class="fine">received</span>' : ''}</td>
+        <td class="r" style="white-space:nowrap">${a.status === 'issued' ? `<button class="btn sm" data-act="assetReturn" data-id="${a.id}">Returned</button>` : a.status === 'in stock' ? `<button class="btn sm pri" data-act="assetIssue" data-id="${a.id}">Issue</button>` : ''} <button class="btn sm" data-act="assetLog" data-id="${a.id}">History</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing here.</div>'}</div>` };
+};
+function kindsCard(team) {
+  const ks = typesOf().filter((t) => t.team === team).sort((a, b) => a.name.localeCompare(b.name));
+  const n = (t, st) => S.assets.filter((a) => a.companyId === CO && (a.typeId === t.id || (!a.typeId && a.type.trim().toLowerCase() === t.name.trim().toLowerCase())) && (!st || a.status === st)).length;
+  return `<div class="card"><div class="hd"><div><h2>${esc(TEAMS[team])}: kinds of asset</h2><p class="sub">${team === 'it' ? 'Laptops, phones, TVs, monitors and any other IT equipment the company issues. Add a kind before adding assets of it.' : 'ID cards, access cards, keys, uniforms and other items Administration issues.'}</p></div>
+    <div class="tools">${STARTER_TYPES[team].some(([nm]) => !typeByName(CO, nm)) ? `<button class="btn" data-act="kindStarter" data-team="${team}">Add common kinds</button>` : ''}<button class="btn pri" data-act="kindEdit" data-team="${team}">Add a kind</button></div></div>
+    ${ks.length ? `<div class="scroll"><table class="t"><thead><tr><th>Kind</th><th>Serial number</th><th class="r">In stock</th><th class="r">Issued</th><th class="r">All</th></tr></thead><tbody>${ks.map((t) => `<tr class="click" data-act="kindEdit" data-id="${t.id}"><td><b>${esc(t.name)}</b>${t.active === false ? ' <span class="badge">Not in use</span>' : ''}<div class="fine">${esc(t.desc || '')}</div></td><td>${t.serial ? 'Needed' : 'No'}</td>
+      <td class="r">${n(t, 'in stock')}</td><td class="r">${n(t, 'issued')}</td><td class="r">${n(t)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No kinds yet.</div>'}</div>`;
+}
+ACT.kindStarter = (b) => {
+  const team = b.dataset.team; const add = STARTER_TYPES[team].filter(([nm]) => !typeByName(CO, nm));
+  add.forEach(([name, desc, serial]) => S.assetTypes.push({ id: uid(), companyId: CO, team, name, desc, serial, active: true, by: me.id, at: Date.now() }));
+  audit('Kinds of asset added', add.map((x) => x[0]).join(', '), 'assets'); saveNow(); toast(`${add.length} kinds added`); route();
+};
+ACT.kindEdit = (b) => {
+  const t0 = b.dataset.id ? typeById(b.dataset.id) : null; const team = t0 ? t0.team : b.dataset.team;
+  const fields = [{ k: 'name', label: 'Kind', req: true, help: 'e.g. TV, Mobile phone, Tablet' }, { k: 'desc', label: 'Description' },
+    ...(isHR() ? [{ k: 'team', label: 'Issued by', type: 'select', opts: ASSET_TEAMS.map((x) => [x, TEAMS[x]]) }] : []),
+    { k: 'serial', label: 'A serial number is needed for each one', type: 'check', wide: true }, { k: 'active', label: 'In use (new ones can be added)', type: 'check', wide: true }];
+  const v = t0 ? { ...t0, active: t0.active !== false } : { team, active: true, serial: team === 'it' };
+  openDlg(`<form class="dlg" id="kdF" novalidate><h2>${t0 ? 'Edit' : 'Add'} a kind of ${esc(TEAMS[team])} asset</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="kdE"></p>
+    <div class="btns">${t0 ? '<button type="button" class="btn danger" id="kdDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+  if ($('#kdDel')) $('#kdDel').onclick = async () => {
+    if (S.assets.some((a) => a.typeId === t0.id)) { $('#kdE').textContent = 'Assets of this kind are in the register. Untick “In use” instead.'; return; }
+    if (!(await confirmBox('Delete this kind?', t0.name, 'Delete'))) return;
+    S.assetTypes = S.assetTypes.filter((x) => x !== t0); audit('Kind of asset deleted', t0.name, 'assets'); saveNow(); route();
+  };
+  $('#kdF').onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(ev.target, fields); d.name = d.name.replace(/\s+/g, ' ').trim();
+    if (!d.name) { $('#kdE').textContent = 'Enter the kind.'; return; }
+    const same = typeByName(CO, d.name); if (same && same !== t0) { $('#kdE').textContent = `${same.name} is already a kind (${TEAMS[same.team]}).`; return; }
+    const was = t0 && t0.name;
+    if (t0) Object.assign(t0, d); else S.assetTypes.push({ id: uid(), companyId: CO, team, ...d, by: me.id, at: Date.now() });
+    if (t0 && was !== d.name) S.assets.filter((a) => a.typeId === t0.id).forEach((a) => { a.type = d.name; });
+    audit(t0 ? 'Kind of asset changed' : 'Kind of asset added', `${d.name} (${TEAMS[d.team || team]})`, 'assets'); saveNow(); closeDlg(); toast('Saved'); route();
+  };
+};
+/* the kinds the signed-in person can add, grouped by team */
+const kindOpts = (coId = CO) => assetTeams(coId).flatMap((tm) => typesOf(coId).filter((t) => t.team === tm && t.active !== false).sort((a, b) => a.name.localeCompare(b.name)).map((t) => [t.id, `${t.name} (${TEAMS[tm]})`]));
+const assetFields = (coId) => [{ k: 'typeId', label: 'Kind', type: 'select', opts: () => kindOpts(coId), blank: 'Choose', req: true }, { k: 'tag', label: 'Asset tag', req: true, help: 'e.g. LT-0042' },
+  { k: 'serial', label: 'Serial number' }, { k: 'make', label: 'Make and model' }, { k: 'cost', label: 'Cost (₹)', type: 'number', min: 0 }, { k: 'bought', label: 'Bought on', type: 'date' }];
+function newAsset(d, coId) {
+  const t = typeById(d.typeId);
+  if (!t) return 'Choose the kind.'; if (!d.tag) return 'Enter the asset tag.'; if (t.serial && !d.serial) return `A ${t.name} needs its serial number.`;
+  if (S.assets.some((a) => a.companyId === coId && a.tag.toLowerCase() === d.tag.toLowerCase())) return 'That tag is already in the register.';
+  const a = { id: uid(), companyId: coId, typeId: t.id, type: t.name, tag: d.tag, serial: d.serial, make: d.make, cost: d.cost, bought: d.bought, status: 'in stock', custodianIds: [me.id], log: [] };
+  a.participants = uniq([me.id, ...hrIdsOf(coId), ...teamIdsOf(coId, t.team)]); logEntry(a, 'Added to stock'); S.assets.push(a); audit(`${a.type} added`, a.tag, 'assets');
+  return a;
+}
+ACT.assetEdit = () => {
+  if (!kindOpts().length) { toast('Add a kind of asset first.'); go('#/assets?tab=kinds'); return; }
+  const fields = assetFields(CO);
+  openDlg(`<form class="dlg" id="asF" novalidate><h2>Add to stock</h2><div class="form">${fields.map((f) => fieldHtml(f, '')).join('')}</div>
+    <p class="err" id="asE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`);
+  $('#asF').onsubmit = (ev) => { ev.preventDefault(); const r = newAsset(readForm(ev.target, fields), CO); if (typeof r === 'string') { $('#asE').textContent = r; return; } saveNow(); closeDlg(); toast('Added to stock'); route(); };
+};
+/* Issue an asset to an employee: one from stock, or a new one */
+function allocDialog(coId, empId, assetId) {
+  const a0 = assetId ? S.assets.find((x) => x.id === assetId) : null;
+  const people = coEmployees(coId).sort((x, y) => fullName(x).localeCompare(fullName(y)));
+  const stock = S.assets.filter((a) => a.companyId === coId && a.status === 'in stock' && canManageAsset(a)).sort((a, b) => String(a.type).localeCompare(String(b.type)) || String(a.tag).localeCompare(String(b.tag)));
+  const nf = assetFields(coId);
+  openDlg(`<form class="dlg" id="alF" novalidate><h2>${a0 ? `Issue ${esc(a0.type)} ${esc(a0.tag)}` : 'Issue an asset'}${empId ? ` to ${esc(nameOf(empId))}` : ''}</h2><div class="form">
+    ${empId ? '' : `<label class="field wide">To<select class="inp" name="emp"><option value="">Choose the employee</option>${people.map((e) => `<option value="${e.id}">${esc(fullName(e))} (${esc(e.empNo)})</option>`).join('')}</select></label>`}
+    ${a0 ? '' : `<label class="field wide">From stock<select class="inp" name="stock"><option value="">A new one (enter it below)</option>${stock.map((a) => `<option value="${a.id}">${esc(a.type)}: ${esc(a.tag)} ${esc([a.make, a.serial].filter(Boolean).join(', '))}</option>`).join('')}</select></label>
+      <div class="field wide" id="alNew" style="display:contents">${nf.map((f) => fieldHtml(f, '')).join('')}</div>`}
+    <label class="field">Issued on<input class="inp" type="date" name="on" value="${todayISO()}"></label><label class="field">Note<input class="inp" name="note" placeholder="e.g. with charger and bag"></label></div>
+    <p class="err" id="alE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Issue</button></div></form>`, true);
+  const f = $('#alF');
+  const toggle = () => { if (!f.elements.stock) return; const off = !!f.elements.stock.value; nf.forEach((x) => { const el = f.elements[x.k]; if (el) el.closest('label').style.display = off ? 'none' : ''; }); };
+  if (f.elements.stock) { f.elements.stock.onchange = toggle; toggle(); }
+  f.onsubmit = (ev) => {
+    ev.preventDefault(); const to = empId || f.elements.emp.value; const err = (m) => { $('#alE').textContent = m; };
+    if (!to) return err('Choose the employee.');
+    let a = a0 || (f.elements.stock.value ? S.assets.find((x) => x.id === f.elements.stock.value) : null);
+    if (!a) { if (!kindOpts(coId).length) return err('Add a kind of asset first (Assets › Kinds of asset).'); a = newAsset(readForm(f, nf), coId); if (typeof a === 'string') return err(a); }
+    issueAsset(a, to, f.elements.on.value || todayISO(), f.elements.note.value.trim());
+    saveNow(); closeDlg(); toast(`${a.type} issued to ${nameOf(to)}`); route();
+  };
+}
+ACT.assetIssue = (b) => allocDialog(CO, '', b.dataset.id);
+ACT.assetAllocate = (b) => allocDialog(b.dataset.co || CO, b.dataset.emp || '', '');
+PROFILE_TABS.assets = (e, { hr }) => {
+  const as = S.assets.filter((a) => a.empId === e.id || (a.log || []).some((l) => (l.what || '').includes(fullName(e))));
+  const o = onbOf(e.id); const can = active(e) && (hr || assetTeams(e.companyId).length > 0);
+  return `<div class="card"><div class="hd"><div><h2>Assets</h2><p class="sub">Laptops, phones, ID cards and anything else issued to ${esc(e.firstName)}.</p></div><div class="tools">
+    ${can ? `<button class="btn pri" data-act="assetAllocate" data-emp="${e.id}" data-co="${e.companyId}">Issue an asset</button>` : ''}${hr ? `${o ? `<a class="btn" href="#/onboarding/${o.id}">Enrolment</a>` : active(e) ? `<button class="btn" data-act="onbStart" data-id="${e.id}">Start enrolment</button>` : ''}` : ''}</div></div>
+    ${as.length ? `<table class="t"><thead><tr><th>Kind</th><th>Tag</th><th>Issued</th><th>Status</th><th></th></tr></thead><tbody>${as.map((a) => `<tr><td>${esc(a.type)}</td><td>${esc(a.tag)} <span class="fine">${esc(a.serial || '')}</span></td><td>${dmy(a.issuedOn)}</td><td>${a.empId === e.id && a.status === 'issued' ? pill('issued') : pill('returned')}${a.ackAt && a.empId === e.id ? ' <span class="fine">received</span>' : ''}</td>
+      <td class="r">${a.empId === e.id && a.status === 'issued' && canManageAsset(a) ? `<button class="btn sm" data-act="assetReturn" data-id="${a.id}">Returned</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing issued.</div>'}</div>`;
+};
+
+/* =====================================================================
+   PeopleDesk 2.11: candidates' application forms, goal library and role weightages, the appraisal form,
+   review and management meetings, succession planning
+   - Recruitment: HR sends a candidate a link to fill in their details and CV (no sign-in). Once selected, HR
+     converts them into an employee at joining, and everything they entered becomes the employee record.
+   - Performance: goals and competencies, with how each is measured and what earns each rating, are kept in a
+     library independent of roles. Each role (designation, grade, department) gives library goals a weightage and
+     a target. Employees get their role's goals with the measurement criteria.
+   - The appraisal form brings everything together: job details, goals with criteria and check-ins, achievements
+     and evidence, structured self-appraisal and manager review, past ratings, trainings, feedback and skills.
+   - Review meetings with an employee and management meetings are recorded with minutes, actions and decisions
+     (who is promoted, who is asked to leave). Managers plan successors during the cycle.
+   The server enforces who sees and changes what (backend/app/perf.py and candform.py).
+   ===================================================================== */
+const MEASURES = { higher: 'A number: higher is better', lower: 'A number: lower is better', milestone: 'A milestone: done by a date', scale: 'Judged against the rating descriptions' };
+const MEASURE_SHORT = { higher: 'Higher is better', lower: 'Lower is better', milestone: 'Milestone', scale: 'Rating descriptions' };
+const LIB_KINDS = { goal: 'Goal (a result)', competency: 'Competency (a behaviour)' };
+const FREQS = { monthly: 'Monthly', quarterly: 'Quarterly', halfyear: 'Half-yearly', annual: 'Once a year' };
+const LIB_AREAS = [...KRAS, 'Competencies'];
+const DEF_BANDS = { 5: 120, 4: 105, 3: 95, 2: 80 };
+const SCALE_COMP = { 5: 'A role model: shows this every time and helps others to', 4: 'Often goes beyond what the role expects', 3: 'Shows this as the role expects',
+  2: 'Shows this some of the time; needs to develop it', 1: 'Rarely shows this' };
+const SCALE_MILE = { 5: 'Done well ahead of the date, beyond what was asked', 4: 'Done before the date, fully', 3: 'Done by the date, as agreed', 2: 'Done late or only in part', 1: 'Not done' };
+const libOf = (coId = CO) => S.goalLib.filter((x) => x.companyId === coId);
+const libById = (id) => S.goalLib.find((x) => x.id === id);
+const critFromLib = (l) => ({ measure: l.measure || 'scale', unit: l.unit || '', how: l.how || '', source: l.source || '', freq: l.freq || '', bands: { ...DEF_BANDS, ...(l.bands || {}) }, scale: { ...(l.scale || {}) } });
+/* the measurement criteria of a goal on someone's sheet: as copied when it was given, or from the library */
+function critOf(g) { const l = g.libId && libById(g.libId); return g.crit || (l ? critFromLib(l) : null); }
+function bandText(crit, r) {
+  if (!crit) return '';
+  if (crit.scale && crit.scale[r]) return crit.scale[r];
+  const b = crit.bands || DEF_BANDS;
+  if (crit.measure === 'higher' || crit.measure === 'lower') {
+    const word = crit.measure === 'higher' ? 'of the target' : 'of the target (a lower figure scores more)';
+    return r === 5 ? `${b[5]}% or more ${word}` : r === 1 ? `Below ${b[2]}% ${word}` : `${b[r]}% to ${+b[r + 1] - 0.1}% ${word}`;
+  }
+  return crit.measure === 'milestone' ? SCALE_MILE[r] : SCALE_COMP[r];
+}
+/* the rating a number earns: achievement as a % of target, against the goal's bands */
+function suggestRating(crit, target, actual) {
+  if (!crit || !['higher', 'lower'].includes(crit.measure) || actual === '' || actual == null) return '';
+  const t = parseNum(target), a = parseNum(actual); if (!t) return '';
+  const pct = crit.measure === 'higher' ? a / t * 100 : (a > 0 ? t / a * 100 : 999);
+  for (const r of [5, 4, 3, 2]) if (pct >= +crit.bands[r]) return r;
+  return 1;
+}
+const achievedPct = (crit, target, actual) => { if (!crit || !['higher', 'lower'].includes(crit.measure) || actual === '' || actual == null) return null; const t = parseNum(target), a = parseNum(actual); if (!t) return null; return Math.round((crit.measure === 'higher' ? a / t : (a > 0 ? t / a : 9.99)) * 100); };
+function critHtml(crit, target) {
+  if (!crit) return '<p class="fine">No measurement criteria: rated on the manager’s judgement.</p>';
+  return `<div class="fine" style="color:var(--ink)"><b>${esc(MEASURES[crit.measure] || '')}</b>${crit.unit ? `, in ${esc(crit.unit)}` : ''}${crit.freq ? `, measured ${esc((FREQS[crit.freq] || '').toLowerCase())}` : ''}.${target ? ` Target: <b>${esc(target)}</b>.` : ''}
+    ${crit.how ? `<div>How: ${esc(crit.how)}</div>` : ''}${crit.source ? `<div>Figures from: ${esc(crit.source)}</div>` : ''}</div>
+    <table class="t" style="margin-top:4px"><tbody>${[5, 4, 3, 2, 1].map((r) => `<tr><td style="width:150px"><b>${r}</b> ${esc(RATING[r])}</td><td class="fine">${esc(bandText(crit, r))}</td></tr>`).join('')}</tbody></table>`;
+}
+const nextLibCode = (coId) => `G-${String(libOf(coId).reduce((m, x) => Math.max(m, parseInt(String(x.code || '').replace(/\D/g, ''), 10) || 0), 0) + 1).padStart(3, '0')}`;
+
+const STARTER_LIB = [
+  ['goal', 'Business results', 'Revenue against target', 'Sales booked in the year against the target set for the role', 'higher', '₹ lakh', 'Invoiced sales, net of returns', 'Sales ledger', 'quarterly'],
+  ['goal', 'Business results', 'Gross margin', 'Margin on what the person or team sells or delivers', 'higher', '%', '(Revenue − direct cost) ÷ revenue × 100', 'Finance MIS', 'quarterly'],
+  ['goal', 'Business results', 'Cost within budget', 'Spending kept within the approved budget', 'lower', '% of budget', 'Actual spend ÷ budget × 100', 'Finance MIS', 'quarterly'],
+  ['goal', 'Customer', 'Customer satisfaction', 'How satisfied customers are with the service', 'higher', 'CSAT score', 'Average of customer survey scores', 'Customer survey', 'quarterly'],
+  ['goal', 'Customer', 'Complaints resolved on time', 'Customer complaints closed within the agreed time', 'higher', '%', 'Closed within SLA ÷ all complaints × 100', 'Helpdesk', 'monthly'],
+  ['goal', 'Process and quality', 'On-time delivery', 'Work, orders or projects delivered by the promised date', 'higher', '%', 'Delivered on time ÷ all deliveries × 100', 'Project or order tracker', 'monthly'],
+  ['goal', 'Process and quality', 'Defects and rework', 'Errors found after work is handed over', 'lower', 'count', 'Defects reported in the period', 'Quality records', 'monthly'],
+  ['goal', 'Process and quality', 'Audit points closed', 'Findings from internal and statutory audits closed', 'higher', '%', 'Closed by the due date ÷ all findings × 100', 'Audit tracker', 'quarterly'],
+  ['goal', 'Process and quality', 'Project milestone delivered', 'A named project or improvement delivered by the agreed date', 'milestone', '', 'Done and signed off by the date in the target', 'Project sign-off', 'annual'],
+  ['goal', 'People', 'Team attrition', 'People leaving the team by choice', 'lower', '%', 'Voluntary leavers ÷ average headcount × 100', 'PeopleDesk exits', 'annual'],
+  ['goal', 'People', 'Team development', 'Training hours the team completes', 'higher', 'hours per person', 'Training hours attended ÷ team size', 'PeopleDesk training', 'annual'],
+  ['goal', 'Learning', 'Own learning', 'Trainings or certifications the person completes', 'higher', 'count', 'Completed with a certificate or attendance', 'PeopleDesk training', 'annual'],
+  ['competency', 'Competencies', 'Ownership', 'Takes responsibility for results and follows through without being chased', 'scale'],
+  ['competency', 'Competencies', 'Customer focus', 'Understands what customers need and acts on it', 'scale'],
+  ['competency', 'Competencies', 'Collaboration', 'Works well with others across teams and shares information', 'scale'],
+  ['competency', 'Competencies', 'Communication', 'Clear, timely and respectful in writing and speech', 'scale'],
+  ['competency', 'Competencies', 'Problem solving', 'Finds the cause of problems and practical solutions', 'scale'],
+  ['competency', 'Competencies', 'Leading people', 'Sets direction, coaches and gives feedback (for people managers)', 'scale'],
+];
+function addLib(coId, d) { const x = { id: uid(), companyId: coId, code: nextLibCode(coId), active: true, by: me.id, at: Date.now(), bands: { ...DEF_BANDS }, scale: {}, ...d }; S.goalLib.push(x); return x; }
+const libByTitle = (coId, title) => libOf(coId).find((x) => x.title.trim().toLowerCase() === String(title || '').trim().toLowerCase());
+/* goals written inside role templates before 2.11 become library entries; the template keeps their weightages */
+function libFromLegacy(t) {
+  if (Array.isArray(t.lines) || !(t.goals || []).length) return 0;
+  let n = 0;
+  t.lines = t.goals.filter((g) => String(g.title || '').trim()).map((g) => {
+    let l = libByTitle(t.companyId, g.title);
+    if (!l) { const comp = g.kra === 'Competencies'; l = addLib(t.companyId, { kind: comp ? 'competency' : 'goal', area: g.kra || KRAS[0], title: g.title.trim(), desc: '', how: g.desc || '', measure: 'scale' }); n++; }
+    return { libId: l.id, weight: +g.weight || 0, target: g.target || '' };
+  });
+  t.legacyGoals = t.goals; delete t.goals;
+  return n + 1;
+}
+/* a role's goals, resolved from the library */
+function tplGoals(t) {
+  if (Array.isArray(t.lines)) return t.lines.map((ln) => { const l = libById(ln.libId); return l ? { libId: l.id, title: l.title, kra: l.area, desc: l.desc || '', weight: +ln.weight || 0, target: ln.target || '', crit: critFromLib(l), kind: l.kind } : null; }).filter(Boolean);
+  return (t.goals || []).map((g) => ({ ...g, weight: +g.weight || 0 }));
+}
+const tplWeight = (t) => tplGoals(t).reduce((s, g) => s + g.weight, 0);
+function goalsFromRole(t, cycId, empId) {
+  S.goals = S.goals.filter((g) => !(g.cycleId === cycId && g.empId === empId && g.status !== 'approved'));
+  tplGoals(t).forEach((g) => S.goals.push({ id: uid(), cycleId: cycId, empId, status: 'draft', checkins: [], progress: 0, title: g.title, desc: g.desc || '', kra: g.kra, weight: g.weight, target: g.target || '',
+    libId: g.libId || '', crit: g.crit || null, fromTemplate: t.id, roleWeight: g.weight }));
+}
+ACT.tplApply = async (b) => {
+  const t = S.perfTemplates.find((x) => x.id === b.dataset.t); const has = S.goals.some((g) => g.cycleId === b.dataset.c && g.empId === b.dataset.emp);
+  if (has && !(await confirmBox('Replace the goals?', `The goals not yet approved are replaced by the ${tplGoals(t).length} goals of “${t.name}”.`, 'Replace'))) return;
+  goalsFromRole(t, b.dataset.c, b.dataset.emp);
+  audit('Goals set from role weightages', `${nameOf(b.dataset.emp)}: ${t.name}`, 'performance', 'employee', b.dataset.emp);
+  saveNow(); toast('Goals added from the role'); route();
+};
+ACT.tplBulk = async (b) => {
+  const cyc = S.cycles.find((c) => c.id === b.dataset.c);
+  const list = coEmployees().filter((e) => templateFor(e) && !S.goals.some((g) => g.cycleId === cyc.id && g.empId === e.id));
+  if (!(await confirmBox(`Give ${list.length} people their role’s goals?`, `Draft goals with their weightages and measurement criteria are created in ${cyc.name}. Each person can see them and send them to their manager.`, 'Create goals'))) return;
+  list.forEach((e) => goalsFromRole(templateFor(e), cyc.id, e.id));
+  audit('Goals set from role weightages', `${list.length} people, ${cyc.name}`, 'performance'); saveNow(); toast(`Goals created for ${list.length} people`); route();
+};
+
+/* ---------------------------------------------------------------- goal library (HR) */
+VIEWS.goallib = () => {
+  const q = (R.q.get('q') || '').toLowerCase(), area = R.q.get('a') || '';
+  const all = libOf().slice().sort((a, b) => LIB_AREAS.indexOf(a.area) - LIB_AREAS.indexOf(b.area) || String(a.code).localeCompare(String(b.code)));
+  const list = all.filter((x) => (!area || x.area === area) && (!q || `${x.code} ${x.title} ${x.desc} ${x.how}`.toLowerCase().includes(q)));
+  const legacy = S.perfTemplates.filter((t) => t.companyId === CO && !Array.isArray(t.lines) && (t.goals || []).length);
+  const roles = (l) => S.perfTemplates.filter((t) => t.companyId === CO && (t.lines || []).some((x) => x.libId === l.id));
+  const missing = STARTER_LIB.filter((s) => !libByTitle(CO, s[2]));
+  return { title: 'Goal library', html: `${legacy.length ? `<div class="note warn">${legacy.length} role template${legacy.length > 1 ? 's have their' : ' has its'} own goals written in. <button class="btn sm pri" data-act="libImport">Move them into the library</button> Each goal becomes a library entry; the roles keep their weightages and targets.</div>` : ''}
+    <div class="card"><div class="hd"><div><h2>Goal library and measurement criteria</h2><p class="sub">Goals and competencies, each with how it is measured and what earns each rating. They do not belong to any role: roles give them a weightage and a target under <a href="#/perftemplates">Role weightages</a>, and people get them with these criteria.</p></div>
+      <div class="tools"><input class="inp" placeholder="Search" value="${esc(R.q.get('q') || '')}" data-ch="libQ"><select class="inp" data-ch="libA"><option value="">All areas</option>${LIB_AREAS.map((a) => `<option ${a === area ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select>
+        ${missing.length ? `<button class="btn" data-act="libStarter">Add common goals (${missing.length})</button>` : ''}<button class="btn pri" data-act="libEdit">Add a goal or competency</button></div></div>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Code</th><th>Goal or competency</th><th>Area</th><th>How it is measured</th><th>Roles using it</th><th class="r">On goal sheets</th></tr></thead><tbody>${list.map((x) => { const rs = roles(x);
+      return `<tr class="click" data-act="libEdit" data-id="${x.id}"><td class="fine">${esc(x.code || '')}</td><td><b>${esc(x.title)}</b>${x.active === false ? ' <span class="badge">Not in use</span>' : ''}<div class="fine">${esc(LIB_KINDS[x.kind] || '')}${x.desc ? ` · ${esc(x.desc)}` : ''}</div></td><td>${esc(x.area)}</td>
+        <td>${esc(MEASURE_SHORT[x.measure] || '')}${x.unit ? ` <span class="fine">(${esc(x.unit)})</span>` : ''}${x.how ? `<div class="fine">${esc(x.how)}</div>` : ''}</td>
+        <td class="fine">${rs.length ? rs.map((t) => `${esc(t.name)} ${(t.lines.find((ln) => ln.libId === x.id) || {}).weight}%`).join('<br>') : '—'}</td><td class="r">${S.goals.filter((g) => g.libId === x.id).length}</td></tr>`; }).join('')}</tbody></table></div>`
+      : `<div class="empty">${all.length ? 'Nothing matches.' : 'The library is empty. Add your own goals, or start with the common ones.'}</div>`}</div>` };
+};
+ACT.libQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/goallib?' + p); };
+ACT.libA = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('a', el.value) : p.delete('a'); go('#/goallib?' + p); };
+ACT.libStarter = () => {
+  const add = STARTER_LIB.filter((s) => !libByTitle(CO, s[2]));
+  add.forEach(([kind, area, title, desc, measure, unit = '', how = '', source = '', freq = 'annual']) => addLib(CO, { kind, area, title, desc, measure, unit, how, source, freq }));
+  audit('Goal library: common goals added', `${add.length} entries`, 'performance'); saveNow(); toast(`${add.length} goals and competencies added`); route();
+};
+ACT.libImport = () => {
+  let n = 0; S.perfTemplates.filter((t) => t.companyId === CO).forEach((t) => { if (libFromLegacy(t)) n++; });
+  audit('Role template goals moved into the goal library', `${n} templates`, 'performance'); saveNow(); toast('Moved into the library'); route();
+};
+ACT.libEdit = (b) => {
+  const x0 = b.dataset.id ? libById(b.dataset.id) : null;
+  const v = x0 ? { ...x0, ...Object.fromEntries([5, 4, 3, 2].map((r) => [`b${r}`, (x0.bands || DEF_BANDS)[r]])), ...Object.fromEntries([5, 4, 3, 2, 1].map((r) => [`s${r}`, (x0.scale || {})[r] || ''])), active: x0.active !== false }
+    : { kind: 'goal', area: KRAS[0], measure: 'higher', freq: 'annual', code: nextLibCode(CO), active: true, b5: 120, b4: 105, b3: 95, b2: 80 };
+  const fields = [{ k: 'kind', label: 'This is a', type: 'select', opts: Object.entries(LIB_KINDS) }, { k: 'area', label: 'Area', type: 'select', opts: LIB_AREAS.map((a) => [a, a]) }, { k: 'code', label: 'Code' },
+    { k: 'title', label: 'Goal or competency', req: true, wide: true }, { k: 'desc', label: 'What it covers', type: 'textarea', wide: true },
+    { k: 'measure', label: 'Measured as', type: 'select', opts: Object.entries(MEASURES) }, { k: 'unit', label: 'Unit', help: 'e.g. ₹ lakh, %, days, count' }, { k: 'freq', label: 'Measured', type: 'select', opts: Object.entries(FREQS) },
+    { k: 'how', label: 'How it is measured (formula or rule)', wide: true, help: 'e.g. Delivered on time ÷ all deliveries × 100' }, { k: 'source', label: 'Where the figures come from', wide: true }];
+  const bandF = [5, 4, 3, 2].map((r) => ({ k: `b${r}`, label: `Rated ${r} from (% of target)`, type: 'number', min: 0 }));
+  const scaleF = [5, 4, 3, 2, 1].map((r) => ({ k: `s${r}`, label: `${r} ${RATING[r]}`, wide: true }));
+  openDlg(`<form class="dlg" id="lbF" novalidate><h2>${x0 ? 'Edit' : 'Add'} a goal or competency</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div>
+    <div id="lbBands"><h3>Rating from the achievement</h3><p class="fine" style="margin:0">Achievement is the actual figure as a percentage of the target (for “lower is better”, the target as a percentage of the actual). Below the rating 2 figure is rated 1.</p><div class="form">${bandF.map((f) => fieldHtml(f, v[f.k])).join('')}</div></div>
+    <h3>What earns each rating</h3><p class="fine" style="margin:0">Shown to the employee and manager when they rate. Leave a line empty to use the standard wording.</p><div class="form">${scaleF.map((f) => fieldHtml(f, v[f.k])).join('')}</div>
+    ${fieldHtml({ k: 'active', label: 'In use (can be given to roles and people)', type: 'check', wide: true }, v.active)}<p class="err" id="lbE"></p>
+    <div class="btns">${x0 ? '<button type="button" class="btn danger" id="lbDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  const f = $('#lbF');
+  const sync = () => { const num = ['higher', 'lower'].includes(f.elements.measure.value); $('#lbBands').style.display = num ? '' : 'none';
+    [5, 4, 3, 2, 1].forEach((r) => { f.elements[`s${r}`].placeholder = bandText({ measure: f.elements.measure.value, bands: { 5: f.elements.b5.value, 4: f.elements.b4.value, 3: f.elements.b3.value, 2: f.elements.b2.value }, scale: {} }, r); }); };
+  ['measure', 'b5', 'b4', 'b3', 'b2'].forEach((k) => f.elements[k].addEventListener('input', sync)); f.elements.measure.addEventListener('change', sync);
+  f.elements.kind.addEventListener('change', () => { if (f.elements.kind.value === 'competency') { f.elements.area.value = 'Competencies'; f.elements.measure.value = 'scale'; sync(); } });
+  sync();
+  if ($('#lbDel')) $('#lbDel').onclick = async () => {
+    const used = S.perfTemplates.some((t) => (t.lines || []).some((ln) => ln.libId === x0.id)) || S.goals.some((g) => g.libId === x0.id);
+    if (used) { $('#lbE').textContent = 'Roles or goal sheets use this. Untick “In use” instead.'; return; }
+    if (!(await confirmBox('Delete this entry?', x0.title, 'Delete'))) return;
+    S.goalLib = S.goalLib.filter((x) => x !== x0); audit('Goal library entry deleted', x0.title, 'performance'); saveNow(); route();
+  };
+  f.onsubmit = (ev) => {
+    ev.preventDefault(); const d = readForm(f, fields); const bd = readForm(f, bandF); const sc = readForm(f, scaleF);
+    if (!d.title) { $('#lbE').textContent = 'Name the goal or competency.'; return; }
+    const same = libByTitle(CO, d.title); if (same && same !== x0) { $('#lbE').textContent = `${same.code} already has this name.`; return; }
+    const bands = { 5: +bd.b5, 4: +bd.b4, 3: +bd.b3, 2: +bd.b2 };
+    if (['higher', 'lower'].includes(d.measure) && !(bands[5] > bands[4] && bands[4] > bands[3] && bands[3] > bands[2] && bands[2] > 0)) { $('#lbE').textContent = 'Each rating needs a higher achievement than the one below it.'; return; }
+    const scale = Object.fromEntries([5, 4, 3, 2, 1].map((r) => [r, sc[`s${r}`]]).filter(([, t]) => t));
+    const rec = { ...d, bands, scale, active: f.elements.active.checked };
+    if (x0) Object.assign(x0, rec, { updatedBy: me.id, updatedAt: Date.now() }); else addLib(CO, rec);
+    audit(x0 ? 'Goal library entry changed' : 'Goal library entry added', `${d.code} ${d.title}`, 'performance'); saveNow(); closeDlg(); toast('Saved'); route();
+  };
+};
+
+/* ---------------------------------------------------------------- role weightages (HR) */
+VIEWS.perftemplates = () => {
+  const tab = R.q.get('tab') === 'matrix' ? 'matrix' : 'roles';
+  const ts = S.perfTemplates.filter((t) => t.companyId === CO);
+  const cyc = curCycle(CO);
+  const missing = cyc ? coEmployees().filter((e) => templateFor(e) && !S.goals.some((g) => g.cycleId === cyc.id && g.empId === e.id)) : [];
+  const names = (ids, fn) => (ids || []).map((id) => (fn(id) || {}).name).filter(Boolean).join(', ');
+  const tabs = `<nav class="tabs"><a href="#/perftemplates" class="${tab === 'roles' ? 'on' : ''}">Weightages by role</a><a href="#/perftemplates?tab=matrix" class="${tab === 'matrix' ? 'on' : ''}">Goals against roles</a><a href="#/goallib">Goal library</a></nav>`;
+  if (tab === 'matrix') {
+    const lib = libOf().filter((l) => ts.some((t) => (t.lines || []).some((x) => x.libId === l.id)));
+    return { title: 'Role weightages', html: `${tabs}<div class="card"><h2>Goals against roles</h2><p class="sub">The weightage each role gives each library goal. The same goal can weigh differently in different roles.</p>
+      ${lib.length && ts.length ? `<div class="scroll"><table class="t"><thead><tr><th>Goal</th>${ts.map((t) => `<th class="r">${esc(t.name)}</th>`).join('')}</tr></thead><tbody>${lib.map((l) => `<tr><td><b>${esc(l.title)}</b><div class="fine">${esc(l.code || '')} · ${esc(l.area)}</div></td>${ts.map((t) => { const ln = (t.lines || []).find((x) => x.libId === l.id); return `<td class="r">${ln ? `${ln.weight}%${ln.target ? `<div class="fine">${esc(ln.target)}</div>` : ''}` : '<span class="fine">—</span>'}</td>`; }).join('')}</tr>`).join('')}
+      <tr><td><b>Total</b></td>${ts.map((t) => `<td class="r"><b>${tplWeight(t)}%</b></td>`).join('')}</tr></tbody></table></div>` : '<div class="empty">No roles use library goals yet.</div>'}</div>` };
+  }
+  return { title: 'Role weightages', html: `${tabs}<div class="card"><div class="hd"><div><h2>Weightages by role</h2><p class="sub">For each role, the library goals that apply, their weightage (adding up to 100%) and the target. Each person gets the most specific match: designation first, then grade, then department. Goals and their measurement criteria are kept in the <a href="#/goallib">goal library</a>.</p></div>
+      <div class="tools">${cyc && missing.length ? `<button class="btn" data-act="tplBulk" data-c="${cyc.id}">Give ${missing.length} people without goals their role’s goals</button>` : ''}<button class="btn pri" data-act="tplEdit">Add a role</button></div></div>
+    ${ts.length ? `<table class="t"><thead><tr><th>Role</th><th>Designations</th><th>Grades</th><th>Departments</th><th>Goals and weightages</th><th class="r">People</th></tr></thead><tbody>${ts.map((t) => `<tr class="click" data-act="tplEdit" data-id="${t.id}"><td><b>${esc(t.name)}</b>${t.active === false ? ' <span class="badge">Off</span>' : ''}${!Array.isArray(t.lines) && (t.goals || []).length ? ' <span class="badge warn">Goals not in the library</span>' : ''}</td><td>${esc(names(t.desigIds, desig) || 'Any')}</td><td>${esc(names(t.gradeIds, grade) || 'Any')}</td><td>${esc(names(t.deptIds, dept) || 'Any')}</td>
+      <td class="fine">${tplGoals(t).map((g) => `${esc(g.title)} ${g.weight}%`).join(', ')}<div>Total <b>${tplWeight(t)}%</b></div></td><td class="r">${coEmployees().filter((e) => (templateFor(e) || {}).id === t.id).length}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No roles yet.</div>'}</div>` };
+};
+ACT.tplEdit = (b) => {
+  const t0 = b.dataset.id ? S.perfTemplates.find((x) => x.id === b.dataset.id) : null;
+  if (!libOf().filter((l) => l.active !== false).length) { toast('Add goals to the goal library first.'); go('#/goallib'); return; }
+  if (t0 && !Array.isArray(t0.lines) && (t0.goals || []).length) { libFromLegacy(t0); saveNow(); }
+  const t = t0 ? JSON.parse(JSON.stringify(t0)) : { name: '', desigIds: [], gradeIds: [], deptIds: [], active: true, lines: [] };
+  t.lines = t.lines || [];
+  const co = (coll) => S[coll].filter((x) => x.companyId === CO).map((x) => [x.id, x.name]);
+  const libOpts = (sel) => LIB_AREAS.map((a) => { const xs = libOf().filter((l) => l.area === a && (l.active !== false || l.id === sel)); return xs.length ? `<optgroup label="${esc(a)}">${xs.map((l) => `<option value="${l.id}" ${l.id === sel ? 'selected' : ''}>${esc(l.code || '')} ${esc(l.title)}</option>`).join('')}</optgroup>` : ''; }).join('');
+  const draw = () => {
+    openDlg(`<form class="dlg" id="tpF" novalidate><h2>${t0 ? 'Edit' : 'New'} role weightages</h2><div class="form">
+      <label class="field wide">Role<input class="inp" name="name" value="${esc(t.name)}" placeholder="e.g. Sales managers"></label>
+      <div class="field">For designations${checkList('ds', co('desigs'), t.desigIds)}</div><div class="field">Grades${checkList('gr', co('grades'), t.gradeIds)}</div><div class="field">Departments${checkList('dp', co('depts'), t.deptIds)}</div>
+      <label class="chk" style="align-self:end"><input type="checkbox" name="active" ${t.active !== false ? 'checked' : ''}> In use</label></div>
+      <h3>Goals from the library <span class="fine" id="tpW"></span></h3>
+      ${t.lines.map((ln, i) => { const l = libById(ln.libId); const c = l && critFromLib(l); return `<div style="border-bottom:1px solid var(--rule);padding:6px 0"><div class="form" style="grid-template-columns:3fr .8fr 1.6fr auto;align-items:end">
+        <label class="field">Goal<select class="inp" data-i="${i}" data-f="libId"><option value="">Choose from the library</option>${libOpts(ln.libId)}</select></label>
+        <label class="field">Weight %<input class="inp" type="number" min="0" max="100" data-i="${i}" data-f="weight" value="${esc(ln.weight)}"></label>
+        <label class="field">Target for this role<input class="inp" data-i="${i}" data-f="target" value="${esc(ln.target || '')}" placeholder="${c && ['higher', 'lower'].includes(c.measure) ? `a number${c.unit ? ', in ' + esc(c.unit) : ''}` : 'e.g. by 31 Dec'}"></label>
+        <button type="button" class="btn sm danger" data-rm="${i}" aria-label="Remove">✕</button></div>
+        ${c ? `<div class="fine">${esc(MEASURE_SHORT[c.measure])}${c.unit ? ` (${esc(c.unit)})` : ''}${c.how ? `: ${esc(c.how)}` : ''}</div>` : ''}</div>`; }).join('')}
+      <button type="button" class="btn sm" id="tpAdd">Add a goal</button> <a class="fine" href="#/goallib">Goal not in the library? Add it there first.</a>
+      <p class="err" id="tpE"></p><div class="btns">${t0 ? '<button type="button" class="btn danger" id="tpDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+    const f = $('#tpF');
+    const sync = () => { t.name = f.elements.name.value; t.desigIds = checked(f, 'ds'); t.gradeIds = checked(f, 'gr'); t.deptIds = checked(f, 'dp'); t.active = f.elements.active.checked; $('#tpW').textContent = `Total ${t.lines.reduce((s, x) => s + (+x.weight || 0), 0)}%`; };
+    f.querySelectorAll('[data-f]').forEach((el) => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => { t.lines[+el.dataset.i][el.dataset.f] = el.dataset.f === 'weight' ? +el.value || 0 : el.value; sync(); if (el.dataset.f === 'libId') draw(); }));
+    f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { sync(); t.lines.splice(+el.dataset.rm, 1); draw(); }; });
+    $('#tpAdd').onclick = () => { sync(); t.lines.push({ libId: '', weight: 10, target: '' }); draw(); };
+    if ($('#tpDel')) $('#tpDel').onclick = async () => { if (await confirmBox('Delete this role?', 'Goals already given to people stay.', 'Delete')) { S.perfTemplates = S.perfTemplates.filter((x) => x.id !== t0.id); saveNow(); closeDlg(); route(); } };
+    sync();
+    f.onsubmit = (ev) => {
+      ev.preventDefault(); sync(); const err = (m) => { $('#tpE').textContent = m; };
+      t.lines = t.lines.filter((x) => x.libId);
+      if (!t.name.trim()) return err('Name the role.');
+      if (!t.lines.length) return err('Add at least one goal.');
+      if (new Set(t.lines.map((x) => x.libId)).size !== t.lines.length) return err('A goal appears twice.');
+      if (t.lines.some((x) => !(+x.weight > 0))) return err('Give every goal a weightage.');
+      const w = t.lines.reduce((s, x) => s + (+x.weight || 0), 0); if (w !== 100) return err(`Weightages add up to ${w}%. Make them 100%.`);
+      delete t.goals;
+      if (t0) { Object.assign(t0, t); delete t0.goals; } else S.perfTemplates.push({ id: uid(), companyId: CO, ...t });
+      audit(`Role weightages ${t0 ? 'changed' : 'added'}`, `${t.name}: ${t.lines.map((x) => `${(libById(x.libId) || {}).title} ${x.weight}%`).join(', ')}`, 'performance');
+      saveNow(); closeDlg(); toast('Saved'); route();
+    };
+  };
+  draw();
+};
+
+/* ---------------------------------------------------------------- the goal sheet and the appraisal form */
+const APPR_SELF = [['achievements', 'Main achievements this period', 'What you delivered, with figures where you can'], ['challenges', 'Challenges, and how you handled them', ''],
+  ['support', 'Support you need from your manager or the company', ''], ['aspirations', 'Career aspirations', 'The role you would like next, and when'], ['learning', 'What you want to learn next', 'Skills, trainings or assignments']];
+const APPR_MGR = [['strengths', 'Strengths shown this period', ''], ['improve', 'Areas to improve', ''], ['overall', 'Overall comments', '']];
+const RECOMMEND = { none: 'No change', promote: 'Ready for promotion', increment: 'Special increment', develop: 'Development plan', pip: 'Performance improvement plan', exit: 'Consider separation' };
+const MOBILITY = { yes: 'Yes, anywhere', india: 'Within India', city: 'Only in my city', no: 'Not now' };
+const apprOf = (rv, who) => rv[who] || {};
+const inPeriod = (iso, cyc) => !!iso && iso >= cyc.from && iso <= cyc.to;
+const tenureTxt = (from) => { if (!from) return ''; const m = ymDiff(from.slice(0, 7), todayISO().slice(0, 7)); return m < 1 ? 'less than a month' : [Math.floor(m / 12) && `${Math.floor(m / 12)} yr`, m % 12 && `${m % 12} mo`].filter(Boolean).join(' '); };
+function perfCtx(emp, cyc) {
+  const mine = emp.id === me.id, isMgrOf = !mine && (emp.managerId === me.id || isHR(emp.companyId));
+  const goals = S.goals.filter((g) => g.cycleId === cyc.id && g.empId === emp.id);
+  const st = STAGE_ORDER.indexOf(cyc.stage); const rv = reviewOf(cyc.id, emp.id);
+  const sheet = goals.length ? goals[0].status : 'draft';
+  const self = apprOf(rv, 'self'), mgr = apprOf(rv, 'mgr');
+  return { mine, isMgrOf, goals, st, rv, sheet, self, mgr,
+    canEditGoals: (mine || isMgrOf) && cyc.stage === 'goals' && (isMgrOf || !['submitted', 'approved'].includes(sheet)),
+    canCheckin: (mine || isMgrOf) && st >= 1 && st <= 3 && sheet === 'approved',
+    canSelf: mine && cyc.stage === 'self' && self.status !== 'submitted',
+    canMgr: isMgrOf && cyc.stage === 'manager' && mgr.status !== 'submitted',
+    showMgr: !mine || cyc.stage === 'closed' };
+}
+VIEWS.performance = () => {
+  const emp = R.q.get('emp') && (isHR() || allReportees(me.id).includes(R.q.get('emp')) || matrixReportees(me.id).some((x) => x.id === R.q.get('emp'))) ? empById(R.q.get('emp')) : me;
+  const cyc = R.q.get('c') ? S.cycles.find((c) => c.id === R.q.get('c')) : curCycle(emp.companyId);
+  if (!cyc) return { title: 'Goals and reviews', html: `<div class="card"><div class="empty">No review cycle yet.${isHR() ? ' <a href="#/cycles">Start one</a>.' : ' HR will start one.'}</div></div>` };
+  const x = perfCtx(emp, cyc); const { mine, isMgrOf, goals, st, rv, sheet, self, mgr } = x;
+  const wsum = goals.reduce((s, g) => s + (+g.weight || 0), 0);
+  const selfScore = goalScore(goals, 'self'), mgrScore = goalScore(goals, 'mgr');
+  const team = isManager() ? [...reportees(me.id), ...matrixReportees(me.id)] : [];
+  const role = templateFor(emp);
+  const rated = st >= 2 || selfScore || mgrScore;
+  const mtgs = S.perfMeetings.filter((m) => m.kind === 'review' && m.empId === emp.id && m.cycleId === cyc.id).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const goalRow = (g) => { const c = critOf(g); const pct = achievedPct(c, g.target, g.mgrActual ?? g.actual);
+    return `<tr><td><b>${esc(g.title)}</b>${g.libId ? ` <span class="fine">${esc((libById(g.libId) || {}).code || '')}</span>` : ''}${g.desc ? `<div class="fine">${esc(g.desc)}</div>` : ''}
+      <details><summary class="fine" style="cursor:pointer">How it is measured</summary>${critHtml(c, g.target)}</details>
+      ${(g.checkins || []).length ? `<div class="fine">Last check-in ${dmy(isoOf(new Date(g.checkins[g.checkins.length - 1].at)))}: ${esc(g.checkins[g.checkins.length - 1].note)}</div>` : ''}
+      ${(g.evidence || []).length ? `<div class="fine">${g.evidence.map((v) => `<a href="/api/files/${v.fileId}" target="_blank" rel="noopener">📎 ${esc(v.name)}</a>`).join(' ')}</div>` : ''}</td>
+      <td>${esc(g.kra)}</td><td class="r">${g.weight}%${g.roleWeight && +g.roleWeight !== +g.weight ? `<div class="fine">role ${g.roleWeight}%</div>` : ''}</td><td>${esc(g.target || '—')}</td>
+      <td><div class="bar"><i style="width:${Math.min(100, +g.progress || 0)}%"></i></div><span class="fine">${+g.progress || 0}%</span></td>
+      ${rated ? `<td>${g.actual !== undefined && g.actual !== '' ? `${esc(g.actual)}${c && c.unit ? ` <span class="fine">${esc(c.unit)}</span>` : ''}${pct != null ? `<div class="fine">${pct}% of target</div>` : ''}` : '—'}</td>
+        <td class="c">${esc(g.selfRating || '—')}</td><td class="c">${x.showMgr ? esc(g.mgrRating || '—') : '<span class="fine">At close</span>'}</td>` : ''}
+      <td class="r" style="white-space:nowrap">${x.canEditGoals && (!g.fromTemplate || isMgrOf) ? `<button class="btn sm" data-act="goalEdit2" data-c="${cyc.id}" data-emp="${emp.id}" data-id="${g.id}">Edit</button>` : ''}
+        ${x.canEditGoals && g.fromTemplate && mine && !isMgrOf ? `<button class="btn sm" data-act="goalEdit2" data-c="${cyc.id}" data-emp="${emp.id}" data-id="${g.id}">Target</button>` : ''}
+        ${x.canCheckin ? `<button class="btn sm" data-act="goalCheckin" data-id="${g.id}">Check in</button>` : ''}
+        ${x.canSelf ? `<button class="btn sm ${g.selfRating ? '' : 'pri'}" data-act="goalAppraise" data-who="self" data-id="${g.id}">Appraise</button>` : ''}
+        ${x.canMgr ? `<button class="btn sm ${g.mgrRating ? '' : 'pri'}" data-act="goalAppraise" data-who="mgr" data-id="${g.id}">Rate</button>` : ''}</td></tr>`; };
+  const tplNote = (() => {
+    if (!x.canEditGoals) return '';
+    if (!role) return isHR(emp.companyId) ? '<p class="fine">No role weightages match this person’s designation. <a href="#/perftemplates">Set them up</a>.</p>' : '';
+    return goals.length ? `<p class="fine">Role: <b>${esc(role.name)}</b>. <a href="#" data-act="tplApply" data-t="${role.id}" data-c="${cyc.id}" data-emp="${emp.id}">Replace these goals with the role’s</a>.</p>`
+      : `<div class="note">The role <b>${esc(role.name)}</b> has ${tplGoals(role).length} goals adding up to ${tplWeight(role)}%, each with how it is measured. <button class="btn sm pri" data-act="tplApply" data-t="${role.id}" data-c="${cyc.id}" data-emp="${emp.id}">Start from the role’s goals</button></div>`;
+  })();
+  const head = `<div class="card"><div class="hd"><div><h2>${esc(cyc.name)}${mine ? '' : `: ${esc(fullName(emp))}`}</h2>
+      <p class="sub">${esc((desig(emp.desigId) || {}).name || '—')}, grade ${esc((grade(emp.gradeId) || {}).name || '—')}, ${esc((dept(emp.deptId) || {}).name || '')}. Reports to ${esc(nameOf(emp.managerId))}. Joined ${dmy(emp.doj)} (${tenureTxt(emp.doj)}).${role ? ` Role weightages: ${esc(role.name)}.` : ''}<br>Review period ${dmy(cyc.from)} to ${dmy(cyc.to)}. Stage: <b>${STAGES[cyc.stage]}</b>.</p></div>
+    <div class="tools">${S.cycles.filter((c) => c.companyId === emp.companyId).length > 1 ? `<select class="inp" data-ch="perfCycle">${S.cycles.filter((c) => c.companyId === emp.companyId).map((c) => `<option value="${c.id}" ${c.id === cyc.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}
+      ${team.length ? `<select class="inp" data-ch="perfEmp"><option value="">My goals</option>${team.map((e) => `<option value="${e.id}" ${e.id === emp.id ? 'selected' : ''}>${esc(fullName(e))}</option>`).join('')}</select>` : ''}
+      <button class="btn" data-act="apprPrint" data-c="${cyc.id}" data-emp="${emp.id}">Appraisal form</button>
+      ${isMgrOf ? `<button class="btn" data-act="rmEdit" data-emp="${emp.id}" data-c="${cyc.id}">Schedule a review meeting</button>` : ''}${!mine ? '<a class="btn" href="#/performance">Back to my goals</a>' : ''}</div></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${STAGE_ORDER.map((k, i) => `<span class="badge ${i < st ? 'ok' : i === st ? 'mari' : ''}">${STAGES[k]}</span>`).join('')}</div>
+    ${isMgrOf && !mine && ['manager', 'calibration'].includes(cyc.stage) && isManager() ? `<p class="fine">During this cycle, also plan successors for the key positions in your team: <a href="#/succession">Succession planning</a>.</p>` : ''}</div>`;
+  const goalsCard = `<div class="card"><div class="hd"><div><h2>Goals</h2><p class="sub">Weightages add up to 100%. Open “How it is measured” on a goal to see its criteria and what earns each rating.</p></div>
+      <div class="tools"><span>Goal sheet: ${sheet === 'approved' ? '<span class="badge ok">Approved</span>' : sheet === 'submitted' ? '<span class="badge warn">Waiting for manager</span>' : sheet === 'returned' ? '<span class="badge bad">Returned for changes</span>' : '<span class="badge">Draft</span>'}</span>
+      <span class="fine">Total ${wsum}%</span>${x.canEditGoals ? `<button class="btn sm" data-act="goalLibAdd" data-c="${cyc.id}" data-emp="${emp.id}">Add from the library</button><button class="btn sm" data-act="goalEdit2" data-c="${cyc.id}" data-emp="${emp.id}">Add another goal</button>` : ''}
+      ${mine && cyc.stage === 'goals' && goals.length && !['submitted', 'approved'].includes(sheet) ? `<button class="btn sm pri" data-act="goalsSubmit" data-c="${cyc.id}" ${wsum !== 100 ? 'disabled title="Weightages must total 100%"' : ''}>Send for approval</button>` : ''}
+      ${isMgrOf && sheet === 'submitted' ? `<button class="btn sm danger" data-act="goalsReturn" data-c="${cyc.id}" data-emp="${emp.id}">Return for changes</button><button class="btn sm ok" data-act="goalsApprove" data-c="${cyc.id}" data-emp="${emp.id}" ${wsum !== 100 ? 'disabled title="Weightages must total 100%"' : ''}>Approve goals</button>` : ''}</div></div>
+    ${rv.returnNote && sheet === 'returned' ? `<div class="note warn">Returned: ${esc(rv.returnNote)}</div>` : ''}${tplNote}
+    ${goals.length ? `<div class="scroll"><table class="t"><thead><tr><th>Goal</th><th>Area</th><th class="r">Weight</th><th>Target</th><th style="min-width:110px">Progress</th>${rated ? '<th>Achieved</th><th class="c">Self</th><th class="c">Manager</th>' : ''}<th></th></tr></thead><tbody>${goals.map(goalRow).join('')}</tbody>
+      ${rated ? `<tfoot><tr><td colspan="6"><b>Weighted rating</b></td><td class="c"><b>${selfScore ?? '—'}</b></td><td class="c"><b>${x.showMgr ? mgrScore ?? '—' : ''}</b></td><td></td></tr></tfoot>` : ''}</table></div>`
+      : `<div class="empty">${x.canEditGoals ? 'Add the goals for this cycle, then send them for approval.' : 'No goals yet.'}</div>`}</div>`;
+  return { title: mine ? 'Goals and appraisal' : `Appraisal: ${fullName(emp)}`, html: `${head}${goalsCard}${st >= 2 || rated ? apprCard(emp, cyc, x) : ''}${meetingsCard(emp, cyc, mtgs, isMgrOf)}${apprContext(emp, cyc, mine)}
+    ${reviewSkillsCard(emp, cyc, { mine, isMgrOf, canMgr: x.canMgr, canSelf: x.canSelf, st })}${mine ? feedbackFor(emp) : ''}` };
+};
+function apprCard(emp, cyc, x) {
+  const { rv, self, mgr, mine, isMgrOf, goals } = x;
+  const field = (who, [k, label, help], can) => (can ? `<label class="field wide">${esc(label)}<textarea class="inp" data-ch="apprField" data-who="${who}" data-k="${k}" data-c="${cyc.id}" data-emp="${emp.id}" placeholder="${esc(help)}">${esc(apprOf(rv, who)[k] || '')}</textarea></label>`
+    : `<div class="field wide">${esc(label)}<span style="color:var(--ink);font-weight:400;white-space:pre-wrap">${esc(apprOf(rv, who)[k] || '—')}</span></div>`);
+  const selfDone = self.status === 'submitted', mgrDone = mgr.status === 'submitted';
+  const ack = rv.empAck;
+  return `<div class="card"><div class="hd"><div><h2>Appraisal</h2><p class="sub">The self-appraisal is sent once every goal is appraised; the manager then rates each goal and completes the review. Manager ratings are shown to the employee when the cycle closes.</p></div>
+    ${isHR(emp.companyId) && (selfDone || mgrDone) && cyc.stage !== 'closed' ? `<button class="btn sm" data-act="apprReopen" data-c="${cyc.id}" data-emp="${emp.id}">Reopen</button>` : ''}</div>
+    <div class="grid g2"><div><h3 style="margin-top:0">Self-appraisal ${selfDone ? `<span class="badge ok">Sent ${dmy(isoOf(new Date(self.at)))}</span>` : cyc.stage === 'self' ? '<span class="badge warn">Open</span>' : ''}</h3>
+      <p>Weighted self rating: <b>${goalScore(goals, 'self') ?? '—'}</b></p>
+      ${(selfDone || x.canSelf || mine || isMgrOf) ? `<div class="form">${APPR_SELF.map((q) => field('self', q, x.canSelf)).join('')}
+        ${x.canSelf ? fieldHtml({ k: 'mobility', label: 'Open to moving for a role', type: 'select', opts: Object.entries(MOBILITY), blank: 'Choose' }, self.mobility).replace('<select', `<select data-ch="apprField" data-who="self" data-k="mobility" data-c="${cyc.id}" data-emp="${emp.id}"`) : `<div class="field">Open to moving<span style="color:var(--ink);font-weight:400">${esc(MOBILITY[self.mobility] || '—')}</span></div>`}</div>` : ''}
+      ${x.canSelf ? `<div class="btns" style="justify-content:flex-start"><button class="btn pri" data-act="apprSubmit" data-who="self" data-c="${cyc.id}" data-emp="${emp.id}">Send my self-appraisal</button></div>` : ''}</div>
+    <div><h3 style="margin-top:0">Manager review ${mgrDone ? `<span class="badge ok">Done ${dmy(isoOf(new Date(mgr.at)))}</span>` : cyc.stage === 'manager' ? '<span class="badge warn">Open</span>' : ''}</h3>
+      <p>Weighted manager rating: <b>${x.showMgr ? goalScore(goals, 'mgr') ?? '—' : 'Shared when the cycle closes'}</b>${+rv.final && x.showMgr ? `. Final rating after calibration: <b>${rv.final} ${esc(RATING[rv.final])}</b>` : ''}</p>
+      ${x.showMgr ? `<div class="form">${APPR_MGR.map((q) => field('mgr', q, x.canMgr)).join('')}
+        ${x.canMgr ? `<label class="field">Potential<select class="inp" data-ch="revPot" data-c="${cyc.id}" data-emp="${emp.id}"><option value="">Choose</option>${[[3, 'High'], [2, 'Medium'], [1, 'Low']].map(([v, l]) => `<option value="${v}" ${+rv.potential === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field">Recommendation<select class="inp" data-ch="apprField" data-who="mgr" data-k="recommend" data-c="${cyc.id}" data-emp="${emp.id}">${Object.entries(RECOMMEND).map(([k, l]) => `<option value="${k}" ${mgr.recommend === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
+          : `<div class="field">Potential<span style="color:var(--ink);font-weight:400">${['—', 'Low', 'Medium', 'High'][+rv.potential || 0]}</span></div>${mine ? '' : `<div class="field">Recommendation<span style="color:var(--ink);font-weight:400">${esc(RECOMMEND[mgr.recommend] || '—')}</span></div>`}`}</div>`
+        : '<p class="mut">Visible when the cycle closes.</p>'}
+      ${x.canMgr ? `<div class="btns" style="justify-content:flex-start"><button class="btn pri" data-act="apprSubmit" data-who="mgr" data-c="${cyc.id}" data-emp="${emp.id}">Complete the review</button></div>` : ''}</div></div>
+    ${cyc.stage === 'closed' ? `<h3>Employee’s acknowledgement</h3>${ack ? `<p>${ack.agree ? '<span class="badge ok">Agrees with the appraisal</span>' : '<span class="badge warn">Does not fully agree</span>'} <span class="fine">${dt(ack.at)}</span></p>${ack.comment ? `<p style="white-space:pre-wrap">${esc(ack.comment)}</p>` : ''}`
+      : mine ? `<p class="fine">Read your appraisal and say whether you agree. Your comment is kept with it.</p><button class="btn pri" data-act="apprAck" data-c="${cyc.id}">Acknowledge my appraisal</button>` : '<p class="fine">Not acknowledged yet.</p>'}` : ''}</div>`;
+}
+/* what the employee and manager should see while appraising: previous ratings, trainings, feedback and changes in the period */
+function apprContext(emp, cyc, mine) {
+  const past = S.cycles.filter((c) => c.companyId === emp.companyId && c.id !== cyc.id && c.stage === 'closed').sort((a, b) => (a.to < b.to ? 1 : -1)).slice(0, 4)
+    .map((c) => ({ c, rv: S.reviews.find((r) => r.cycleId === c.id && r.empId === emp.id) || {} })).filter((p) => +p.rv.final || goalScore(S.goals.filter((g) => g.cycleId === p.c.id && g.empId === emp.id), 'mgr'));
+  const trs = S.trainingEnrols.filter((y) => y.empId === emp.id && y.status === 'attended').map((y) => trById(y.trainingId)).filter((t) => t && inPeriod(t.start, cyc));
+  const needs = S.trainingNeeds.filter((n) => n.empId === emp.id && ['open', 'planned'].includes(trNeedStatus(n)));
+  const fb = S.feedback.filter((f) => f.to === emp.id && inPeriod(isoOf(new Date(f.at)), cyc)).sort((a, b) => b.at - a.at);
+  const hist = (emp.history || []).filter((h) => inPeriod(h.date, cyc) && !['Document issued'].includes(h.type));
+  return `<div class="card"><h2>For this appraisal</h2><p class="sub">What happened in the review period, to keep in mind when appraising.</p><div class="grid g2"><div>
+    <h3 style="margin-top:0">Earlier ratings</h3>${past.length ? `<table class="t"><tbody>${past.map((p) => `<tr><td>${esc(p.c.name)}</td><td>${+p.rv.final ? `<b>${p.rv.final}</b> ${esc(RATING[p.rv.final])}` : `Manager ${goalScore(S.goals.filter((g) => g.cycleId === p.c.id && g.empId === emp.id), 'mgr')}`}</td></tr>`).join('')}</tbody></table>` : '<p class="fine">None.</p>'}
+    <h3>Trainings attended in the period</h3>${trs.length ? `<table class="t"><tbody>${trs.map((t) => `<tr><td><a href="#/course/${t.id}">${esc(t.title)}</a></td><td class="fine">${trWhen(t)}</td></tr>`).join('')}</tbody></table>` : '<p class="fine">None.</p>'}
+    <h3>Open development needs</h3>${needs.length ? needs.map((n) => `<span class="chip">${esc(n.topic)}</span>`).join(' ') : '<p class="fine">None.</p>'}</div>
+    <div><h3 style="margin-top:0">Changes in the period</h3>${hist.length ? `<table class="t"><tbody>${hist.map((h) => `<tr><td class="fine">${dmy(h.date)}</td><td>${esc(h.type)}${h.note ? `<div class="fine">${esc(h.note)}</div>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="fine">None.</p>'}
+    <h3>Feedback and kudos received in the period</h3>${fb.length ? fb.slice(0, 8).map((f) => `<div style="padding:4px 0;border-bottom:1px solid var(--rule)">${f.type === 'kudos' ? '<span class="badge mari">Kudos</span>' : '<span class="badge">Feedback</span>'} ${esc(f.text)}<div class="fine">${esc(nameOf(f.from))}, ${dmy(isoOf(new Date(f.at)))}</div></div>`).join('') : '<p class="fine">None.</p>'}</div></div></div>`;
+}
+ACT.apprField = (el) => { const r = reviewOf(el.dataset.c, el.dataset.emp); const who = el.dataset.who; r[who] = { ...(r[who] || {}), [el.dataset.k]: el.value.trim() };
+  if (who === 'self' && el.dataset.k === 'achievements') r.selfSummary = el.value.trim();
+  if (who === 'mgr' && ['overall', 'strengths'].includes(el.dataset.k)) r.mgrSummary = [r.mgr.strengths, r.mgr.overall].filter(Boolean).join('\n\n');
+  save(); toast('Saved'); };
+ACT.apprSubmit = async (b) => {
+  const who = b.dataset.who, cyc = S.cycles.find((c) => c.id === b.dataset.c), emp = empById(b.dataset.emp); const r = reviewOf(cyc.id, emp.id);
+  const goals = S.goals.filter((g) => g.cycleId === cyc.id && g.empId === emp.id);
+  const k = who === 'self' ? 'selfRating' : 'mgrRating';
+  const open = goals.filter((g) => !+g[k] || (who === 'self' && !String(g.selfComment || '').trim()));
+  if (open.length) { toast(`${who === 'self' ? 'Appraise' : 'Rate'} every goal first: ${open.map((g) => g.title).slice(0, 3).join(', ')}${open.length > 3 ? '…' : ''}`); return; }
+  const a = r[who] || {};
+  if (who === 'self' && !String(a.achievements || '').trim()) { toast('Write your main achievements first.'); return; }
+  if (who === 'mgr' && !(String(a.strengths || '').trim() && String(a.improve || '').trim())) { toast('Write the strengths and the areas to improve first.'); return; }
+  if (who === 'mgr' && !+r.potential) { toast('Choose the potential first.'); return; }
+  if (!(await confirmBox(who === 'self' ? 'Send your self-appraisal?' : 'Complete the review?', who === 'self' ? `It goes to ${nameOf(emp.managerId)}. You cannot change it afterwards unless HR reopens it.` : 'The ratings are locked and go to calibration. HR can reopen the review.', 'Send'))) return;
+  r[who] = { ...a, status: 'submitted', at: Date.now(), by: me.id };
+  audit(who === 'self' ? 'Self-appraisal sent' : 'Manager review completed', `${fullName(emp)}, ${cyc.name}`, 'performance', 'employee', emp.id);
+  saveNow(); toast(who === 'self' ? 'Self-appraisal sent to your manager' : 'Review completed'); route();
+};
+ACT.apprReopen = async (b) => { const r = reviewOf(b.dataset.c, b.dataset.emp); const n = await askText('Reopen the appraisal?', 'Why', 'Reopen'); if (n === null) return;
+  ['self', 'mgr'].forEach((w) => { if (r[w]) r[w] = { ...r[w], status: 'draft' }; }); (r.log = r.log || []).push({ at: Date.now(), by: me.id, what: 'Reopened', note: n });
+  audit('Appraisal reopened', `${nameOf(b.dataset.emp)}: ${n}`, 'performance', 'employee', b.dataset.emp); saveNow(); route(); };
+ACT.apprAck = (b) => {
+  openDlg(`<form class="dlg" id="akF"><h2>Acknowledge your appraisal</h2><label class="chk"><input type="radio" name="agree" value="1" checked> I have read my appraisal and agree with it</label><label class="chk"><input type="radio" name="agree" value="0"> I have read it and do not fully agree</label>
+    <label class="field">Comment (optional; required if you do not agree)<textarea class="inp" name="comment"></textarea></label><p class="err" id="akE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+  $('#akF').onsubmit = (ev) => { ev.preventDefault(); const f = ev.target; const agree = f.elements.agree.value === '1'; const c = f.elements.comment.value.trim();
+    if (!agree && c.length < 5) { $('#akE').textContent = 'Say what you do not agree with.'; return; }
+    reviewOf(b.dataset.c, me.id).empAck = { agree, comment: c, at: Date.now() }; saveNow(); closeDlg(); toast('Thank you'); route(); };
+};
+/* add or edit a goal: from the library, or one of the person's own with how it is measured */
+ACT.goalLibAdd = (b) => {
+  const emp = empById(b.dataset.emp), cyc = b.dataset.c; const have = new Set(S.goals.filter((g) => g.cycleId === cyc && g.empId === emp.id).map((g) => g.libId));
+  const opts = LIB_AREAS.map((a) => { const xs = libOf(emp.companyId).filter((l) => l.area === a && l.active !== false && !have.has(l.id)); return xs.length ? `<optgroup label="${esc(a)}">${xs.map((l) => `<option value="${l.id}">${esc(l.code || '')} ${esc(l.title)}</option>`).join('')}</optgroup>` : ''; }).join('');
+  if (!opts) { toast('There is nothing more in the goal library.'); return; }
+  openDlg(`<form class="dlg" id="glF" novalidate><h2>Add a goal from the library</h2><div class="form"><label class="field wide">Goal<select class="inp" name="libId"><option value="">Choose</option>${opts}</select></label>
+    <label class="field">Weight (%)<input class="inp" type="number" name="weight" min="5" max="100" value="10"></label><label class="field">Target<input class="inp" name="target"></label></div><div id="glC"></div><p class="err" id="glE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`, true);
+  const f = $('#glF'); f.elements.libId.onchange = () => { const l = libById(f.elements.libId.value); $('#glC').innerHTML = l ? `${l.desc ? `<p class="fine">${esc(l.desc)}</p>` : ''}${critHtml(critFromLib(l), '')}` : ''; };
+  f.onsubmit = (ev) => { ev.preventDefault(); const l = libById(f.elements.libId.value); const w = parseNum(f.elements.weight.value);
+    if (!l) { $('#glE').textContent = 'Choose the goal.'; return; } if (!(w >= 5)) { $('#glE').textContent = 'Give it a weight of at least 5%.'; return; }
+    const others = S.goals.filter((g) => g.cycleId === cyc && g.empId === emp.id).reduce((s, g) => s + (+g.weight || 0), 0);
+    if (others + w > 100) { $('#glE').textContent = `Weights would total ${others + w}%. Keep them to 100%.`; return; }
+    const st = (S.goals.find((g) => g.cycleId === cyc && g.empId === emp.id) || {}).status || 'draft';
+    S.goals.push({ id: uid(), cycleId: cyc, empId: emp.id, status: st === 'approved' ? 'approved' : st === 'submitted' ? 'submitted' : 'draft', checkins: [], progress: 0, title: l.title, desc: l.desc || '', kra: l.area, weight: w, target: f.elements.target.value.trim(), libId: l.id, crit: critFromLib(l) });
+    saveNow(); closeDlg(); route(); };
+};
+ACT.goalEdit2 = (b) => {
+  const emp = empById(b.dataset.emp); const g = b.dataset.id ? S.goals.find((x) => x.id === b.dataset.id) : null; const cyc = b.dataset.c;
+  const isMgr = emp.id !== me.id; const lock = g && g.fromTemplate && !isMgr;     // a role's goal: the employee may only change the target
+  const fields = lock ? [{ k: 'target', label: 'Target', wide: true }]
+    : [{ k: 'title', label: 'Goal', req: true, wide: true }, { k: 'desc', label: 'What it covers', type: 'textarea', wide: true }, { k: 'kra', label: 'Area', type: 'select', opts: LIB_AREAS.map((k) => [k, k]) },
+      { k: 'weight', label: 'Weight (%)', type: 'number', min: 5, max: 100, req: true }, { k: 'target', label: 'Target', help: 'For a number, the figure: e.g. 200 (₹ lakh), 95 (%)' },
+      ...(g && g.libId ? [] : [{ k: 'measure', label: 'Measured as', type: 'select', opts: Object.entries(MEASURES) }, { k: 'unit', label: 'Unit' }, { k: 'how', label: 'How it is measured', wide: true, req: true }])];
+  const c = g ? critOf(g) || {} : {};
+  const v = g ? { ...g, measure: c.measure || 'scale', unit: c.unit, how: c.how || g.desc } : { kra: KRAS[0], weight: 10, measure: 'higher' };
+  openDlg(`<form class="dlg" id="gf2" novalidate><h2>${g ? (lock ? `Target: ${esc(g.title)}` : 'Edit goal') : 'Add a goal'}</h2>${lock ? `<p class="fine" style="margin:0">This goal and its weight of ${g.weight}% come from the role. Your manager can change the weight.</p>${critHtml(c, '')}` : ''}
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="ge2"></p>
+    <div class="btns">${g && !lock ? '<button type="button" class="btn danger" id="gDel2" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#gf2').onsubmit = (e) => { e.preventDefault(); const d = readForm(e.target, fields);
+    if (!lock) { if (!d.title || !(d.weight >= 5)) { $('#ge2').textContent = 'Write the goal and give it a weight of at least 5%.'; return; }
+      if (fields.some((f) => f.k === 'how') && !d.how) { $('#ge2').textContent = 'Say how the goal will be measured.'; return; }
+      const others = S.goals.filter((x) => x.cycleId === cyc && x.empId === emp.id && x !== g).reduce((s, x) => s + (+x.weight || 0), 0);
+      if (others + d.weight > 100) { $('#ge2').textContent = `Weights would total ${others + d.weight}%. Keep them to 100%.`; return; } }
+    const crit = d.measure ? { measure: d.measure, unit: d.unit, how: d.how, source: '', freq: '', bands: { ...DEF_BANDS }, scale: {} } : null;
+    ['measure', 'unit', 'how'].forEach((k) => delete d[k]);
+    if (g) { Object.assign(g, d); if (crit) g.crit = crit; } else S.goals.push({ id: uid(), cycleId: cyc, empId: emp.id, status: 'draft', checkins: [], progress: 0, ...d, crit });
+    saveNow(); closeDlg(); route(); };
+  if ($('#gDel2')) $('#gDel2').onclick = () => { S.goals = S.goals.filter((x) => x !== g); saveNow(); closeDlg(); route(); };
+};
+/* appraise one goal: the achievement against the target, evidence and a comment, and the rating with its criteria */
+ACT.goalAppraise = (b) => {
+  const g = S.goals.find((x) => x.id === b.dataset.id); const who = b.dataset.who; const c = critOf(g); const numeric = c && ['higher', 'lower'].includes(c.measure);
+  const kA = who === 'self' ? 'actual' : 'mgrActual', kC = who === 'self' ? 'selfComment' : 'mgrComment', kR = who === 'self' ? 'selfRating' : 'mgrRating';
+  const actual0 = g[kA] ?? (who === 'mgr' ? g.actual : '') ?? '';
+  let evidence = (g.evidence || []).slice();
+  openDlg(`<form class="dlg" id="gaF" novalidate><h2>${who === 'self' ? 'Appraise' : 'Rate'}: ${esc(g.title)}</h2><p class="fine" style="margin:0">${esc(g.kra)}, weight ${g.weight}%. Progress ${+g.progress || 0}%.</p>
+    ${critHtml(c, g.target)}
+    ${(g.checkins || []).length ? `<details><summary class="fine" style="cursor:pointer">Check-ins (${g.checkins.length})</summary><div class="fine">${g.checkins.slice().reverse().map((x) => `${dmy(isoOf(new Date(x.at)))} ${esc(nameOf(x.by))}: ${x.progress}%, ${esc(x.note)}`).join('<br>')}</div></details>` : ''}
+    ${who === 'mgr' ? `<div class="note">Self-appraisal: ${g.actual !== undefined && g.actual !== '' ? `achieved <b>${esc(g.actual)}</b>, ` : ''}rated <b>${esc(g.selfRating || '—')}</b>. ${esc(g.selfComment || '')}${(g.evidence || []).length ? `<div>${g.evidence.map((v) => `<a href="/api/files/${v.fileId}" target="_blank" rel="noopener">📎 ${esc(v.name)}</a>`).join(' ')}</div>` : ''}</div>` : ''}
+    <div class="form">${c && c.measure !== 'scale' ? `<label class="field">${numeric ? `Achieved${c.unit ? ` (${esc(c.unit)})` : ''}` : 'Done on'}<input class="inp" name="actual" ${c.measure === 'milestone' ? 'type="date"' : 'inputmode="decimal"'} value="${esc(actual0)}"></label>` : ''}
+      <label class="field">Rating<select class="inp" name="rating"><option value="">Choose</option>${[5, 4, 3, 2, 1].map((r) => `<option value="${r}" ${+g[kR] === r ? 'selected' : ''}>${r} ${RATING[r]}</option>`).join('')}</select><small id="gaS"></small></label>
+      <label class="field wide">${who === 'self' ? 'What you did and the result' : 'Comment'}<textarea class="inp" name="comment">${esc(g[kC] || '')}</textarea></label>
+      ${who === 'self' ? `<label class="field wide">Evidence (optional: a photo or PDF)<input class="inp" type="file" name="file" accept="image/*,application/pdf"><small id="gaEv">${evidence.map((v) => esc(v.name)).join(', ') || 'Nothing attached'}</small></label>` : ''}</div>
+    <p class="err" id="gaE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  const f = $('#gaF');
+  const hint = () => { if (!numeric || !f.elements.actual) return; const s = suggestRating(c, g.target, f.elements.actual.value); const p = achievedPct(c, g.target, f.elements.actual.value);
+    $('#gaS').textContent = s ? `${p}% of the target: the criteria give ${s} (${RATING[s]})` : ''; if (s && !f.elements.rating.dataset.touched) f.elements.rating.value = s; };
+  if (f.elements.actual) f.elements.actual.addEventListener('input', hint); f.elements.rating.addEventListener('change', () => { f.elements.rating.dataset.touched = '1'; }); if (g[kR]) f.elements.rating.dataset.touched = '1'; hint();
+  f.onsubmit = async (ev) => { ev.preventDefault(); const err = (m) => { $('#gaE').textContent = m; };
+    const r = +f.elements.rating.value; const cm = f.elements.comment.value.trim();
+    if (!r) return err('Choose the rating.'); if (who === 'self' && cm.length < 5) return err('Say what you did and the result.');
+    const file = f.elements.file && f.elements.file.files[0];
+    if (file) { try { err(`Uploading ${file.name}…`); const up = await uploadFile(file); evidence = [...evidence, { fileId: up.id, name: file.name, at: Date.now() }]; } catch (x) { return err(x.message); } }
+    if (f.elements.actual) g[kA] = f.elements.actual.value.trim();
+    g[kR] = r; g[kC] = cm; if (who === 'self') g.evidence = evidence;
+    const sug = numeric && suggestRating(c, g.target, g[kA]); g[who + 'Suggested'] = sug || '';
+    saveNow(); closeDlg(); toast('Saved'); route(); };
+};
+/* the whole appraisal on paper, for the file and signatures */
+ACT.apprPrint = (b) => {
+  const cyc = S.cycles.find((c) => c.id === b.dataset.c), emp = empById(b.dataset.emp); const x = perfCtx(emp, cyc); const { goals, rv, self, mgr } = x; const co = coById(emp.companyId) || company();
+  const mt = S.perfMeetings.filter((m) => m.kind === 'review' && m.empId === emp.id && m.cycleId === cyc.id && m.status === 'held');
+  const sec = (t, h) => `<h2 style="margin-top:18px">${esc(t)}</h2>${h}`;
+  const kv = (rows) => `<table>${rows.map(([k, v]) => `<tr><th style="width:32%">${esc(k)}</th><td style="white-space:pre-wrap">${esc(v || '—')}</td></tr>`).join('')}</table>`;
+  printHtml(`Appraisal ${fullName(emp)} ${cyc.name}`, `<h1>${esc(co.legalName || co.name)}</h1><p class="fine">Performance appraisal: ${esc(cyc.name)}, ${dmy(cyc.from)} to ${dmy(cyc.to)}</p>
+    ${kv([['Employee', `${fullName(emp)} (${emp.empNo})`], ['Designation and grade', `${(desig(emp.desigId) || {}).name || '—'}, ${(grade(emp.gradeId) || {}).name || '—'}`], ['Department', (dept(emp.deptId) || {}).name], ['Reports to', nameOf(emp.managerId)], ['Joined', dmy(emp.doj)], ['Role weightages', (templateFor(emp) || {}).name]])}
+    ${sec('Goals and ratings', `<table><tr><th>Goal</th><th class="r">Weight</th><th>Target</th><th>Achieved</th><th class="r">Self</th><th class="r">Manager</th></tr>${goals.map((g) => { const c = critOf(g); return `<tr><td><b>${esc(g.title)}</b><div class="fine">${esc(g.kra)}${c ? ` · ${esc(MEASURE_SHORT[c.measure])}${c.how ? `: ${esc(c.how)}` : ''}` : ''}</div>${g.selfComment ? `<div class="fine">Employee: ${esc(g.selfComment)}</div>` : ''}${g.mgrComment && x.showMgr ? `<div class="fine">Manager: ${esc(g.mgrComment)}</div>` : ''}</td>
+      <td class="r">${g.weight}%</td><td>${esc(g.target || '')}</td><td>${esc(g.mgrActual || g.actual || '')}${c && c.unit ? ' ' + esc(c.unit) : ''}</td><td class="r">${esc(g.selfRating || '')}</td><td class="r">${x.showMgr ? esc(g.mgrRating || '') : ''}</td></tr>`; }).join('')}
+      <tr><th colspan="4">Weighted rating</th><th class="r">${goalScore(goals, 'self') ?? ''}</th><th class="r">${x.showMgr ? goalScore(goals, 'mgr') ?? '' : ''}</th></tr></table>`)}
+    ${sec('Self-appraisal', kv([...APPR_SELF.map(([k, l]) => [l, self[k]]), ['Open to moving', MOBILITY[self.mobility]]]))}
+    ${x.showMgr ? sec('Manager review', kv([...APPR_MGR.map(([k, l]) => [l, mgr[k]]), ['Potential', ['', 'Low', 'Medium', 'High'][+rv.potential || 0]], ...(emp.id === me.id ? [] : [['Recommendation', RECOMMEND[mgr.recommend]]]), ['Final rating after calibration', +rv.final ? `${rv.final} ${RATING[rv.final]}` : '']])) : ''}
+    ${mt.length ? sec('Review meetings', mt.map((m) => `<p><b>${dmy(m.date)}</b>, ${esc(MEET_PURPOSE[m.purpose] || '')}: ${esc((m.minutes || {}).discussion || '')}</p>`).join('')) : ''}
+    ${rv.empAck ? sec('Employee’s acknowledgement', `<p>${rv.empAck.agree ? 'Agrees' : 'Does not fully agree'}, ${dt(rv.empAck.at)}. ${esc(rv.empAck.comment || '')}</p>`) : ''}
+    <div class="cols" style="margin-top:40px"><div>Employee: ____________________<br>Date:</div><div>Manager: ____________________<br>Date:</div></div>`);
+};
+
+/* ---------------------------------------------------------------- review meetings and management meetings */
+const MEET_PURPOSE = { goals: 'Goal setting', checkin: 'Mid-year check-in', appraisal: 'Appraisal discussion', pip: 'Improvement plan review', other: 'Other' };
+const MEET_STATUS = { scheduled: ['Scheduled', 'info'], held: ['Held', 'ok'], cancelled: ['Cancelled', ''] };
+const DECISIONS = { promote: ['Promote', 'ok'], increment: ['Special increment', 'ok'], retain: ['Retain: key talent', 'info'], develop: ['Development plan', 'info'], pip: ['Performance improvement plan', 'warn'],
+  transfer: ['Transfer or change of role', 'info'], exit: ['Asked to leave (separation)', 'bad'], nochange: ['No change', ''] };
+const meetById = (id) => S.perfMeetings.find((m) => m.id === id);
+const meetTs = (m) => tsAt(m.date || todayISO(), '00:00');
+/* who may record a meeting (the server checks the same): HR; for a review meeting the employee's managers; for a
+   management meeting the person who called it and its chair */
+const canRecord = (m) => isHR(m.companyId) || (m.kind === 'review' ? allReportees(me.id).includes(m.empId) : [m.createdBy, m.chairId].includes(me.id));
+const mgmtDecidable = (coId) => (isHR(coId) ? coEmployees(coId) : allReportees(me.id).map(empById).filter((e) => e && active(e)));
+/* what has been done about a decision since the meeting */
+function decisionFollow(m, d) {
+  const since = meetTs(m);
+  if (d.decision === 'promote') { const r = S.requests.filter((x) => x.kind === 'promotion' && x.empId === d.empId && (x.at || 0) >= since).sort((a, b) => b.at - a.at)[0]; return r ? { html: `<a href="#/request/${r.id}">Promotion proposal</a> ${pill(r.status)}`, done: ['approved', 'applied'].includes(r.status) } : null; }
+  if (d.decision === 'exit') { const x = S.exits.filter((y) => y.empId === d.empId && (y.initiatedAt || 0) >= since).sort((a, b) => b.initiatedAt - a.initiatedAt)[0]; return x ? { html: `<a href="#/exit/${x.id}">Exit ${esc(x.no || '')}</a> <span class="badge">${esc(exitStage(x))}</span>`, done: x.status === 'completed' } : null; }
+  if (d.decision === 'develop' || d.decision === 'pip') { const n = S.trainingNeeds.filter((y) => y.empId === d.empId && (y.at || 0) >= since); return n.length ? { html: `${n.length} development need${n.length > 1 ? 's' : ''} raised`, done: n.every((y) => trNeedStatus(y) === 'done') } : null; }
+  return null;
+}
+const decisionStatus = (m, d) => { const f = decisionFollow(m, d); return d.status === 'dropped' ? 'dropped' : d.status === 'done' || (f && f.done) ? 'done' : 'open'; };
+const DEC_ST = { open: ['Open', 'warn'], done: ['Done', 'ok'], dropped: ['Not going ahead', ''] };
+
+VIEWS.perfmeetings = () => {
+  const tab = ['management', 'decisions'].includes(R.q.get('tab')) ? R.q.get('tab') : 'review';
+  const cy = R.q.get('c') || '';
+  const cycles = S.cycles.filter((c) => c.companyId === CO).sort((a, b) => (a.from < b.from ? 1 : -1));
+  const mine = S.perfMeetings.filter((m) => m.companyId === CO && (!cy || m.cycleId === cy));
+  const mgmtOK = isHR() || isManager() || mine.some((m) => m.kind === 'management');
+  const tabs = `<nav class="tabs"><a href="#/perfmeetings" class="${tab === 'review' ? 'on' : ''}">Review meetings</a>${mgmtOK ? `<a href="#/perfmeetings?tab=management" class="${tab === 'management' ? 'on' : ''}">Management meetings</a><a href="#/perfmeetings?tab=decisions" class="${tab === 'decisions' ? 'on' : ''}">Decisions</a>` : ''}</nav>`;
+  const cySel = cycles.length ? `<select class="inp" data-ch="pmCycle"><option value="">All cycles</option>${cycles.map((c) => `<option value="${c.id}" ${c.id === cy ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '';
+  const cycName = (id) => (S.cycles.find((c) => c.id === id) || {}).name || '';
+  if (tab === 'review') {
+    const list = mine.filter((m) => m.kind === 'review').sort((a, b) => (a.date < b.date ? 1 : -1));
+    return { title: 'Review meetings', html: `${tabs}<div class="card"><div class="hd"><div><h2>Review meetings</h2><p class="sub">Meetings between an employee and their manager about goals, a check-in or the appraisal, with the minutes, the actions agreed and the employee’s acknowledgement.</p></div>
+      <div class="tools">${cySel}${MGR() ? '<button class="btn pri" data-act="rmEdit">Schedule a review meeting</button>' : ''}</div></div>
+      ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>When</th><th>Employee</th><th>About</th><th>Cycle</th><th>Status</th><th>Actions agreed</th><th>Acknowledged</th></tr></thead><tbody>${list.map((m) => { const acts = (m.minutes || {}).actions || [];
+        return `<tr class="click" data-act="pmOpen" data-id="${m.id}"><td>${dmy(m.date)}<div class="fine">${esc(m.start || '')} ${esc(MODES[m.mode] || '')}</div></td><td><b>${esc(nameOf(m.empId))}</b><div class="fine">with ${esc((m.attendees || []).filter((a) => a !== m.empId).map(nameOf).join(', '))}</div></td>
+          <td>${esc(MEET_PURPOSE[m.purpose] || '')}</td><td class="fine">${esc(cycName(m.cycleId))}</td><td>${trBadge(MEET_STATUS, m.status)}</td><td>${acts.length ? `${acts.filter((a) => a.done).length}/${acts.length} done` : '—'}</td>
+          <td>${m.empAck ? (m.empAck.agree ? '<span class="badge ok">Agreed</span>' : '<span class="badge warn">Comments</span>') : m.status === 'held' ? '<span class="fine">Not yet</span>' : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No review meetings yet.</div>'}</div>` };
+  }
+  if (tab === 'management') {
+    const list = mine.filter((m) => m.kind === 'management').sort((a, b) => (a.date < b.date ? 1 : -1));
+    return { title: 'Management meetings', html: `${tabs}<div class="card"><div class="hd"><div><h2>Management meetings</h2><p class="sub">Meetings of managers and HR on ratings, promotions, development and separations, with minutes and a decision for each person discussed. Confidential: only HR and the people invited see them.</p></div>
+      <div class="tools">${cySel}${MGR() ? '<button class="btn pri" data-act="mmEdit">Call a management meeting</button>' : ''}</div></div>
+      ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>When</th><th>Meeting</th><th>Chair</th><th>Cycle</th><th>Status</th><th>Decisions</th></tr></thead><tbody>${list.map((m) => { const ds = m.decisions || [];
+        return `<tr class="click" data-act="pmOpen" data-id="${m.id}"><td>${dmy(m.date)}<div class="fine">${esc(m.start || '')}</div></td><td><b>${esc(m.title)}</b><div class="fine">${(m.attendees || []).length} invited</div></td><td>${esc(nameOf(m.chairId))}</td><td class="fine">${esc(cycName(m.cycleId))}</td><td>${trBadge(MEET_STATUS, m.status)}</td>
+          <td class="fine">${Object.keys(DECISIONS).map((k) => { const n = ds.filter((d) => d.decision === k).length; return n ? `${DECISIONS[k][0]}: ${n}` : ''; }).filter(Boolean).join(', ') || '—'}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No management meetings yet.</div>'}</div>` };
+  }
+  const dk = R.q.get('d') || '';
+  const rows = mine.filter((m) => m.kind === 'management').flatMap((m) => (m.decisions || []).map((d) => ({ m, d }))).filter(({ d }) => !dk || d.decision === dk).sort((a, b) => (a.m.date < b.m.date ? 1 : -1));
+  return { title: 'Decisions', html: `${tabs}<div class="card"><div class="hd"><div><h2>Decisions from management meetings</h2><p class="sub">Who is promoted, developed, put on an improvement plan, moved or asked to leave, the meeting that decided it, and what has been done since.</p></div>
+    <div class="tools">${cySel}<select class="inp" data-ch="pmDec"><option value="">All decisions</option>${Object.entries(DECISIONS).map(([k, [l]]) => `<option value="${k}" ${k === dk ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn" data-act="pmDecXls">Download Excel</button></div></div>
+    <div class="grid g4" style="margin-bottom:12px">${['promote', 'develop', 'pip', 'exit'].map((k) => `<div class="kpi"><span>${DECISIONS[k][0]}</span><b>${rows.filter(({ d }) => d.decision === k).length}</b><small>${rows.filter(({ m, d }) => d.decision === k && decisionStatus(m, d) === 'open').length} still open</small></div>`).join('')}</div>
+    ${rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Decision</th><th>Meeting</th><th>Owner</th><th>Since then</th><th>Status</th></tr></thead><tbody>${rows.map(({ m, d }) => { const f = decisionFollow(m, d); return `<tr><td><b>${esc(nameOf(d.empId))}</b><div class="fine">${esc((desig((empById(d.empId) || {}).desigId) || {}).name || '')}</div></td>
+      <td>${trBadge(DECISIONS, d.decision)}${d.detail ? `<div class="fine">${esc(d.detail)}</div>` : ''}${d.effective ? `<div class="fine">From ${dmy(d.effective)}</div>` : ''}</td><td><a href="#/perfmeeting/${m.id}">${esc(m.title)}</a><div class="fine">${dmy(m.date)}</div></td><td>${esc(nameOf(d.ownerId))}</td>
+      <td class="fine">${f ? f.html : '—'}</td><td>${trBadge(DEC_ST, decisionStatus(m, d))}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No decisions recorded.</div>'}</div>` };
+};
+ACT.pmCycle = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('c', el.value) : p.delete('c'); go('#/perfmeetings?' + p); };
+ACT.pmDec = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('d', el.value) : p.delete('d'); go('#/perfmeetings?' + p); };
+ACT.pmOpen = (b) => go('#/perfmeeting/' + b.dataset.id);
+ACT.pmDecXls = () => {
+  const rows = S.perfMeetings.filter((m) => m.companyId === CO && m.kind === 'management').flatMap((m) => (m.decisions || []).map((d) => { const e = empById(d.empId) || {}; const f = decisionFollow(m, d);
+    return { Meeting: m.title, Date: dmy(m.date), Cycle: (S.cycles.find((c) => c.id === m.cycleId) || {}).name || '', 'Employee number': e.empNo || '', Employee: nameOf(d.empId), Decision: DECISIONS[d.decision][0], Details: d.detail || '', Effective: dmy(d.effective), Owner: nameOf(d.ownerId),
+      'Done since': f ? f.html.replace(/<[^>]+>/g, '') : '', Status: DEC_ST[decisionStatus(m, d)][0] }; }));
+  writeBook('Management_decisions.xlsx', { Decisions: rows });
+};
+function meetingsCard(emp, cyc, mtgs, isMgrOf) {
+  return `<div class="card"><div class="hd"><div><h2>Review meetings</h2><p class="sub">Discussions about these goals and this appraisal, with the minutes and the actions agreed.</p></div>${isMgrOf ? `<button class="btn" data-act="rmEdit" data-emp="${emp.id}" data-c="${cyc.id}">Schedule a review meeting</button>` : ''}</div>
+    ${mtgs.length ? `<table class="t"><tbody>${mtgs.map((m) => `<tr class="click" data-act="pmOpen" data-id="${m.id}"><td>${dmy(m.date)} <span class="fine">${esc(m.start || '')}</span></td><td>${esc(MEET_PURPOSE[m.purpose] || '')}</td><td>${trBadge(MEET_STATUS, m.status)}</td>
+      <td class="fine">${esc(((m.minutes || {}).discussion || '').slice(0, 120))}</td><td>${m.empAck ? '<span class="badge ok">Acknowledged</span>' : m.status === 'held' && m.empId === me.id ? '<span class="badge warn">Please read</span>' : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="fine">No meetings recorded for this cycle.</p>'}</div>`;
+}
+/* schedule or change a review meeting */
+ACT.rmEdit = (b) => {
+  const m0 = b.dataset.id ? meetById(b.dataset.id) : null;
+  const pool = isHR() ? coEmployees() : [...allReportees(me.id).map(empById).filter((e) => e && active(e))];
+  if (!m0 && !pool.length) { toast('Review meetings are for your team.'); return; }
+  const cyc = curCycle(CO); const empId = (m0 && m0.empId) || b.dataset.emp || '';
+  const fields = [...(m0 ? [] : [{ k: 'empId', label: 'Employee', type: 'select', opts: pool.map((e) => [e.id, `${fullName(e)} (${e.empNo})`]), blank: 'Choose', req: true }]),
+    { k: 'cycleId', label: 'Review cycle', type: 'select', opts: S.cycles.filter((c) => c.companyId === CO).map((c) => [c.id, c.name]), blank: 'None' }, { k: 'purpose', label: 'About', type: 'select', opts: Object.entries(MEET_PURPOSE) },
+    { k: 'date', label: 'Date', type: 'date', req: true }, { k: 'start', label: 'Time', type: 'time' }, { k: 'mode', label: 'How', type: 'select', opts: Object.entries(MODES) }, { k: 'venue', label: 'Room or meeting link', wide: true },
+    { k: 'agenda', label: 'Agenda', type: 'textarea', wide: true }];
+  const stage = cyc ? cyc.stage : '';
+  const v = m0 || { empId, cycleId: b.dataset.c || (cyc && cyc.id) || '', purpose: stage === 'goals' ? 'goals' : stage === 'checkin' ? 'checkin' : 'appraisal', date: addDays(todayISO(), 2), start: '11:00', mode: 'f2f',
+    agenda: stage === 'goals' ? 'Agree the goals, weightages and targets for the year' : 'Go through each goal and the self-appraisal; agree strengths, areas to improve and next steps' };
+  const others = coEmployees().filter((e) => e.id !== empId).map((e) => [e.id, fullName(e)]);
+  openDlg(`<form class="dlg" id="rmF" novalidate><h2>${m0 ? 'Change the review meeting' : 'Schedule a review meeting'}${empId ? ` with ${esc(nameOf(empId))}` : ''}</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div>
+    <div class="field">Also attending (the employee and you are included)${checkList('at', others.filter(([id]) => id !== me.id), (m0 ? m0.attendees : []).filter((a) => a !== me.id && a !== empId))}</div>
+    <p class="err" id="rmE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${m0 ? 'Save' : 'Schedule'}</button></div></form>`, true);
+  $('#rmF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); const emp = empById(m0 ? m0.empId : d.empId || empId);
+    if (!emp) { $('#rmE').textContent = 'Choose the employee.'; return; } if (!d.date) { $('#rmE').textContent = 'Choose the date.'; return; }
+    const attendees = uniq([emp.id, me.id, ...checked(ev.target, 'at')]);
+    if (m0) { Object.assign(m0, d, { attendees }); logEntry(m0, 'Changed'); }
+    else { const m = { id: uid(), companyId: emp.companyId, kind: 'review', empId: emp.id, ...d, attendees, status: 'scheduled', minutes: { actions: [] }, createdBy: me.id, at: Date.now(), log: [] }; logEntry(m, 'Scheduled'); S.perfMeetings.push(m);
+      audit('Review meeting scheduled', `${fullName(emp)}, ${dmy(d.date)}`, 'performance', 'employee', emp.id); saveNow(); closeDlg(); go('#/perfmeeting/' + m.id); return; }
+    saveNow(); closeDlg(); route(); };
+};
+/* call or change a management meeting */
+ACT.mmEdit = (b) => {
+  const m0 = b.dataset.id ? meetById(b.dataset.id) : null; const cyc = curCycle(CO);
+  const fields = [{ k: 'title', label: 'Meeting', req: true, wide: true }, { k: 'cycleId', label: 'Review cycle', type: 'select', opts: S.cycles.filter((c) => c.companyId === CO).map((c) => [c.id, c.name]), blank: 'None' },
+    { k: 'chairId', label: 'Chair', type: 'select', opts: empOpts(CO) }, { k: 'date', label: 'Date', type: 'date', req: true }, { k: 'start', label: 'Time', type: 'time' }, { k: 'venue', label: 'Room or meeting link' },
+    { k: 'agenda', label: 'Agenda', type: 'textarea', wide: true }];
+  const v = m0 || { title: `${cyc ? cyc.name + ': ' : ''}calibration and talent review`, cycleId: (cyc && cyc.id) || '', chairId: me.id, date: addDays(todayISO(), 7), start: '15:00',
+    agenda: 'Ratings spread against the guideline\nPromotions\nPeople needing development or an improvement plan\nSeparations\nSuccession for key positions' };
+  const people = coEmployees().filter((e) => e.id !== me.id).sort((a, c) => fullName(a).localeCompare(fullName(c))).map((e) => [e.id, `${fullName(e)}${(desig(e.desigId) || {}).name ? `, ${(desig(e.desigId) || {}).name}` : ''}`]);
+  openDlg(`<form class="dlg" id="mmF" novalidate><h2>${m0 ? 'Change the management meeting' : 'Call a management meeting'}</h2><p class="fine" style="margin:0">Confidential: only HR and the people invited see the meeting, its minutes and decisions.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><div class="field">Invited (you are included)${checkList('at', people, (m0 ? m0.attendees : hrIdsOf(CO)).filter((a) => a !== me.id))}</div>
+    <p class="err" id="mmE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${m0 ? 'Save' : 'Call the meeting'}</button></div></form>`, true);
+  $('#mmF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); if (!d.title || !d.date) { $('#mmE').textContent = 'Give the meeting a name and a date.'; return; }
+    const attendees = uniq([me.id, d.chairId, ...checked(ev.target, 'at')]);
+    if (m0) { Object.assign(m0, d, { attendees }); logEntry(m0, 'Changed'); saveNow(); closeDlg(); route(); return; }
+    const m = { id: uid(), companyId: CO, kind: 'management', ...d, attendees, status: 'scheduled', minutes: '', decisions: [], createdBy: me.id, at: Date.now(), log: [] }; logEntry(m, 'Called'); S.perfMeetings.push(m);
+    audit('Management meeting called', `${d.title}, ${dmy(d.date)}`, 'performance'); saveNow(); closeDlg(); go('#/perfmeeting/' + m.id); };
+};
+/* one meeting */
+VIEWS.perfmeeting = () => {
+  const m = meetById(R.arg); if (!m) return { title: 'Meeting', html: '<div class="empty">You cannot see this meeting.</div>' };
+  const can = canRecord(m); const cycN = (S.cycles.find((c) => c.id === m.cycleId) || {}).name;
+  const head = `<div class="card"><div class="hd"><div><h2>${m.kind === 'review' ? `Review meeting: ${esc(nameOf(m.empId))}` : esc(m.title)} ${trBadge(MEET_STATUS, m.status)}</h2>
+    <p class="sub">${D(m.date).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}${m.start ? ` at ${esc(m.start)}` : ''}${m.mode ? `, ${esc(MODES[m.mode] || '')}` : ''}${m.venue ? `, ${esc(m.venue)}` : ''}.${cycN ? ` ${esc(cycN)}.` : ''}${m.kind === 'review' ? ` ${esc(MEET_PURPOSE[m.purpose] || '')}.` : ` Chair: ${esc(nameOf(m.chairId))}.`}<br>
+      ${m.kind === 'review' ? 'Attending' : 'Invited'}: ${esc((m.attendees || []).map(nameOf).join(', '))}.</p></div>
+    <div class="tools"><a class="btn" href="#/perfmeetings${m.kind === 'review' ? '' : '?tab=management'}">All meetings</a>${m.kind === 'review' && m.cycleId ? `<a class="btn" href="#/performance?c=${m.cycleId}${m.empId === me.id ? '' : `&emp=${m.empId}`}">Appraisal</a>` : ''}
+      <button class="btn" data-act="pmPrint" data-id="${m.id}">Print minutes</button>${can ? `<button class="btn" data-act="${m.kind === 'review' ? 'rmEdit' : 'mmEdit'}" data-id="${m.id}">Change</button>` : ''}
+      ${can && m.status === 'scheduled' ? `<button class="btn" data-act="pmStatus" data-id="${m.id}" data-s="cancelled">Cancelled</button><button class="btn pri" data-act="pmStatus" data-id="${m.id}" data-s="held">Mark as held</button>` : ''}</div></div>
+    ${m.agenda ? `<p style="white-space:pre-wrap"><b>Agenda</b><br>${esc(m.agenda)}</p>` : ''}${m.kind === 'management' ? '<p class="fine">Confidential to HR and the people invited.</p>' : ''}</div>`;
+  if (m.kind === 'review') {
+    const mn = m.minutes || {}; const acts = mn.actions || [];
+    const ta = (k, label) => (can ? `<label class="field wide">${esc(label)}<textarea class="inp" data-ch="pmMin" data-id="${m.id}" data-k="${k}">${esc(mn[k] || '')}</textarea></label>` : `<div class="field wide">${esc(label)}<span style="color:var(--ink);font-weight:400;white-space:pre-wrap">${esc(mn[k] || '—')}</span></div>`);
+    return { title: 'Review meeting', html: `${head}<div class="card"><h2>Minutes</h2><p class="sub">${can ? 'Written by the manager; saved as you type. The employee is asked to read and acknowledge them once the meeting is held.' : ''}</p>
+      <div class="form">${ta('discussion', 'What was discussed')}${ta('strengths', 'What is going well')}${ta('improve', 'What needs to improve')}${ta('agreed', 'What was agreed (ratings, targets, support)')}</div>
+      <h3>Actions</h3>${acts.length ? `<table class="t"><thead><tr><th></th><th>Action</th><th>Who</th><th>By</th></tr></thead><tbody>${acts.map((a) => `<tr><td><input type="checkbox" ${a.done ? 'checked' : ''} ${can ? `data-ch="pmActDone" data-id="${m.id}" data-a="${a.id}"` : 'disabled'} aria-label="Done"></td><td style="${a.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${esc(a.text)}</td><td>${esc(nameOf(a.ownerId))}</td><td>${dmy(a.due)}</td></tr>`).join('')}</tbody></table>` : '<p class="fine">None yet.</p>'}
+      ${can ? `<button class="btn sm" data-act="pmActAdd" data-id="${m.id}">Add an action</button>` : ''}</div>
+    <div class="card"><h2>Employee’s acknowledgement</h2>${m.empAck ? `<p>${m.empAck.agree ? '<span class="badge ok">Agrees the minutes are a fair record</span>' : '<span class="badge warn">Has comments on the minutes</span>'} <span class="fine">${dt(m.empAck.at)}</span></p>${m.empAck.comment ? `<p style="white-space:pre-wrap">${esc(m.empAck.comment)}</p>` : ''}`
+      : m.empId === me.id && m.status === 'held' ? `<p class="fine">Read the minutes and say whether they are a fair record of the meeting.</p><button class="btn pri" data-act="pmAck" data-id="${m.id}">Acknowledge the minutes</button>` : '<p class="fine">Not yet.</p>'}</div>` };
+  }
+  const ds = (m.decisions || []).slice().sort((a, b) => Object.keys(DECISIONS).indexOf(a.decision) - Object.keys(DECISIONS).indexOf(b.decision));
+  const fBtns = (d) => { if (!can || decisionStatus(m, d) !== 'open') return ''; const mgrOf = isHR() || allReportees(me.id).includes(d.empId); if (!mgrOf) return '';
+    return d.decision === 'promote' && !decisionFollow(m, d) ? `<button class="btn sm pri" data-act="promoNew" data-id="${d.empId}">Propose the promotion</button>`
+      : d.decision === 'exit' && !decisionFollow(m, d) && !openExitOf(d.empId) ? `<button class="btn sm danger" data-act="exitStart" data-id="${d.empId}">Start the exit</button>`
+        : ['develop', 'pip'].includes(d.decision) ? `<button class="btn sm" data-act="skNeed" data-emp="${d.empId}">Raise a development need</button>` : ''; };
+  return { title: 'Management meeting', html: `${head}<div class="card"><h2>Minutes</h2>${can ? `<textarea class="inp" style="min-height:140px" data-ch="pmMin" data-id="${m.id}" data-k="text">${esc(typeof m.minutes === 'string' ? m.minutes : (m.minutes || {}).text || '')}</textarea>` : `<p style="white-space:pre-wrap">${esc(typeof m.minutes === 'string' ? m.minutes : (m.minutes || {}).text || 'Not written yet.')}</p>`}</div>
+    <div class="card"><div class="hd"><div><h2>Decisions</h2><p class="sub">One line for each person decided about. A promotion goes on through the promotion workflow and a separation through exit management; the status follows what is done there.</p></div>${can ? `<button class="btn pri" data-act="mdEdit" data-id="${m.id}">Record a decision</button>` : ''}</div>
+      ${ds.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Decision</th><th>Reason</th><th>Owner</th><th>Since then</th><th>Status</th><th></th></tr></thead><tbody>${ds.map((d) => { const e = empById(d.empId) || {}; const rv = S.reviews.filter((r) => r.empId === d.empId && r.cycleId === m.cycleId)[0]; const f = decisionFollow(m, d);
+        return `<tr><td><b>${esc(fullName(e))}</b><div class="fine">${esc((desig(e.desigId) || {}).name || '')}${rv && +rv.final ? `, rated ${rv.final}` : ''}</div></td><td>${trBadge(DECISIONS, d.decision)}${d.toDesigId || d.toGradeId ? `<div class="fine">to ${esc([(desig(d.toDesigId) || {}).name, (grade(d.toGradeId) || {}).name && `grade ${(grade(d.toGradeId) || {}).name}`].filter(Boolean).join(', '))}</div>` : ''}${d.effective ? `<div class="fine">from ${dmy(d.effective)}</div>` : ''}</td>
+          <td class="fine" style="white-space:pre-wrap">${esc(d.detail || '')}</td><td>${esc(nameOf(d.ownerId))}${d.due ? `<div class="fine">by ${dmy(d.due)}</div>` : ''}</td><td class="fine">${f ? f.html : '—'}</td><td>${trBadge(DEC_ST, decisionStatus(m, d))}</td>
+          <td class="r" style="white-space:nowrap">${fBtns(d)} ${can ? `<button class="btn sm" data-act="mdEdit" data-id="${m.id}" data-d="${d.id}">Edit</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No decisions recorded yet.</div>'}</div>` };
+};
+ACT.pmMin = (el) => { const m = meetById(el.dataset.id);
+  if (m.kind === 'management') m.minutes = { ...(typeof m.minutes === 'object' && m.minutes ? m.minutes : {}), text: el.value.trim() }; else m.minutes = { ...(m.minutes || {}), [el.dataset.k]: el.value.trim() };
+  m.updatedAt = Date.now(); m.updatedBy = me.id; save(); toast('Saved'); };
+ACT.pmStatus = async (b) => { const m = meetById(b.dataset.id); const s = b.dataset.s;
+  if (s === 'cancelled' && !(await confirmBox('Mark the meeting as cancelled?', 'You can schedule another one.', 'Cancelled'))) return;
+  m.status = s; logEntry(m, s === 'held' ? 'Held' : 'Cancelled'); audit(`${m.kind === 'review' ? 'Review' : 'Management'} meeting ${s}`, m.kind === 'review' ? nameOf(m.empId) : m.title, 'performance', m.kind === 'review' ? 'employee' : '', m.empId || '');
+  saveNow(); toast(s === 'held' ? (m.kind === 'review' ? 'Held. The employee is asked to acknowledge the minutes.' : 'Held') : 'Cancelled'); route(); };
+ACT.pmActAdd = (b) => { const m = meetById(b.dataset.id);
+  openDlg(`<form class="dlg" id="paF"><h2>Add an action</h2><div class="form">${fieldHtml({ k: 'text', label: 'Action', wide: true, req: true })}${fieldHtml({ k: 'ownerId', label: 'Who', type: 'select', opts: (m.attendees || []).map((a) => [a, nameOf(a)]) }, m.empId)}${fieldHtml({ k: 'due', label: 'By', type: 'date' }, addDays(todayISO(), 30))}</div>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`);
+  $('#paF').onsubmit = (ev) => { ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target)); if (!f.text.trim()) return; m.minutes = m.minutes || {}; (m.minutes.actions = m.minutes.actions || []).push({ id: uid(), text: f.text.trim(), ownerId: f.ownerId, due: f.due, done: false }); saveNow(); closeDlg(); route(); };
+};
+ACT.pmActDone = (el) => { const m = meetById(el.dataset.id); const a = ((m.minutes || {}).actions || []).find((x) => x.id === el.dataset.a); a.done = el.checked; a.doneAt = Date.now(); saveNow(); route(); };
+ACT.pmAck = (b) => { const m = meetById(b.dataset.id);
+  openDlg(`<form class="dlg" id="pkF"><h2>The minutes of your review meeting</h2><label class="chk"><input type="radio" name="agree" value="1" checked> They are a fair record of the meeting</label><label class="chk"><input type="radio" name="agree" value="0"> I have comments on them</label>
+    <label class="field">Comment<textarea class="inp" name="comment"></textarea></label><p class="err" id="pkE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+  $('#pkF').onsubmit = (ev) => { ev.preventDefault(); const agree = ev.target.elements.agree.value === '1'; const c = ev.target.elements.comment.value.trim();
+    if (!agree && c.length < 5) { $('#pkE').textContent = 'Write your comments.'; return; } m.empAck = { agree, comment: c, at: Date.now() }; saveNow(); closeDlg(); toast('Saved'); route(); };
+};
+ACT.mdEdit = (b) => {
+  const m = meetById(b.dataset.id); const d0 = b.dataset.d ? (m.decisions || []).find((x) => x.id === b.dataset.d) : null;
+  const pool = mgmtDecidable(m.companyId).filter((e) => e.id !== me.id || isHR(m.companyId));
+  const fields = [{ k: 'empId', label: 'Employee', type: 'select', opts: pool.map((e) => [e.id, `${fullName(e)} (${e.empNo})`]), blank: 'Choose', req: true }, { k: 'decision', label: 'Decision', type: 'select', opts: Object.entries(DECISIONS).map(([k, [l]]) => [k, l]) },
+    { k: 'toDesigId', label: 'New designation (promotion or change of role)', type: 'select', opts: () => S.desigs.filter((x) => x.companyId === m.companyId).map((x) => [x.id, x.name]), blank: '—' },
+    { k: 'toGradeId', label: 'New grade', type: 'select', opts: () => S.grades.filter((x) => x.companyId === m.companyId).map((x) => [x.id, x.name]), blank: '—' }, { k: 'effective', label: 'Effective from', type: 'date' },
+    { k: 'ownerId', label: 'Who takes it forward', type: 'select', opts: (m.attendees || []).map((a) => [a, nameOf(a)]) }, { k: 'due', label: 'By', type: 'date' },
+    { k: 'detail', label: 'Reasons and what was agreed', type: 'textarea', wide: true, req: true }, ...(d0 ? [{ k: 'status', label: 'Status', type: 'select', opts: Object.entries(DEC_ST).map(([k, [l]]) => [k, l]) }] : [])];
+  const v = d0 || { decision: 'promote', ownerId: me.id, due: addDays(todayISO(), 30), status: 'open' };
+  openDlg(`<form class="dlg" id="mdF" novalidate><h2>${d0 ? 'Edit the decision' : 'Record a decision'}</h2>${isHR(m.companyId) ? '' : '<p class="fine" style="margin:0">You can record decisions about people in your reporting line; HR records the others.</p>'}
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="mdE"></p>
+    <div class="btns">${d0 ? '<button type="button" class="btn danger" id="mdDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  if ($('#mdDel')) $('#mdDel').onclick = () => { m.decisions = m.decisions.filter((x) => x !== d0); logEntry(m, 'Decision removed', nameOf(d0.empId)); saveNow(); closeDlg(); route(); };
+  $('#mdF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields);
+    if (!d.empId) { $('#mdE').textContent = 'Choose the employee.'; return; } if (!d.detail) { $('#mdE').textContent = 'Write the reasons.'; return; }
+    if (!d0 && (m.decisions || []).some((x) => x.empId === d.empId && x.decision === d.decision)) { $('#mdE').textContent = 'This decision is already recorded for them.'; return; }
+    if (d0) Object.assign(d0, d); else (m.decisions = m.decisions || []).push({ id: uid(), ...d, status: 'open', by: me.id, at: Date.now() });
+    logEntry(m, d0 ? 'Decision changed' : 'Decision recorded', `${nameOf(d.empId)}: ${DECISIONS[d.decision][0]}`);
+    audit('Management decision recorded', `${nameOf(d.empId)}: ${DECISIONS[d.decision][0]} (${m.title})`, 'performance');
+    saveNow(); closeDlg(); route(); };
+};
+ACT.pmPrint = (b) => {
+  const m = meetById(b.dataset.id); const co = coById(m.companyId) || company(); const mn = m.minutes || {};
+  const head = `<h1>${esc(co.legalName || co.name)}</h1><h2>${m.kind === 'review' ? `Review meeting: ${esc(nameOf(m.empId))}` : esc(m.title)}</h2><p>${dmy(m.date)} ${esc(m.start || '')}${m.venue ? `, ${esc(m.venue)}` : ''}<br>${m.kind === 'review' ? 'Attending' : 'Present'}: ${esc((m.attendees || []).map(nameOf).join(', '))}</p>${m.agenda ? `<p style="white-space:pre-wrap"><b>Agenda</b><br>${esc(m.agenda)}</p>` : ''}`;
+  if (m.kind === 'review') printHtml('Review meeting minutes', `${head}${[['discussion', 'Discussed'], ['strengths', 'Going well'], ['improve', 'To improve'], ['agreed', 'Agreed']].map(([k, l]) => `<h3>${l}</h3><p style="white-space:pre-wrap">${esc(mn[k] || '—')}</p>`).join('')}
+    <h3>Actions</h3><table><tr><th>Action</th><th>Who</th><th>By</th><th>Done</th></tr>${(mn.actions || []).map((a) => `<tr><td>${esc(a.text)}</td><td>${esc(nameOf(a.ownerId))}</td><td>${dmy(a.due)}</td><td>${a.done ? 'Yes' : ''}</td></tr>`).join('')}</table>
+    ${m.empAck ? `<p>Employee: ${m.empAck.agree ? 'agrees the minutes are a fair record' : 'has comments'} (${dt(m.empAck.at)}). ${esc(m.empAck.comment || '')}</p>` : ''}<div class="cols" style="margin-top:40px"><div>Employee: ______________</div><div>Manager: ______________</div></div>`);
+  else printHtml('Management meeting minutes', `${head}<p class="fine">Confidential</p><h3>Minutes</h3><p style="white-space:pre-wrap">${esc(typeof m.minutes === 'string' ? m.minutes : mn.text || '')}</p>
+    <h3>Decisions</h3><table><tr><th>Employee</th><th>Decision</th><th>Reasons</th><th>Owner</th></tr>${(m.decisions || []).map((d) => `<tr><td>${esc(nameOf(d.empId))}</td><td>${esc(DECISIONS[d.decision][0])}${d.effective ? `, from ${dmy(d.effective)}` : ''}</td><td>${esc(d.detail || '')}</td><td>${esc(nameOf(d.ownerId))}</td></tr>`).join('')}</table>
+    <p style="margin-top:40px">Chair: ${esc(nameOf(m.chairId))} ______________</p>`);
+};
+/* calibration shows the management meetings of its cycle */
+{
+  const cal = VIEWS.calibration;
+  VIEWS.calibration = () => { const v = cal(); const c = R.q.get('c') || (S.cycles.find((x) => x.companyId === CO && x.stage === 'calibration') || curCycle() || {}).id;
+    const ms = S.perfMeetings.filter((m) => m.kind === 'management' && m.cycleId === c);
+    v.html += `<div class="card"><div class="hd"><div><h2>Management meetings for this cycle</h2><p class="sub">Record the calibration meeting, its minutes and the decision for each person: promotion, development, improvement plan or separation.</p></div><button class="btn pri" data-act="mmEdit">Call a management meeting</button></div>
+      ${ms.length ? `<table class="t"><tbody>${ms.map((m) => `<tr class="click" data-act="pmOpen" data-id="${m.id}"><td>${dmy(m.date)}</td><td><b>${esc(m.title)}</b></td><td>${trBadge(MEET_STATUS, m.status)}</td><td class="fine">${(m.decisions || []).length} decisions</td></tr>`).join('')}</tbody></table>` : '<p class="fine">None yet.</p>'}</div>`;
+    return v; };
+}
+
+/* ---------------------------------------------------------------- succession planning */
+const READY = { now: ['Ready now', 'ok'], '1-2': ['Ready in 1–2 years', 'info'], '3+': ['Ready in 3 or more years', 'warn'] };
+const LEVEL3 = { high: ['High', 'bad'], medium: ['Medium', 'warn'], low: ['Low', ''] };
+const VACANCY = { now: 'Vacant or about to be', '1y': 'Within a year', '2y': 'In 1–2 years', '3y': 'In 3 or more years', unknown: 'Not known' };
+const VAC_REASON = { retirement: 'Retirement', promotion: 'Incumbent likely to be promoted', attrition: 'Risk of the incumbent leaving', growth: 'New or growing role', other: 'Other' };
+const SP_STATUS = { draft: ['Draft', ''], submitted: ['Sent to HR', 'warn'], reviewed: ['Reviewed by HR', 'ok'] };
+const spById = (id) => S.succession.find((p) => p.id === id);
+const spPool = () => (isHR() ? coEmployees() : [me, ...allReportees(me.id).map(empById)].filter((e) => e && active(e)));
+const readyNow = (p) => (p.successors || []).filter((s) => s.readiness === 'now').length;
+function talentOf(empId) { const e = empById(empId); if (!e) return ''; const lr = lastRating(e); const rv = S.reviews.filter((r) => r.empId === empId && +r.potential).sort((a, b) => ((S.cycles.find((c) => c.id === a.cycleId) || {}).from < (S.cycles.find((c) => c.id === b.cycleId) || {}).from ? 1 : -1))[0];
+  return [lr && `rated ${lr.r}`, rv && `${['', 'low', 'medium', 'high'][+rv.potential]} potential`, `${monthsInGrade(e)} months in grade`].filter(Boolean).join(', '); }
+VIEWS.succession = () => {
+  const tab = R.q.get('tab') === 'bench' ? 'bench' : 'plans';
+  const cy = R.q.get('c') || '';
+  const plans = S.succession.filter((p) => p.companyId === CO && (!cy || p.cycleId === cy)).sort((a, b) => Object.keys(LEVEL3).indexOf(a.critical) - Object.keys(LEVEL3).indexOf(b.critical) || String(a.positionTitle).localeCompare(String(b.positionTitle)));
+  const cycles = S.cycles.filter((c) => c.companyId === CO).sort((a, b) => (a.from < b.from ? 1 : -1));
+  const tabs = `<nav class="tabs"><a href="#/succession" class="${tab === 'plans' ? 'on' : ''}">Positions and successors</a><a href="#/succession?tab=bench" class="${tab === 'bench' ? 'on' : ''}">Bench strength</a></nav>`;
+  const tools = `<div class="tools">${cycles.length ? `<select class="inp" data-ch="spCycle"><option value="">All cycles</option>${cycles.map((c) => `<option value="${c.id}" ${c.id === cy ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : ''}<button class="btn pri" data-act="spEdit">Plan a position</button></div>`;
+  const gaps = plans.filter((p) => p.critical === 'high' && !readyNow(p));
+  const kpis = `<div class="grid g4" style="margin-bottom:12px"><div class="kpi"><span>Positions planned</span><b>${plans.length}</b><small>${plans.filter((p) => p.critical === 'high').length} highly critical</small></div>
+    <div class="kpi"><span>With a successor ready now</span><b>${plans.filter(readyNow).length}</b><small>${plans.length ? Math.round(plans.filter(readyNow).length / plans.length * 100) : 0}% of positions</small></div>
+    <div class="kpi"><span>Critical, nobody ready now</span><b>${gaps.length}</b><small>${esc(gaps.slice(0, 2).map((p) => p.positionTitle).join(', '))}</small></div>
+    <div class="kpi"><span>High risk of losing the incumbent</span><b>${plans.filter((p) => p.risk === 'high').length}</b><small>${plans.filter((p) => p.risk === 'high' && !(p.successors || []).length).length} with no successor</small></div></div>`;
+  if (tab === 'bench') {
+    const named = {}; plans.forEach((p) => (p.successors || []).forEach((s) => { (named[s.empId] = named[s.empId] || []).push({ p, s }); }));
+    const people = Object.entries(named).sort((a, b) => b[1].length - a[1].length);
+    return { title: 'Succession planning', html: `${tabs}${kpis}<div class="card"><div class="hd"><div><h2>Talent pool</h2><p class="sub">Everyone named as a successor, for which positions and how ready they are. People named for several positions are the organisation’s bench; make sure they are developed and kept.</p></div>${tools}</div>
+      ${people.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Now</th><th>Successor for</th><th>Rating and potential</th></tr></thead><tbody>${people.map(([id, xs]) => { const e = empById(id) || {}; return `<tr><td><b>${esc(fullName(e))}</b></td><td class="fine">${esc((desig(e.desigId) || {}).name || '')}<div>${esc((dept(e.deptId) || {}).name || '')}</div></td>
+        <td>${xs.map(({ p, s }) => `<div>${esc(p.positionTitle)} ${trBadge(READY, s.readiness)}</div>`).join('')}</td><td class="fine">${esc(talentOf(id))}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">Nobody has been named as a successor yet.</div>'}</div>` };
+  }
+  return { title: 'Succession planning', html: `${tabs}${kpis}<div class="card"><div class="hd"><div><h2>Positions and successors</h2><p class="sub">Managers plan who could step into the key positions in their team, including their own, during the review cycle: how critical each position is, the risk of losing the person in it, and possible successors with how ready they are and how to develop them. HR reviews the plans. People do not see plans made about their own position.</p></div>${tools}</div>
+    ${plans.length ? `<div class="scroll"><table class="t"><thead><tr><th>Position</th><th>In the position</th><th>Critical</th><th>Risk of loss</th><th>Successors</th><th>Owner</th><th>Status</th></tr></thead><tbody>${plans.map((p) => `<tr class="click" data-act="spEdit" data-id="${p.id}">
+      <td><b>${esc(p.positionTitle)}</b><div class="fine">${esc(VACANCY[p.vacancyWhen] || '')}</div></td><td>${esc(nameOf(p.incumbentId))}</td><td>${trBadge(LEVEL3, p.critical)}</td><td>${trBadge(LEVEL3, p.risk)}</td>
+      <td>${(p.successors || []).map((s) => `<div>${esc(nameOf(s.empId))} ${trBadge(READY, s.readiness)}</div>`).join('') || '<span class="badge bad">None</span>'}${p.emergencyId ? `<div class="fine">Cover in an emergency: ${esc(nameOf(p.emergencyId))}</div>` : ''}</td>
+      <td class="fine">${esc(nameOf(p.ownerId))}</td><td>${trBadge(SP_STATUS, p.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No positions planned yet.</div>'}</div>` };
+};
+ACT.spCycle = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('c', el.value) : p.delete('c'); go('#/succession?' + p); };
+ACT.spEdit = (b) => {
+  const p0 = b.dataset.id ? spById(b.dataset.id) : null; const cyc = curCycle(CO);
+  const canEdit = !p0 || isHR(p0.companyId) || p0.ownerId === me.id || allReportees(me.id).includes(p0.incumbentId);
+  const p = p0 ? JSON.parse(JSON.stringify(p0)) : { incumbentId: '', positionTitle: '', critical: 'high', risk: 'medium', vacancyWhen: 'unknown', vacancyReason: 'other', cycleId: (cyc && cyc.id) || '', successors: [], notes: '', status: 'draft' };
+  const pool = spPool(); const everyone = coEmployees().sort((a, c) => fullName(a).localeCompare(fullName(c)));
+  const fields = [{ k: 'incumbentId', label: 'In the position now', type: 'select', opts: pool.map((e) => [e.id, `${fullName(e)}${e.id === me.id ? ' (you)' : ''}`]), blank: 'Choose', req: true },
+    { k: 'positionTitle', label: 'Position', req: true }, { k: 'cycleId', label: 'Review cycle', type: 'select', opts: S.cycles.filter((c) => c.companyId === CO).map((c) => [c.id, c.name]), blank: 'None' },
+    { k: 'critical', label: 'How critical the position is', type: 'select', opts: Object.entries(LEVEL3).map(([k, [l]]) => [k, l]) }, { k: 'risk', label: 'Risk of losing the person in it', type: 'select', opts: Object.entries(LEVEL3).map(([k, [l]]) => [k, l]) },
+    { k: 'vacancyWhen', label: 'Likely to fall vacant', type: 'select', opts: Object.entries(VACANCY) }, { k: 'vacancyReason', label: 'Why', type: 'select', opts: Object.entries(VAC_REASON) },
+    { k: 'emergencyId', label: 'Who covers in an emergency', type: 'select', opts: everyone.map((e) => [e.id, fullName(e)]), blank: 'Nobody named' }, { k: 'notes', label: 'Notes', type: 'textarea', wide: true }];
+  const ro = (html) => html.replace(/<(input|select|textarea)/g, '<$1 disabled');
+  const draw = () => {
+    openDlg(`<form class="dlg" id="spF" novalidate><h2>${p0 ? `Succession: ${esc(p.positionTitle)}` : 'Plan a position'} ${p0 ? trBadge(SP_STATUS, p.status) : ''}</h2><p class="fine" style="margin:0">Confidential: seen by HR, you and the managers above the position, not by the person in it or the successors named.</p>
+      <div class="form">${(canEdit ? (x) => x : ro)(fields.map((f) => fieldHtml(f, p[f.k])).join(''))}</div>
+      <h3>Successors</h3>${p.successors.map((s, i) => `<div style="border:1px solid var(--rule);border-radius:9px;padding:8px;margin-bottom:6px"><div class="form" style="grid-template-columns:2fr 1.4fr auto;align-items:end">
+        <label class="field">Employee<select class="inp" data-i="${i}" data-f="empId" ${canEdit ? '' : 'disabled'}><option value="">Choose</option>${everyone.filter((e) => e.id !== p.incumbentId).map((e) => `<option value="${e.id}" ${e.id === s.empId ? 'selected' : ''}>${esc(fullName(e))}, ${esc((desig(e.desigId) || {}).name || '')}</option>`).join('')}</select><small>${esc(talentOf(s.empId))}</small></label>
+        <label class="field">Readiness<select class="inp" data-i="${i}" data-f="readiness" ${canEdit ? '' : 'disabled'}>${Object.entries(READY).map(([k, [l]]) => `<option value="${k}" ${k === s.readiness ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        ${canEdit ? `<button type="button" class="btn sm danger" data-rm="${i}" aria-label="Remove">✕</button>` : '<span></span>'}</div>
+        <div class="form">${[['strengths', 'Strengths for the position'], ['gaps', 'Gaps'], ['actions', 'How to develop them (assignments, trainings, mentoring)']].map(([k, l]) => `<label class="field ${k === 'actions' ? 'wide' : ''}">${l}<input class="inp" data-i="${i}" data-f="${k}" value="${esc(s[k] || '')}" ${canEdit ? '' : 'disabled'}></label>`).join('')}</div>
+        ${s.empId && (isHR() || allReportees(me.id).includes(s.empId)) ? `<button type="button" class="btn sm" data-need="${s.empId}">Raise a development need</button>` : ''}</div>`).join('')}
+      ${canEdit ? '<button type="button" class="btn sm" id="spAdd">Add a successor</button>' : ''}
+      ${p0 && p0.hrReview ? `<div class="note">HR review (${esc(nameOf(p0.hrReview.by))}, ${dmy(isoOf(new Date(p0.hrReview.at)))}): ${esc(p0.hrReview.note)}</div>` : ''}
+      <p class="err" id="spE"></p><div class="btns">${p0 && canEdit ? '<button type="button" class="btn danger" id="spDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Close</button>
+        ${p0 && isHR(p0.companyId) && p0.status === 'submitted' ? '<button type="button" class="btn ok" id="spRev">Reviewed</button>' : ''}${canEdit ? `<button type="button" class="btn" id="spSave">Save</button>${p.status !== 'submitted' && !isHR() ? '<button class="btn pri">Send to HR</button>' : ''}` : ''}</div></form>`, true);
+    const f = $('#spF');
+    const sync = () => { fields.forEach((x) => { const el = f.elements[x.k]; if (el) p[x.k] = el.value; }); f.querySelectorAll('[data-f]').forEach((el) => { p.successors[+el.dataset.i][el.dataset.f] = el.value; }); };
+    f.elements.incumbentId.addEventListener('change', () => { const e = empById(f.elements.incumbentId.value); if (e && !f.elements.positionTitle.value) f.elements.positionTitle.value = (desig(e.desigId) || {}).name || ''; });
+    f.querySelectorAll('[data-f="empId"]').forEach((el) => el.addEventListener('change', () => { sync(); draw(); }));
+    f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { sync(); p.successors.splice(+el.dataset.rm, 1); draw(); }; });
+    f.querySelectorAll('[data-need]').forEach((el) => { el.onclick = () => skillNeedDialog(empById(el.dataset.need), ''); });
+    if ($('#spAdd')) $('#spAdd').onclick = () => { sync(); p.successors.push({ id: uid(), empId: '', readiness: '1-2' }); draw(); };
+    if ($('#spDel')) $('#spDel').onclick = async () => { if (!(await confirmBox('Delete this plan?', p0.positionTitle, 'Delete'))) return; S.succession = S.succession.filter((x) => x !== p0); saveNow(); closeDlg(); route(); };
+    if ($('#spRev')) $('#spRev').onclick = async () => { const n = await askText('Plan reviewed', 'HR’s comments for the manager', 'Save'); if (n === null) return; p0.hrReview = { by: me.id, at: Date.now(), note: n }; p0.status = 'reviewed'; logEntry(p0, 'Reviewed by HR', n); saveNow(); route(); };
+    const keep = (status) => {
+      sync(); const err = (m) => { $('#spE').textContent = m; };
+      p.successors = p.successors.filter((s) => s.empId);
+      if (!p.incumbentId) return err('Choose who is in the position.'); if (!p.positionTitle.trim()) return err('Name the position.');
+      if (p.successors.some((s) => s.empId === p.incumbentId)) return err('The person in the position cannot be their own successor.');
+      if (new Set(p.successors.map((s) => s.empId)).size !== p.successors.length) return err('A successor is named twice.');
+      if (!p0 && S.succession.some((x) => x.companyId === CO && x.incumbentId === p.incumbentId && x.cycleId === p.cycleId)) return err('There is already a plan for this position in this cycle.');
+      if (status === 'submitted' && !p.successors.length) return err('Name at least one successor before sending.');
+      const rec = { ...p, status: status || (p.status === 'reviewed' ? 'reviewed' : p.status), updatedAt: Date.now(), updatedBy: me.id };
+      if (p0) { Object.assign(p0, rec); logEntry(p0, status === 'submitted' ? 'Sent to HR' : 'Changed'); }
+      else { const n = { id: uid(), companyId: CO, ...rec, ownerId: me.id, at: Date.now(), log: [] }; logEntry(n, 'Planned'); S.succession.push(n); }
+      audit(status === 'submitted' ? 'Succession plan sent to HR' : 'Succession plan saved', `${p.positionTitle} (${nameOf(p.incumbentId)})`, 'performance');
+      saveNow(); closeDlg(); toast(status === 'submitted' ? 'Sent to HR' : 'Saved'); route();
+    };
+    if ($('#spSave')) $('#spSave').onclick = () => keep('');
+    f.onsubmit = (ev) => { ev.preventDefault(); keep('submitted'); };
+  };
+  draw();
+};
+
+/* ---------------------------------------------------------------- recruitment: the candidate's application form */
+const CF_STATUS = { sent: ['Link sent, not started', 'info'], draft: ['Being filled in', 'warn'], submitted: ['Received', 'ok'], returned: ['Returned for changes', 'warn'], closed: ['Moved to the employee record', ''] };
+const cfOf = (c) => (c && c.form) || null;
+const cfData = (c) => (cfOf(c) || {}).data || null;
+async function candFormLink(c) {
+  let res;
+  try { res = await api.post('/api/candidate-form/link', { candId: c.id, send: true }); } catch (e) { toast(e.message); return; }
+  c.form = res.form;
+  const ph = phone10(c.phone);
+  const msg = `Hello ${c.name}, please fill in your details and attach your CV for ${company().name} using this link (it works for ${res.days} days): ${res.url}`;
+  openDlg(`<div class="dlg"><h2>Application form for ${esc(c.name)}</h2>
+    ${res.sent ? `<div class="note ok">Sent by e-mail to ${esc(res.to)}.</div>` : '<p class="fine" style="margin:0">Send this link to the candidate: by e-mail, WhatsApp or a text message.</p>'}
+    <label class="field">Link (works for ${res.days} days; a new link stops older ones)<textarea class="inp" id="cfU" readonly rows="3" style="font-family:var(--mono,monospace);font-size:12px">${esc(res.url)}</textarea></label>
+    <p class="fine" style="margin:0">They do not need to sign in. They can save the form and come back to it; once they send it, you see it on the candidate.</p>
+    <div class="btns"><button class="btn" id="cfC">Copy link</button><a class="btn" href="mailto:${esc(c.email)}?subject=${encodeURIComponent(`Your details for ${company().name}`)}&body=${encodeURIComponent(msg)}">Open in e-mail</a>${ph ? `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/91${ph}?text=${encodeURIComponent(msg)}">Send on WhatsApp</a>` : ''}<button class="btn pri" data-act="close">Done</button></div></div>`);
+  $('#cfC').onclick = async () => { try { await navigator.clipboard.writeText(res.url); } catch (e) { $('#cfU').select(); document.execCommand('copy'); } toast('Link copied'); };
+  route();
+}
+ACT.candFormSend = (b) => candFormLink(candById(b.dataset.id));
+ACT.candFormReturn = async (b) => {
+  const c = candById(b.dataset.id); const n = await askText('Return the form for changes?', 'What should the candidate change', 'Return'); if (n === null) return;
+  c.form = { ...c.form, status: 'returned', note: n }; audit('Application form returned for changes', `${c.name}: ${n}`, 'recruitment'); saveNow();
+  toast('Returned. The candidate can use their link again, or send them a new one.'); route();
+};
+ACT.candFormChecked = (b) => { const c = candById(b.dataset.id); c.formCheckedAt = Date.now(); c.formCheckedBy = me.id; saveNow(); closeDlg(); toast('Marked as checked'); route(); };
+function candFormCard(c, a) {
+  if (!isHR(c.companyId)) return '';
+  const f = cfOf(c); const st = f && f.status;
+  const canJoin = a && ['selected', 'offer', 'offered', 'accepted'].includes(a.stage) && !c.exEmpId && !(a.offer && a.offer.status === 'accepted');
+  return `<div class="card"><div class="hd"><div><h2>Candidate’s details ${st ? trBadge(CF_STATUS, st) : ''}</h2><p class="sub">${!f ? 'Ask the candidate to fill in their personal details, address, identity numbers, bank account, education, previous jobs, references and family, and to attach their CV. When they join, it all goes into their employee record.'
+      : st === 'submitted' ? `Received ${dt(f.submittedAt)}${c.formCheckedAt ? `, checked by ${esc(nameOf(c.formCheckedBy))}` : ''}.` : st === 'closed' ? 'The details are on the employee record now.' : `Link sent ${dt(f.sentAt)}${f.savedAt ? `; last saved ${dt(f.savedAt)}` : ''}.${f.note ? ` Asked to change: ${esc(f.note)}` : ''}`}</p></div>
+    <div class="tools">${f && f.data ? `<button class="btn" data-act="candFormView" data-id="${c.id}">View the details</button>` : ''}${st === 'submitted' ? `<button class="btn" data-act="candFormReturn" data-id="${c.id}">Ask for changes</button>` : ''}
+      ${st !== 'closed' ? `<button class="btn ${f ? '' : 'pri'}" data-act="candFormSend" data-id="${c.id}">${f ? 'Send the link again' : 'Ask the candidate to fill in their details'}</button>` : ''}
+      ${canJoin && a.stage !== 'joined' ? '<button class="btn pri" data-act="offerJoin">Convert to employee at joining</button>' : ''}</div></div></div>`;
+}
+const CF_SECTIONS = [
+  ['Personal', [['firstName', 'First name'], ['lastName', 'Last name'], ['gender', 'Gender', (v) => ({ M: 'Male', F: 'Female', O: 'Other' }[v] || v)], ['dob', 'Date of birth', dmy], ['marital', 'Marital status'], ['fatherName', 'Father’s or husband’s name'], ['blood', 'Blood group'], ['nationality', 'Nationality'],
+    ['phone', 'Mobile'], ['altPhone', 'Other phone'], ['languages', 'Languages'], ['linkedin', 'LinkedIn']]],
+  ['Address and emergency contact', [['address', 'Address'], ['addrCity', 'City'], ['addrState', 'State'], ['addrPin', 'PIN'], ['addrCountry', 'Country'], ['permAddress', 'Permanent address'], ['emergencyName', 'Emergency contact'], ['emergencyRelation', 'Relationship'], ['emergencyPhone', 'Phone']]],
+  ['Identity and bank', [['pan', 'PAN'], ['aadhaar', 'Aadhaar', (v) => (v ? 'XXXX XXXX ' + String(v).slice(-4) : '')], ['uan', 'UAN'], ['bankName', 'Bank'], ['bankAcc', 'Account number'], ['ifsc', 'IFSC']]],
+  ['Current job', [['currentCompany', 'Employer'], ['currentTitle', 'Role'], ['expYears', 'Experience (years)'], ['currentCtc', 'Current CTC', inr0], ['expectedCtc', 'Expected CTC', inr0], ['noticeDays', 'Notice (days)'], ['skills', 'Skills'], ['about', 'About themselves']]],
+];
+const CF_LISTS = [['education', 'Education', ['qualification', 'specialisation', 'institution', 'university', 'toYear', 'score']], ['prevJobs', 'Previous jobs', ['employer', 'designation', 'from', 'to', 'lastCtc', 'reason']],
+  ['references', 'References', ['name', 'organisation', 'designation', 'relation', 'phone', 'email']], ['family', 'Family', ['relation', 'name', 'dob', 'occupation', 'phone', 'dependant']]];
+function candFormHtml(c) {
+  const d = cfData(c) || {};
+  return `${CF_SECTIONS.map(([t, fs]) => `<h3>${esc(t)}</h3><table class="t"><tbody>${fs.filter(([k]) => d[k] !== '' && d[k] != null).map(([k, l, fmt]) => `<tr><td class="fine" style="width:34%">${esc(l)}</td><td style="white-space:pre-wrap">${esc(fmt ? fmt(d[k]) : d[k])}</td></tr>`).join('') || '<tr><td class="fine">Nothing entered.</td></tr>'}</tbody></table>`).join('')}
+    ${CF_LISTS.map(([k, t, cols]) => `<h3>${esc(t)}</h3>${(d[k] || []).length ? `<div class="scroll"><table class="t"><tbody>${d[k].map((r) => `<tr>${cols.map((x) => `<td>${esc(typeof r[x] === 'boolean' ? (r[x] ? 'Dependant' : '') : ['from', 'to'].includes(x) ? monthLbl(r[x]) : x === 'dob' ? dmy(r[x]) : x === 'lastCtc' && r[x] ? inr0(r[x]) : r[x] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="fine">None.</p>'}`).join('')}
+    <p class="fine">${d.declaration ? 'The candidate declared that these details are true.' : ''}${c.cv ? ` CV: ${esc(c.cv.name)}${c.cv.byCandidate ? ', attached by the candidate' : ''}.` : ''}</p>`;
+}
+ACT.candFormView = (b) => {
+  const c = candById(b.dataset.id); const f = cfOf(c);
+  openDlg(`<div class="dlg"><h2>${esc(c.name)}: details ${trBadge(CF_STATUS, f.status)}</h2><div style="max-height:60vh;overflow:auto">${candFormHtml(c)}</div>
+    <div class="btns">${c.cv ? `<button class="btn" data-act="cvGet" data-id="${c.id}">Open CV</button>` : ''}<button class="btn" id="cfPrint">Print</button>${f.status === 'submitted' && !c.formCheckedAt ? `<button class="btn" data-act="candFormChecked" data-id="${c.id}">Mark as checked</button>` : ''}<button class="btn pri" data-act="close">Close</button></div></div>`, true);
+  $('#cfPrint').onclick = () => printHtml(`Candidate details ${c.name}`, `<h1>${esc(c.name)}</h1><p class="fine">${esc(c.email)}. Sent ${dt(f.submittedAt)}.</p>${candFormHtml(c)}`);
+};
+/* the application page and the candidate dialog show the form */
+{
+  const appView = VIEWS.app;
+  VIEWS.app = () => { const v = appView(); const a = appById(R.arg); if (!a || !canSeeApp(a)) return v; const c = candById(a.candId);
+    const card = candFormCard(c, a); const i = v.html.indexOf('<div class="grid g21">'); v.html = i > 0 ? v.html.slice(0, i) + card + v.html.slice(i) : v.html + card; return v; };
+  const candEdit = ACT.candEdit;
+  ACT.candEdit = (b) => { candEdit(b); const c = b.dataset.id && candById(b.dataset.id); const btns = $('#cdf .btns'); if (!c || !btns || !isHR(c.companyId)) return;
+    const f = cfOf(c); const el = document.createElement('div'); el.className = 'note'; el.innerHTML = `Candidate’s details: ${f ? trBadge(CF_STATUS, f.status) : 'not asked yet'} ${f && f.data ? `<button type="button" class="btn sm" data-act="candFormView" data-id="${c.id}">View</button>` : ''}${!f || f.status !== 'closed' ? ` <button type="button" class="btn sm" data-act="candFormSend" data-id="${c.id}">${f ? 'Send the link again' : 'Ask them to fill in their details'}</button>` : ''}`;
+    btns.parentNode.insertBefore(el, btns); };
+  const cands = VIEWS.cands;
+  VIEWS.cands = () => { const v = cands(); const sent = S.cands.filter((c) => (cfOf(c) || {}).status === 'submitted' && !c.formCheckedAt);
+    if (sent.length && isHR()) v.html = `<div class="note">Details received and not checked yet: ${sent.map((c) => `<a href="#" data-act="candFormView" data-id="${c.id}">${esc(c.name)}</a>`).join(', ')}.</div>` + v.html; return v; };
+}
+/* what the candidate entered, onto their new employee record */
+function applyCandForm(e, c, coId) {
+  const d = cfData(c); if (!d) return 0;
+  const set = (k, v) => { if (v !== '' && v != null) e[k] = v; };
+  ['gender', 'dob', 'marital', 'blood', 'phone', 'address', 'addrCity', 'addrState', 'addrPin', 'addrCountry', 'emergencyName', 'emergencyRelation', 'emergencyPhone', 'pan', 'aadhaar', 'uan', 'bankName', 'bankAcc', 'ifsc', 'fatherName', 'permAddress', 'languages', 'nationality']
+    .forEach((k) => set(k, d[k]));
+  if (d.firstName) { e.firstName = d.firstName; e.lastName = d.lastName || ''; }
+  if (d.marital === 'married') set('anniversary', d.anniversary);
+  if (d.emergencyName) e.emergency = `${d.emergencyName} (${d.emergencyRelation || ''}), ${d.emergencyPhone || ''}`;
+  if (d.bankAcc) e.payMode = 'bank';
+  const stamp = () => ({ id: uid(), addedBy: me.id, addedAt: Date.now(), fromCandidate: true });
+  const masters = (r, keys) => { keys.forEach((f) => { if (!r[f]) return; const m = masterFor(MASTER_KIND[f], r[f], coId); r[f] = m.name; r[MASTER_FIELD[f]] = m.id; }); return r; };
+  e.education = (d.education || []).map((x) => masters({ ...x, ...stamp() }, ['qualification', 'institution', 'university']));
+  e.prevJobs = (d.prevJobs || []).map((x) => masters({ ...x, ...stamp() }, ['employer']));
+  e.references = (d.references || []).map((x) => ({ kind: 'reference', referrerId: '', ...x, ...stamp() }));
+  e.family = (d.family || []).map((x) => ({ ...x, id: uid() }));
+  return 1;
+}
+async function cvToDocument(e, c) {
+  if (!c.cv || c.cv.type !== 'application/pdf') return;
+  try { const blob = await (await fetch(c.cv.data)).blob(); const up = await uploadFile(new File([blob], c.cv.name, { type: 'application/pdf' }));
+    (e.documents = e.documents || []).push({ id: uid(), category: 'Other', name: `CV at joining (${c.cv.name})`, fileId: up.id, date: e.doj, by: me.id, at: Date.now() }); saveNow(); } catch (x) { /* the CV stays on the candidate */ }
+}
+/* Convert to employee at joining: with the accepted offer, or, once selected, with the joining terms entered here */
+ACT.offerJoin = () => {
+  const a = curApp(), r = reqById(a.reqId), c = candById(a.candId), co = coById(r.companyId); const o = a.offer && a.offer.status === 'accepted' ? a.offer : null;
+  if (c.exEmpId) {
+    if (!o) { toast('A former employee is rehired with an accepted offer. Prepare the offer first.'); return; }
+    ACT.rehireStart({ dataset: { id: c.exEmpId } }, { companyId: r.companyId, doj: o.doj, deptId: r.deptId, desigId: o.desigId, gradeId: o.gradeId, locationId: o.locationId, managerId: o.managerId, ctc: o.ctc, probationMonths: o.probationMonths, source: `Rehired through ${r.no}`, onDone: (e) => markJoined(a, e) }); return;
+  }
+  const d = cfData(c) || {};
+  const [first0, ...rest0] = c.name.trim().split(/\s+/); const first = d.firstName || first0, last = d.firstName ? d.lastName || '' : rest0.join(' ');
+  const work = `${first}.${(last || 'x').replace(/\s+/g, '')}@${co.domain || 'example.com'}`.toLowerCase();
+  const prev = CO; CO = r.companyId;
+  const terms = o ? [] : [{ k: 'desigId', label: 'Designation', type: 'select', opts: coOpts('desigs'), req: true }, { k: 'gradeId', label: 'Grade', type: 'select', opts: coOpts('grades'), blank: '—' }, { k: 'locationId', label: 'Location', type: 'select', opts: coOpts('locations') },
+    { k: 'managerId', label: 'Reports to', type: 'select', opts: empOpts(r.companyId) }, { k: 'ctc', label: 'Annual CTC (₹)', type: 'number', req: true }, { k: 'probationMonths', label: 'Probation (months)', type: 'number', min: 0 }];
+  const base = [{ k: 'email', label: 'Work e-mail (Google)', type: 'email' }, { k: 'doj', label: 'Date of joining', type: 'date' }, { k: 'empNo', label: 'Employee number' }];
+  const v = { email: work, doj: (o && o.doj) || todayISO(), empNo: nextEmpNo(co).no, desigId: r.desigId, gradeId: r.gradeId, locationId: r.locationId, managerId: r.hiringMgr, ctc: Math.min(Math.max(+c.expectedCtc || r.ctcMin, r.ctcMin), r.ctcMax), probationMonths: 6 };
+  const f = cfOf(c); const sum = d.firstName ? `personal details and address, emergency contact${d.pan || d.aadhaar ? ', PAN and Aadhaar' : ''}${d.bankAcc ? ', bank account' : ''}, ${(d.education || []).length} qualifications, ${(d.prevJobs || []).length} previous jobs, ${(d.references || []).length} references, ${(d.family || []).length} family members${c.cv && c.cv.type === 'application/pdf' ? ' and the CV' : ''}` : '';
+  openDlg(`<form class="dlg" id="jnf" novalidate><h2>Convert ${esc(c.name)} to an employee</h2><p class="fine" style="margin:0">Creates the employee record in ${esc(co.name)}${o ? ' with the accepted offer' : ''}. Create the Google Workspace account with the same work e-mail so they can sign in.</p>
+    ${!o ? `<div class="note warn">${a.offer ? 'The offer in PeopleDesk is not accepted yet.' : 'There is no offer in PeopleDesk.'} Enter the joining terms agreed with the candidate.</div>` : ''}
+    <div class="form">${[...base, ...terms].map((x) => fieldHtml(x, v[x.k])).join('')}</div>
+    ${sum ? `<label class="chk"><input type="checkbox" name="bring" checked> Bring over what the candidate filled in${f && f.status !== 'submitted' ? ' (not sent by them yet)' : ''}: ${esc(sum)}</label>` : '<p class="fine">The candidate has not filled in their details; they can add them on their profile after joining.</p>'}
+    <p class="err" id="jne"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Create employee</button></div></form>`, true);
+  CO = prev;
+  $('#jnf').onsubmit = (ev) => { ev.preventDefault(); const g = readForm(ev.target, [...base, ...terms]); const bring = ev.target.elements.bring && ev.target.elements.bring.checked; const err = (m) => { $('#jne').textContent = m; };
+    if (!g.email || !g.doj || !g.empNo) return err('Enter the work e-mail, joining date and employee number.');
+    if (!o && (!g.desigId || !(g.ctc > 0))) return err('Enter the designation and the CTC.');
+    if (S.employees.some((x) => (x.email || '').toLowerCase() === g.email.toLowerCase())) return err('An employee has this e-mail.');
+    if (S.employees.some((x) => x.companyId === co.id && x.empNo === g.empNo)) return err('That employee number is in use.');
+    const t = o || { desigId: g.desigId, gradeId: g.gradeId, locationId: g.locationId, managerId: g.managerId, ctc: g.ctc, probationMonths: g.probationMonths || 0 };
+    takeEmpNo(co, g.empNo);
+    const e = { id: uid(), companyId: co.id, empNo: g.empNo, firstName: first, lastName: last, email: g.email.toLowerCase(), personalEmail: c.email, phone: c.phone, gender: c.gender || '', role: 'employee', status: 'active', doj: g.doj,
+      deptId: r.deptId, desigId: t.desigId, gradeId: t.gradeId, locationId: t.locationId, managerId: t.managerId, shiftId: (S.shifts.find((s) => s.companyId === co.id) || {}).id, empType: +t.probationMonths ? 'probation' : 'permanent',
+      probationEnd: +t.probationMonths ? addDays(g.doj, Math.round(t.probationMonths * 30.4)) : '', pfOn: true, epsOn: true, esiOn: true, ptOn: true, lwfOn: true, taxRegime: 'new', workerCategory: 'staff',
+      salaryHist: [{ effective: g.doj, ctc: +t.ctc, reason: 'On joining' }], history: [{ date: g.doj, type: 'Hire', note: `Joined as ${(desig(t.desigId) || {}).name || r.title} through ${r.no}${o ? `, offer ${o.letterNo}` : ''}`, by: me.id }], source: 'recruitment', candidateId: c.id };
+    const brought = bring && applyCandForm(e, c, co.id);
+    S.employees.push(e); if (o && +o.joiningBonus) S.payInputs.push({ id: uid(), companyId: co.id, empId: e.id, month: g.doj.slice(0, 7), code: '1500', amount: +o.joiningBonus, note: 'Joining bonus' });
+    if (!o) (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Joined on terms agreed outside PeopleDesk: ${inr0(t.ctc)} a year, ${(desig(t.desigId) || {}).name || ''}` });
+    if (cfOf(c)) c.form = { ...c.form, status: 'closed' };
+    markJoined(a, e); audit('Hired from recruitment', `${fullName(e)} ${r.no}${brought ? ', with the details the candidate filled in' : ''}`, 'recruitment', 'employee', e.id); saveNow(); closeDlg();
+    if (brought) cvToDocument(e, c);
+    toast(`${fullName(e)} added as ${e.empNo}`); go('#/profile/' + e.id); };
+};
+
+/* ---------------------------------------------------------------- menu, approvals inbox and data upgrades */
+{
+  const perf = MENU.find((m) => m.grp === 'perf').items;
+  const at = (page) => perf.findIndex((it) => it.page === page);
+  perf[at('performance')].label = 'My goals and appraisal';
+  perf[at('perftemplates')].label = 'Role weightages';
+  perf.splice(at('perftemplates'), 0, { page: 'goallib', label: 'Goal library and measurement criteria', show: HR });
+  perf.splice(at('feedback') + 1, 0, { page: 'perfmeetings', label: 'Review meetings', show: () => MGR() || S.perfMeetings.some((m) => m.kind === 'review' && m.empId === me.id) },
+    { page: 'perfmeetings', tab: 'management', label: 'Management meetings and decisions', show: () => isHR() || S.perfMeetings.some((m) => m.kind === 'management') || isManager() });
+  perf.push({ page: 'succession', label: 'Succession planning', show: MGR });
+  DEFAULT_TAB.perfmeetings = 'review';
+}
+function p11Pending() {
+  const out = []; const t = todayISO();
+  S.perfMeetings.filter((m) => m.kind === 'review' && m.empId === me.id && m.status === 'held' && !m.empAck)
+    .forEach((m) => out.push({ kind: 'perf', r: { empId: m.empId }, what: `Read and acknowledge the minutes of your review meeting of ${dShort(m.date)}`, link: '#/perfmeeting/' + m.id }));
+  S.perfMeetings.filter((m) => m.status === 'scheduled' && m.date < t && canRecord(m))
+    .forEach((m) => out.push({ kind: 'perf', r: { empId: m.empId || me.id }, what: `${m.kind === 'review' ? 'Review' : 'Management'} meeting of ${dShort(m.date)}: record the minutes`, link: '#/perfmeeting/' + m.id }));
+  S.cycles.filter((c) => c.companyId === me.companyId && c.stage === 'self').forEach((c) => { const rv = S.reviews.find((r) => r.cycleId === c.id && r.empId === me.id); if (S.goals.some((g) => g.cycleId === c.id && g.empId === me.id) && !(rv && rv.self && rv.self.status === 'submitted'))
+    out.push({ kind: 'perf', r: { empId: me.id }, what: `Self-appraisal open: ${c.name}`, link: `#/performance?c=${c.id}` }); });
+  S.cycles.filter((c) => c.stage === 'manager').forEach((c) => reportees(me.id).forEach((e) => { const rv = S.reviews.find((r) => r.cycleId === c.id && r.empId === e.id); if (e.companyId === c.companyId && rv && rv.self && rv.self.status === 'submitted' && !(rv.mgr && rv.mgr.status === 'submitted'))
+    out.push({ kind: 'perf', r: { empId: e.id }, what: `Appraisal to complete: ${c.name}`, link: `#/performance?c=${c.id}&emp=${e.id}` }); }));
+  S.perfMeetings.filter((m) => m.kind === 'management').forEach((m) => (m.decisions || []).filter((d) => d.ownerId === me.id && decisionStatus(m, d) === 'open' && d.due && d.due <= t)
+    .forEach((d) => out.push({ kind: 'perf', r: { empId: d.empId }, what: `${DECISIONS[d.decision][0]}: decided in ${m.title}, due ${dShort(d.due)}`, link: '#/perfmeeting/' + m.id })));
+  if (isHR()) {
+    S.succession.filter((p) => p.status === 'submitted' && isHR(p.companyId)).forEach((p) => out.push({ kind: 'perf', r: { empId: p.ownerId }, what: `Succession plan to review: ${p.positionTitle}`, link: '#/succession' }));
+    S.cands.filter((c) => isHR(c.companyId) && (cfOf(c) || {}).status === 'submitted' && !c.formCheckedAt).forEach((c) => { const a = S.apps.filter((x) => x.candId === c.id).sort((x, y) => (y.stageAt || 0) - (x.stageAt || 0))[0];
+      out.push({ kind: 'cand', r: { cand: c.name }, what: 'Sent their details and CV', link: a ? '#/app/' + a.id : '#/cands' }); });
+  }
+  return out;
+}
+function p11EnsureSchema() { ['goalLib', 'perfMeetings', 'succession'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; }); }
+
 export {
   hooks, sync, ACT, VIEWS, MENU, BOTTOM, ROLES, STATES, R,
   getS, getMe, getCO, loadServerState, clearSession, switchCompany, resolvePage, buildSetupState, buildRegisterRecords, buildDemoState,
@@ -8135,5 +9249,6 @@ export {
   shiftFor, punchOf, leaveOn, holidayOn, todayISO, addDays, D, ymAdd, monthName, yearsBetween,
   num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin, regAsked,
   uid, coById, DOC_CATEGORIES, docTypesFor, docPreview, downloadBlob,
-  myNotices, showLoginNotices, mdOf, runReg, cwSelf, myDetailsChecklist
+  myNotices, showLoginNotices, mdOf, runReg, cwSelf, myDetailsChecklist, teamLabel, canPay, isFinance,
+  IN_STATES, COUNTRIES, EDU_LEVELS, FAMILY_RELATIONS, EMERGENCY_RELATIONS, BLOOD_GROUPS, BANKS
 };

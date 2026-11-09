@@ -29,6 +29,9 @@ PeopleDesk HR API (the middle tier between the React app and MySQL).
   POST /api/contractor/workers/{id}  contractor portal: correct a worker before they sign in
   POST /api/contractor/workers/{id}/access   contractor portal: an access link for a worker
   POST /api/contractor/password      contractor portal: change your password
+  POST /api/candidate-form/link      HR: a link with which a candidate fills in their details and CV
+  POST /api/apply/open               the candidate's form, from that link (no session)
+  POST /api/apply/save               the candidate saves or sends the form (no session)
 """
 import logging
 import os
@@ -44,7 +47,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import doctemplates, mailer, migrate, policy, portal, repo, training, workforce
+from . import candform, doctemplates, mailer, migrate, perf, policy, portal, repo, training, workforce
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
@@ -519,6 +522,70 @@ def access_link(body: AccessLinkBody, request: Request, me=Depends(current_user)
     return {"url": url, "sent": sent, "to": to if sent else "", "days": portal.INVITE_DAYS}
 
 
+# ---------------------------------------------------------------- 2.11: the candidate's application form
+class CandLinkBody(BaseModel):
+    candId: str
+    send: bool = True
+
+
+class CandFormBody(BaseModel):
+    token: str
+    data: dict = Field(default_factory=dict)
+    cv: dict | None = None
+    submit: bool = False
+
+
+def _cand_problem(fn, *args):
+    try:
+        return fn(*args)
+    except candform.Problem as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@app.post("/api/candidate-form/link")
+def candidate_form_link(body: CandLinkBody, request: Request, me=Depends(current_user)):
+    """HR: a link with which a candidate fills in their details and attaches their CV. It works for 14 days and
+    stops working when a newer link is sent or the candidate joins. Sent by e-mail when the server can."""
+    with repo.engine.begin() as conn:
+        ctx = _ctx(conn, me)
+        cand = repo.get_records(conn, "cands", [body.candId]).get(body.candId)
+        if not cand or not ctx.is_hr_for(cand.get("companyId")):
+            raise HTTPException(403, "Only HR for this candidate's company can send the form.")
+        rec, nonce = _cand_problem(candform.start, cand, me["id"])
+        repo.upsert(conn, "cands", [rec], me["id"])
+        repo.audit_add(conn, "Application form sent to a candidate", cand.get("name") or "", me["id"], module="recruitment", ref_type="candidate", ref_id=cand["id"])
+        repo.bump_rev(conn)
+        co = repo.get_records(conn, "companies", [cand.get("companyId")]).get(cand.get("companyId")) or {}
+        url = candform.link_url(_base_url(request), candform.make_link(cand["id"], nonce))
+        form = rec["form"]
+    sent = False
+    to = cand.get("email") or ""
+    if body.send and to and mailer.configured():
+        subject, text_ = candform.link_mail(cand.get("name") or "", co.get("legalName") or co.get("name", ""), url)
+        try:
+            mailer.send([to], subject, text_)
+            sent = True
+        except Exception as e:  # noqa: BLE001
+            log.warning("Candidate form mail failed: %s", e)
+    return {"url": url, "sent": sent, "to": to if sent else "", "days": candform.LINK_DAYS, "form": form}
+
+
+@app.post("/api/apply/open", dependencies=[Depends(require_csrf)])
+def apply_open(body: CandFormBody):
+    with repo.engine.connect() as conn:
+        cand = _cand_problem(candform.open_candidate, conn, body.token)
+        return candform.public_view(conn, cand)
+
+
+@app.post("/api/apply/save", dependencies=[Depends(require_csrf)])
+def apply_save(body: CandFormBody):
+    time.sleep(0.1)
+    with repo.engine.begin() as conn:
+        cand = _cand_problem(candform.open_candidate, conn, body.token)
+        rec = _cand_problem(candform.save, conn, cand, body.data, body.cv, body.submit)
+        return candform.public_view(conn, rec)
+
+
 def current_portal_user(request: Request, _=Depends(require_csrf)):
     sub = session_subject(request)
     if not sub.startswith(portal.PORTAL_PREFIX):
@@ -840,6 +907,17 @@ def _file_visible(conn, fid: str, me: dict) -> bool:
         return True
     for table in ("expense_claims", "approval_requests"):
         if any(me["id"] in (repo.loads(d).get("participants") or []) or emp == me["id"] for emp, d in hit(table)):
+            return True
+    if "finance" in (me.get("teams") or []):     # finance checks the receipts of every claim in its company
+        if any(repo.loads(d).get("companyId") == me.get("companyId") and repo.loads(d).get("status") != "draft" for _e, d in hit("expense_claims")):
+            return True
+    # 2.11: evidence on goals (the employee and their managers) and files on performance meetings (those who see them)
+    g_rows, m_rows = hit("goals"), hit("performance_meetings")
+    if g_rows or m_rows:
+        ctx = policy.make_ctx(me, repo.employees_index(conn), repo.registered_companies(conn))
+        if any(emp == me["id"] or emp in ctx.line for emp, _d in g_rows):
+            return True
+        if any(perf.sees_meeting(repo.loads(d), me["id"], ctx.line) for _e, d in m_rows):
             return True
     tr_rows = hit("trainings")
     for _emp, d in tr_rows:     # training content: the trainers and the people who attended

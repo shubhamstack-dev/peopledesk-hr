@@ -80,7 +80,7 @@ export default function Shell({ resolved, onSignOut, onSwitchCompany, children }
           <span className="sp" />
           <div className="who">
             <div className="av">{E.initials(E.fullName(me))}</div>
-            <div className="txt"><b>{E.fullName(me)}</b><small>{E.ROLES[me.role]}{E.isManager() ? ', manager' : ''}</small></div>
+            <div className="txt"><b>{E.fullName(me)}</b><small>{E.ROLES[me.role]}{E.isManager() ? ', manager' : ''}{E.teamLabel(me) ? ` · ${E.teamLabel(me)}` : ''}</small></div>
             <button className="btn sm" onClick={onSignOut}>Sign out</button>
           </div>
         </header>
