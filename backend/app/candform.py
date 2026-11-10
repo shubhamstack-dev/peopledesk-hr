@@ -13,6 +13,11 @@ and may only ask for changes (`returned`) or close the form (`closed`, done on j
 
 The link is valid for 14 days and only while the form is open (sent, being filled in, or returned for changes).
 Sending a new link makes older ones stop working.
+
+2.12: the form offers the company's lists (employers, designations, responsibilities) as drop-downs with "Others",
+previous jobs carry main and secondary responsibilities, and the candidate rates their level on each skill the
+requisitions they are in need. When the form is sent, their levels are kept as `selfLevels` and, on requisitions
+that shortlist automatically, a sourced candidate who matches well enough moves to Screening.
 """
 import base64
 import re
@@ -53,11 +58,15 @@ LISTS = {
     "education": {"level": 40, "qualification": S, "specialisation": S, "institution": S, "university": S, "mode": 12,
                   "fromYear": 4, "toYear": 4, "score": 20, "scoreType": 8},
     "prevJobs": {"employer": S, "designation": S, "location": 80, "from": "month", "to": "month", "empCode": 40,
-                 "lastCtc": "num", "reason": 300, "duties": L, "contact": 200},
+                 "lastCtc": "num", "reason": 300, "duties": L, "contact": 200, "mainResp": "ids", "secResp": "ids"},
     "references": {"name": S, "organisation": S, "designation": S, "relation": 200, "phone": 20, "email": S, "years": "num"},
     "family": {"relation": 40, "name": S, "dob": "date", "gender": 2, "occupation": 80, "phone": 20, "dependant": "bool"},
 }
 LIST_MAX = 20
+IDS_MAX = 40
+ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+LEVELS = {0: "None", 1: "Basic", 2: "Working", 3: "Advanced", 4: "Expert"}
+SHORTLIST_STAGE = "screening"
 
 
 class Problem(Exception):
@@ -125,13 +134,23 @@ def public_view(conn, cand: dict) -> dict:
     return {"company": co.get("legalName") or co.get("name") or "", "name": cand.get("name") or "", "email": cand.get("email") or "",
             "jobs": [j for j in jobs if j], "status": form.get("status") or "sent", "note": form.get("note") or "",
             "editable": can_edit(cand), "submittedAt": form.get("submittedAt"), "data": prefill(cand),
-            "cv": {"name": cv.get("name"), "size": cv.get("size")} if cv.get("name") else None}
+            "cv": {"name": cv.get("name"), "size": cv.get("size")} if cv.get("name") else None,
+            "skills": wanted_skills(conn, cand), "levels": LEVELS, "lists": lists_for(conn, cand.get("companyId"))}
 
 
 # ---------------------------------------------------------------- what the candidate sends
 def _value(v, kind):
     if kind == "bool":
         return bool(v)
+    if kind == "ids":
+        if not isinstance(v, list):
+            return []
+        out = []
+        for x in v[:IDS_MAX]:
+            x = str(x or "")
+            if ID.match(x) and x not in out:
+                out.append(x)
+        return out
     if kind == "num":
         if v in (None, ""):
             return ""
@@ -170,15 +189,138 @@ def clean(data: dict) -> dict:
             if not isinstance(r, dict):
                 continue
             row = {k: _value(r.get(k), kind) for k, kind in spec.items()}
-            if any(v not in ("", False) for v in row.values()):
+            if any(v not in ("", False, []) for v in row.values()):
                 row["id"] = re.sub(r"[^A-Za-z0-9]", "", str(r.get("id") or ""))[:20] or uuid.uuid4().hex[:12]
                 kept.append(row)
         out[name] = kept
+    for j in out["prevJobs"]:
+        j["secResp"] = [x for x in j["secResp"] if x not in j["mainResp"]]     # main wins if both
+    out["skillLevels"] = _levels(data.get("skillLevels"))
     out["pan"] = out["pan"].upper().replace(" ", "")
     out["ifsc"] = out["ifsc"].upper().replace(" ", "")
     out["aadhaar"] = re.sub(r"\D", "", out["aadhaar"])
     out["uan"] = re.sub(r"\D", "", out["uan"])
     return out
+
+
+def _levels(v) -> dict:
+    """{skill id: 0..4}; anything else is dropped."""
+    if not isinstance(v, dict):
+        return {}
+    out = {}
+    for k, x in list(v.items())[:100]:
+        if not ID.match(str(k)) or x in ("", None):
+            continue
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if n in LEVELS:
+            out[str(k)] = n
+    return out
+
+
+# ---------------------------------------------------------------- 2.12: lists, skills and the match
+def _req_skills(req: dict) -> list:
+    out = []
+    for need in ("primary", "secondary"):
+        for x in req.get(need + "Skills") or []:
+            if isinstance(x, dict) and x.get("skillId"):
+                out.append({"skillId": x["skillId"], "level": x.get("level"), "need": need})
+    return out
+
+
+def wanted_skills(conn, cand: dict) -> list:
+    """The skills the candidate's live requisitions need: [{id, name, need}], primary first."""
+    apps = [a for a in repo.records_where(conn, "apps", "cand_id", cand["id"]) if a.get("stage") not in ("rejected", "withdrawn", "joined")]
+    reqs = repo.get_records(conn, "reqs", [a.get("reqId") for a in apps])
+    need = {}
+    for r in reqs.values():
+        for s in _req_skills(r):
+            if need.get(s["skillId"]) != "primary":
+                need[s["skillId"]] = s["need"]
+    items = repo.get_records(conn, "masterItems", list(need))
+    out = [{"id": i, "name": (items.get(i) or {}).get("name") or "", "need": n} for i, n in need.items()
+           if (items.get(i) or {}).get("kind") == "skill" and (items[i].get("status") in ("approved", "proposed"))]
+    return sorted(out, key=lambda x: (x["need"] != "primary", x["name"].lower()))
+
+
+def lists_for(conn, company_id: str) -> dict:
+    """What the drop-downs on the form offer: the company's employers, designations and responsibilities."""
+    items = [x for x in repo.records_where(conn, "masterItems", "company_id", company_id) if x.get("status") == "approved"]
+    by = lambda kind: sorted((x for x in items if x.get("kind") == kind), key=lambda x: str(x.get("name") or "").lower())
+    desigs = sorted({str(d.get("name") or "").strip() for d in repo.records_where(conn, "desigs", "company_id", company_id)} - {""}, key=str.lower)
+    return {"employers": [x["name"] for x in by("employer")], "designations": desigs,
+            "responsibilities": [{"id": x["id"], "name": x["name"], "category": x.get("category") or ""} for x in by("responsibility")]}
+
+
+def level_of(cand: dict, skill_id: str):
+    """HR's assessed level counts; otherwise the candidate's own rating; None when neither."""
+    for src in (cand.get("skillLevels") or {}, cand.get("selfLevels") or {}, ((cand.get("form") or {}).get("data") or {}).get("skillLevels") or {}):
+        v = src.get(skill_id)
+        if v not in (None, ""):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def skill_match(cand: dict, req: dict):
+    """Same rule as skillMatch() in the app: primary skills count twice, each scores min(level / needed, 1)."""
+    need = _req_skills(req)
+    if not need:
+        return None
+    got = tot = 0.0
+    unrated, primary_ok = 0, True
+    for n in need:
+        w = 2 if n["need"] == "primary" else 1
+        try:
+            want = max(1, int(n.get("level") or 1))
+        except (TypeError, ValueError):
+            want = 1
+        have = level_of(cand, n["skillId"])
+        if have is None:
+            unrated += 1
+        tot += w
+        got += w * min((have or 0) / want, 1)
+        if (have or 0) < want and n["need"] == "primary":
+            primary_ok = False
+    return {"pct": round(got / tot * 100), "unrated": unrated, "primaryOk": primary_ok}
+
+
+def meets_shortlist(m, req: dict) -> bool:
+    if not m or m["unrated"]:
+        return False
+    try:
+        floor = 70 if req.get("matchMin") in (None, "") else float(req["matchMin"])
+    except (TypeError, ValueError):
+        floor = 70
+    return m["pct"] >= floor and (req.get("primaryMust") is False or m["primaryOk"])
+
+
+def auto_shortlist(conn, cand: dict) -> int:
+    """Sourced applications of this candidate move to Screening on requisitions that shortlist automatically."""
+    apps = [a for a in repo.records_where(conn, "apps", "cand_id", cand["id"]) if a.get("stage") == "sourced"]
+    reqs = repo.get_records(conn, "reqs", [a.get("reqId") for a in apps])
+    now = int(time.time() * 1000)
+    moved = []
+    for a in apps:
+        r = reqs.get(a.get("reqId")) or {}
+        if not r.get("autoShortlist") or r.get("status") != "open":
+            continue
+        m = skill_match(cand, r)
+        if not meets_shortlist(m, r):
+            continue
+        note = f"Shortlisted automatically: skills match {m['pct']}%"
+        moved.append({**a, "stage": SHORTLIST_STAGE, "stageAt": now, "autoShortlisted": True,
+                      "history": [*(a.get("history") or []), {"stage": SHORTLIST_STAGE, "at": now, "by": "", "note": note}]})
+    if moved:
+        repo.upsert(conn, "apps", moved, None)
+        for a in moved:
+            repo.audit_add(conn, "Candidate shortlisted by skills match", f"{cand.get('name') or ''}: {(reqs.get(a.get('reqId')) or {}).get('no') or ''}", None,
+                           module="recruitment", ref_type="candidate", ref_id=cand["id"])
+    return len(moved)
 
 
 def check(d: dict, submit: bool):
@@ -232,6 +374,16 @@ def check(d: dict, submit: bool):
         raise Problem("Tick the declaration that the details are true before sending.")
 
 
+def check_skills(d: dict, wanted: list, submit: bool):
+    """Only the skills asked about are kept; when the form is sent, each must have a level (None is a level)."""
+    ids = {s["id"] for s in wanted}
+    d["skillLevels"] = {k: v for k, v in d["skillLevels"].items() if k in ids}
+    if submit:
+        missing = [s["name"] for s in wanted if s["id"] not in d["skillLevels"]]
+        if missing:
+            raise Problem(f"Choose your level in {', '.join(missing[:3])}{' and others' if len(missing) > 3 else ''} under Your skills (None if you do not have it).")
+
+
 def clean_cv(cv) -> dict | None:
     if not cv:
         return None
@@ -259,6 +411,7 @@ def save(conn, cand: dict, data: dict, cv, submit: bool) -> dict:
         raise Problem("This form has already been sent. Ask HR if something needs to change.")
     d = clean(data)
     check(d, submit)
+    check_skills(d, wanted_skills(conn, cand), submit)
     now = int(time.time() * 1000)
     form = dict(cand.get("form") or {})
     form.update({"data": d, "savedAt": now, "status": "submitted" if submit else "draft"})
@@ -278,7 +431,10 @@ def save(conn, cand: dict, data: dict, cv, submit: bool) -> dict:
                      ("currentCtc", d["currentCtc"]), ("expectedCtc", d["expectedCtc"]), ("noticeDays", d["noticeDays"]), ("skills", d["skills"])):
             if v not in ("", None):
                 rec[k] = v
+        rec["selfLevels"] = dict(d["skillLevels"])
     repo.upsert(conn, "cands", [rec], None)
+    if submit:
+        auto_shortlist(conn, rec)
     repo.audit_add(conn, "Candidate sent their application form" if submit else "Candidate saved their application form", rec.get("name") or "", None,
                    module="recruitment", ref_type="candidate", ref_id=rec["id"])
     repo.bump_rev(conn)
@@ -307,6 +463,11 @@ def merge_from_app(new: dict, old: dict | None, me: str) -> dict:
     """A candidate saved from the app: the form as stored, except that HR may return it for changes or close it."""
     of = (old or {}).get("form")
     nf = new.get("form")
+    # the candidate's own skill ratings are written only here, from their form
+    if (old or {}).get("selfLevels") is not None:
+        new["selfLevels"] = old["selfLevels"]
+    else:
+        new.pop("selfLevels", None)
     if not of:
         new.pop("form", None)
         return new

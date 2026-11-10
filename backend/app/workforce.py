@@ -436,3 +436,4 @@ def _guard_attendance_request(self, coll: str, new: dict | None, old: dict | Non
 Guard.check_controls = _guard_controls
 Guard.check_attendance_request = _guard_attendance_request
 MASTER_KINDS.add("skill")
+MASTER_KINDS.add("responsibility")          # 2.12: responsibilities of previous jobs

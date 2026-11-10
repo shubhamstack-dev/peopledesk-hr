@@ -15,7 +15,7 @@ const GENDERS = [['M', 'Male'], ['F', 'Female'], ['O', 'Other']];
 const MARITAL = [['single', 'Single'], ['married', 'Married'], ['divorcee', 'Divorcee'], ['widowed', 'Widowed'], ['other', 'Other']];
 const BLANK_ROW = {
   education: { level: 'Graduate', qualification: '', specialisation: '', institution: '', university: '', mode: 'full', fromYear: '', toYear: '', score: '', scoreType: 'pct' },
-  prevJobs: { employer: '', designation: '', location: '', from: '', to: '', empCode: '', lastCtc: '', reason: '', duties: '', contact: '' },
+  prevJobs: { employer: '', designation: '', location: '', from: '', to: '', empCode: '', lastCtc: '', reason: '', mainResp: [], secResp: [], duties: '', contact: '' },
   references: { name: '', organisation: '', designation: '', relation: '', phone: '', email: '', years: '' },
   family: { relation: 'Father', name: '', dob: '', gender: '', occupation: '', phone: '', dependant: false },
 };
@@ -23,9 +23,9 @@ const LIST_FIELDS = {
   education: [['level', 'Level', 'select', () => E.EDU_LEVELS.map((x) => [x, x])], ['qualification', 'Qualification (e.g. B.E., B.Com, ITI Fitter)'], ['specialisation', 'Subject or specialisation'],
     ['institution', 'School, college or institute'], ['university', 'Board or university'], ['mode', 'Mode', 'select', () => [['full', 'Full time'], ['part', 'Part time'], ['distance', 'Distance or online']]],
     ['fromYear', 'From (year)', 'number'], ['toYear', 'Passed in (year)', 'number'], ['score', 'Result (e.g. 78.4 or First class)'], ['scoreType', 'Result as', 'select', () => [['pct', 'Percentage'], ['cgpa', 'CGPA'], ['grade', 'Grade or class']]]],
-  prevJobs: [['employer', 'Employer'], ['designation', 'Designation'], ['location', 'City'], ['from', 'From', 'month'], ['to', 'To (empty if current)', 'month'], ['empCode', 'Employee number there'],
-    ['lastCtc', 'Last annual CTC (₹)', 'number'], ['reason', 'Reason for leaving'], ['duties', 'Main responsibilities', 'textarea'], ['contact', 'HR contact there (name, e-mail or phone)']],
-  references: [['name', 'Name'], ['organisation', 'Organisation'], ['designation', 'Their designation'], ['relation', 'How they know you (e.g. former manager)'], ['phone', 'Phone'], ['email', 'E-mail', 'email'], ['years', 'Known for (years)', 'number']],
+  prevJobs: [['employer', 'Employer', 'pick', 'employers'], ['designation', 'Designation', 'pick', 'designations'], ['location', 'City'], ['from', 'From', 'month'], ['to', 'To (empty if current)', 'month'], ['empCode', 'Employee number there'],
+    ['lastCtc', 'Last annual CTC (₹)', 'number'], ['reason', 'Reason for leaving'], ['resp', 'Responsibilities', 'resp'], ['duties', 'Other responsibilities, in your words', 'textarea'], ['contact', 'HR contact there (name, e-mail or phone)']],
+  references: [['name', 'Name'], ['organisation', 'Organisation', 'pick', 'employers'], ['designation', 'Their designation', 'pick', 'designations'], ['relation', 'How they know you (e.g. former manager)'], ['phone', 'Phone'], ['email', 'E-mail', 'email'], ['years', 'Known for (years)', 'number']],
   family: [['relation', 'Relationship', 'select', () => E.FAMILY_RELATIONS.map((x) => [x, x])], ['name', 'Name'], ['dob', 'Date of birth', 'date'], ['gender', 'Gender', 'select', () => [['', '—'], ...GENDERS]],
     ['occupation', 'Occupation'], ['phone', 'Phone'], ['dependant', 'Depends on me', 'check']],
 };
@@ -41,6 +41,53 @@ function Field({ label, type = 'text', value, onChange, opts, wide, help, disabl
   return <label className={`field${wide ? ' wide' : ''}`}>{label}{input}{help && <small>{help}</small>}</label>;
 }
 
+/* 2.12: a drop-down from the company's list, with Others for a name that is not there */
+const OTHER = '__other';
+function PickField({ label, value, onChange, names, disabled }) {
+  const v = value ?? '';
+  const hit = names.find((n) => n.toLowerCase() === String(v).trim().toLowerCase()) || '';
+  const [other, setOther] = useState(!!String(v).trim() && !hit);
+  const pick = (e) => {
+    if (e.target.value === OTHER) { setOther(true); onChange(hit ? '' : v); } else { setOther(false); onChange(e.target.value); }
+  };
+  return (
+    <label className="field">{label}
+      <select className="inp" value={other ? OTHER : hit} onChange={pick} disabled={disabled}>
+        <option value="">Choose</option>{names.map((n) => <option key={n} value={n}>{n}</option>)}<option value={OTHER}>Others</option>
+      </select>
+      {other && <input className="inp" value={v} onChange={(e) => onChange(e.target.value)} placeholder="Type it in full" disabled={disabled} aria-label={`${label}, typed`} />}
+      <small>Choose Others if it is not on the list.</small>
+    </label>
+  );
+}
+/* 2.12: each responsibility on the company's list is a main one, a secondary one, or not part of the job */
+function RespMatrix({ list, main, sec, onChange, disabled, rowKey }) {
+  const [q, setQ] = useState('');
+  if (!list.length) return null;
+  const m = main || [], s = sec || [];
+  const setOne = (id, val) => {
+    const nm = m.filter((x) => x !== id), ns = s.filter((x) => x !== id);
+    if (val === 'main') nm.push(id); if (val === 'sec') ns.push(id);
+    onChange(nm, ns);
+  };
+  const shown = q ? list.filter((x) => `${x.name} ${x.category}`.toLowerCase().includes(q.toLowerCase())) : list;
+  const cols = [['main', 'Main'], ['sec', 'Secondary'], ['', 'Not in this job']];
+  return (
+    <div className="field wide">Responsibilities<small>Mark each one you had in this job as main or secondary.</small>
+      {list.length > 8 && <input className="inp" placeholder="Filter the list" value={q} onChange={(e) => setQ(e.target.value)} />}
+      <div className="respm"><table className="t"><thead><tr><th>Responsibility</th>{cols.map(([k, l]) => <th key={k} className="c">{l}</th>)}</tr></thead>
+        <tbody>{shown.map((x) => {
+          const cur = m.includes(x.id) ? 'main' : s.includes(x.id) ? 'sec' : '';
+          return (
+            <tr key={x.id}><td>{x.name}{x.category && <div className="fine">{x.category}</div>}</td>
+              {cols.map(([k, l]) => <td key={k} className="c"><input type="radio" name={`cresp_${rowKey}_${x.id}`} checked={cur === k} onChange={() => setOne(x.id, k)} disabled={disabled} aria-label={`${x.name}: ${l}`} /></td>)}</tr>
+          );
+        })}</tbody></table></div>
+      <small>{m.length} main, {s.length} secondary</small>
+    </div>
+  );
+}
+
 export default function CandidateForm({ onDone }) {
   const token = applyToken();
   const [info, setInfo] = useState(null);
@@ -53,7 +100,7 @@ export default function CandidateForm({ onDone }) {
 
   useEffect(() => {
     if (!token) { setBad('This link is not complete. Open it again from the message you were sent.'); return; }
-    api.post('/api/apply/open', { token }).then((r) => { setInfo(r); setD({ education: [], prevJobs: [], references: [], family: [], ...r.data }); }).catch((e) => setBad(e.message));
+    api.post('/api/apply/open', { token }).then((r) => { setInfo(r); setD({ education: [], prevJobs: [], references: [], family: [], skillLevels: {}, ...r.data }); }).catch((e) => setBad(e.message));
   }, [token]);
 
   if (bad) return (
@@ -65,6 +112,11 @@ export default function CandidateForm({ onDone }) {
   const setRow = (list, i, k) => (v) => setD({ ...d, [list]: d[list].map((r, j) => (j === i ? { ...r, [k]: v } : r)) });
   const F = (k, label, type, extra = {}) => <Field label={label} type={type} value={d[k]} onChange={set(k)} disabled={ro} {...extra} />;
   const states = [['', 'Choose'], ...E.IN_STATES.map((x) => [x, x]), ['Outside India', 'Outside India']];
+  const lists = info.lists || { employers: [], designations: [], responsibilities: [] };
+  const skills = info.skills || [];
+  const levels = Object.entries(info.levels || { 0: 'None', 1: 'Basic', 2: 'Working', 3: 'Advanced', 4: 'Expert' });
+  const lv = d.skillLevels || {};
+  const setLevel = (id, v) => { const next = { ...lv }; if (v === '') delete next[id]; else next[id] = +v; setD({ ...d, skillLevels: next }); };
 
   const pickCv = (ev) => {
     const f = ev.target.files[0]; if (!f) return;
@@ -88,7 +140,12 @@ export default function CandidateForm({ onDone }) {
         {!ro && <button type="button" className="btn" onClick={() => setD({ ...d, [list]: [...d[list], { ...BLANK_ROW[list] }] })}>Add {one}</button>}</div>
         {d[list].length ? d[list].map((r, i) => (
           <div key={r.id || i} className="apply-row"><div className="form">
-            {LIST_FIELDS[list].map(([k, label, type, opts]) => <Field key={k} label={label} type={type} opts={opts && opts()} value={r[k]} onChange={setRow(list, i, k)} disabled={ro} wide={type === 'textarea'} />)}</div>
+            {LIST_FIELDS[list].map(([k, label, type, opts]) => (type === 'pick'
+              ? <PickField key={k} label={label} names={lists[opts] || []} value={r[k]} onChange={setRow(list, i, k)} disabled={ro} />
+              : type === 'resp'
+                ? <RespMatrix key={k} rowKey={r.id || i} list={lists.responsibilities} main={r.mainResp} sec={r.secResp} disabled={ro}
+                    onChange={(mainResp, secResp) => setD({ ...d, [list]: d[list].map((x, j) => (j === i ? { ...x, mainResp, secResp } : x)) })} />
+                : <Field key={k} label={label} type={type} opts={opts && opts()} value={r[k]} onChange={setRow(list, i, k)} disabled={ro} wide={type === 'textarea'} />))}</div>
             {!ro && <button type="button" className="btn sm ghost" onClick={() => setD({ ...d, [list]: d[list].filter((_x, j) => j !== i) })}>Remove</button>}</div>
         )) : <p className="fine">None added.</p>}
       </div>
@@ -126,7 +183,28 @@ export default function CandidateForm({ onDone }) {
       <div className="card"><h2>Your current job</h2><div className="form">
         {F('currentCompany', 'Current or last employer')}{F('currentTitle', 'Current role')}{F('expYears', 'Total experience (years)', 'number')}
         {F('currentCtc', 'Current annual CTC (₹)', 'number')}{F('expectedCtc', 'Expected annual CTC (₹)', 'number')}{F('noticeDays', 'Notice period (days)', 'number')}
-        {F('skills', 'Key skills', 'text', { wide: true })}{F('about', 'Anything else you would like us to know', 'textarea', { wide: true })}</div></div>
+        {F('skills', skills.length ? 'Other skills' : 'Key skills', 'text', { wide: true })}{F('about', 'Anything else you would like us to know', 'textarea', { wide: true })}</div></div>
+
+      {skills.length > 0 && (
+        <div className="card"><h2>Your skills</h2>
+          <p className="sub">Choose your level in each skill the job needs. Be accurate: HR checks your levels at the interview. Choose None if you do not have the skill.</p>
+          {[['primary', 'Most important for the job'], ['secondary', 'Also useful']].map(([need, title]) => {
+            const list = skills.filter((s) => s.need === need); if (!list.length) return null;
+            return (
+              <div key={need}><h3 style={{ margin: '12px 0 6px' }}>{title}</h3>
+                <div className="form">{list.map((s) => (
+                  <label key={s.id} className="field">{s.name}
+                    <select className="inp" value={lv[s.id] ?? ''} onChange={(e) => setLevel(s.id, e.target.value)} disabled={ro}>
+                      <option value="">Choose your level</option>{levels.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                    </select>
+                  </label>
+                ))}</div>
+              </div>
+            );
+          })}
+          <p className="fine">Basic: you know the essentials with help. Working: you use it on your own in daily work. Advanced: you handle complex work and guide others. Expert: others come to you; you set the standard.</p>
+        </div>
+      )}
 
       {listCard('education')}{listCard('prevJobs')}{listCard('references')}{listCard('family')}
 

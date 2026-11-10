@@ -821,7 +821,7 @@ const MENU = [
     { page: 'people', label: 'Employee directory', show: HR },
     { page: 'org', label: 'Organisation chart' },
     { page: 'masters', label: 'Departments, designations and grades', show: HR },
-    { page: 'masterdata', label: 'Standard lists: institutions, qualifications, employers', show: HR },
+    { page: 'masterdata', label: 'Standard lists: education, employers, skills, responsibilities', show: HR },
     { page: 'contractors', label: 'Contractors (third party)', show: HR, badge: () => (isHR() ? conWorkersToComplete().length : 0) },
     { page: 'greetings', label: 'Greetings and notifications', show: HR },
     { page: 'reporting', label: 'Reporting structure', show: MGR },
@@ -3033,6 +3033,85 @@ VIEWS.recruit = () => {
 };
 ACT.fuDone = (el) => { const a = appById(el.dataset.app); const f = a.followups.find((x) => x.id === el.dataset.id); f.done = el.checked; f.doneAt = Date.now(); saveNow(); toast('Follow-up done'); route(); };
 
+/* ---------------------------------------------------------------- 2.12: skills a requisition needs, and how candidates match
+   A requisition lists primary and secondary skills, each at a level (Basic, Working, Advanced, Expert).
+   Candidates rate themselves on their form; HR may record an assessed level, which counts instead.
+   Match: each skill scores (candidate level / level needed, at most 1), primary skills count twice.
+   With "shortlist automatically" on, a sourced candidate who is rated on every skill, reaches the
+   minimum match and (if asked) every primary level moves to Screening. The server does the same when
+   a candidate sends their form (backend/app/candform.py). */
+const SKILL_NEED = { primary: 'Primary', secondary: 'Secondary' };
+const reqSkills = (r) => [...(r.primarySkills || []).map((x) => ({ ...x, need: 'primary' })), ...(r.secondarySkills || []).map((x) => ({ ...x, need: 'secondary' }))].filter((x) => x.skillId);
+const candSelfLevels = (c) => ({ ...(((c.form || {}).data || {}).skillLevels || {}), ...(c.selfLevels || {}) });
+function candLevel(c, skillId) {
+  const hr = (c.skillLevels || {})[skillId]; if (hr !== undefined && hr !== '' && hr !== null) return +hr;
+  const own = candSelfLevels(c)[skillId]; return own !== undefined && own !== '' && own !== null ? +own : null;
+}
+function skillMatch(c, r) {
+  const need = reqSkills(r); if (!c || !need.length) return null;
+  let got = 0, tot = 0, unrated = 0, primaryOk = true; const gaps = [];
+  need.forEach((n) => { const w = n.need === 'primary' ? 2 : 1, want = Math.max(1, +n.level || 1), have = candLevel(c, n.skillId);
+    if (have === null) unrated++; tot += w; got += w * Math.min((have || 0) / want, 1);
+    if ((have || 0) < want) { gaps.push(n); if (n.need === 'primary') primaryOk = false; } });
+  return { pct: Math.round((got / tot) * 100), gaps, unrated, primaryOk, n: need.length };
+}
+const matchMin = (r) => (r.matchMin === '' || r.matchMin == null ? 70 : +r.matchMin);
+const meetsShortlist = (m, r) => !!m && m.unrated === 0 && m.pct >= matchMin(r) && (r.primaryMust === false || m.primaryOk);
+const matchBadge = (m) => (!m ? '' : `<span class="badge ${m.unrated ? '' : m.pct >= 80 ? 'ok' : m.pct >= 50 ? 'info' : 'bad'}" title="${m.unrated ? `${m.unrated} skill${m.unrated === 1 ? '' : 's'} not rated yet` : 'Skills match'}">Skills ${m.pct}%${m.unrated ? '*' : ''}</span>`);
+/* sourced candidates of a requisition who match well enough move to Screening; returns how many */
+function autoShortlist(r, only) {
+  if (!r || !r.autoShortlist || r.status !== 'open' || !reqSkills(r).length) return 0; let n = 0;
+  S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced' && (!only || only.includes(a.id))).forEach((a) => {
+    const m = skillMatch(candById(a.candId), r); if (!meetsShortlist(m, r)) return;
+    setStage(a, 'screening', `Shortlisted automatically: skills match ${m.pct}%`); a.autoShortlisted = true; n++; });
+  return n;
+}
+const autoShortlistCand = (c) => S.apps.filter((a) => a.candId === c.id).reduce((n, a) => n + autoShortlist(reqById(a.reqId), [a.id]), 0);
+const levelOpts = (blank) => `${blank !== undefined ? `<option value="">${esc(blank)}</option>` : ''}${Object.entries(SKILL_LEVELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}`;
+function skillsNeededHtml(r) {
+  const block = (need) => { const list = reqSkills(r).filter((x) => x.need === need); if (!list.length) return '';
+    return `<div><h3 style="margin:10px 0 4px">${SKILL_NEED[need]} skills needed</h3><table class="t"><tbody>${list.map((x) => `<tr><td>${esc(skillName(x.skillId))}${(skillById(x.skillId) || {}).status === 'proposed' ? ' <span class="fine">(new, waiting for HR)</span>' : ''}</td><td class="r">${esc(levelTxt(+x.level))}</td></tr>`).join('')}</tbody></table></div>`; };
+  const html = block('primary') + block('secondary');
+  return html ? `<div class="grid g2" style="gap:16px">${html}</div>${r.autoShortlist ? `<p class="fine">Shortlisted automatically at a skills match of ${matchMin(r)}% or more${r.primaryMust === false ? '' : ', with every primary skill at the level needed'}, once the candidate is rated on every skill.</p>` : ''}` : '';
+}
+/* the skills editor in the requisition dialog: rows of skill + level, for primary and secondary */
+function skRowHtml(x = {}) {
+  const opts = skillOpts(CO); if (x.skillId && !opts.some(([id]) => id === x.skillId)) opts.unshift([x.skillId, skillName(x.skillId)]);
+  return `<div class="skrow"><select class="inp" data-sk aria-label="Skill"><option value="">Choose a skill</option>${opts.map(([id, n]) => `<option value="${id}" ${id === x.skillId ? 'selected' : ''}>${esc(n)}</option>`).join('')}<option value="__new">New skill…</option></select>
+    <input class="inp" data-sknew placeholder="Name of the new skill" hidden aria-label="Name of the new skill"><select class="inp" data-sklv aria-label="Level needed">${levelOpts().replace(`value="${+x.level || 2}"`, `value="${+x.level || 2}" selected`)}</select>
+    <button type="button" class="btn sm ghost" data-skdel>Remove</button></div>`;
+}
+function skEditorHtml(r) {
+  const box = (need, title, help) => { const rows = (r && r[need + 'Skills']) || [];
+    return `<div class="field wide">${title}<small>${help}</small><div class="skrows" data-need="${need}">${(rows.length ? rows : need === 'primary' ? [{}] : []).map(skRowHtml).join('')}</div><button type="button" class="btn sm" data-skadd="${need}" style="align-self:flex-start">Add ${need} skill</button></div>`; };
+  return box('primary', 'Primary skills needed', 'The skills the job cannot be done without, each at the level needed. They count twice in the match.')
+    + box('secondary', 'Secondary skills needed', 'Useful skills that are not essential.');
+}
+function wireSkEditor(form) {
+  form.addEventListener('click', (ev) => { const add = ev.target.closest('[data-skadd]'); const del = ev.target.closest('[data-skdel]');
+    if (add) { const box = form.querySelector(`.skrows[data-need="${add.dataset.skadd}"]`); box.insertAdjacentHTML('beforeend', skRowHtml()); box.lastElementChild.querySelector('select').focus(); }
+    if (del) del.closest('.skrow').remove(); });
+  form.addEventListener('change', (ev) => { if (!ev.target.matches('[data-sk]')) return; const nw = ev.target.parentNode.querySelector('[data-sknew]'); nw.hidden = ev.target.value !== '__new'; if (!nw.hidden) nw.focus(); });
+}
+/* reads the rows; new skills go on the list (or to HR's review). Returns { primarySkills, secondarySkills } or { error } */
+function readSkEditor(form) {
+  const out = { primarySkills: [], secondarySkills: [] }; const seen = new Set(); const fresh = [];
+  for (const row of $$('.skrow', form)) {
+    const need = row.closest('.skrows').dataset.need; const sel = row.querySelector('[data-sk]').value; const level = +row.querySelector('[data-sklv]').value || 2;
+    let id = sel;
+    if (sel === '__new') { const name = row.querySelector('[data-sknew]').value.replace(/\s+/g, ' ').trim(); if (!name) return { error: 'Type the name of the new skill, or remove the row.' };
+      const hit = S.masterItems.find((x) => x.companyId === CO && x.kind === 'skill' && x.status === 'approved' && normKey(x.name) === normKey(name)); id = hit ? hit.id : null; if (!id) fresh.push({ row, name }); }
+    if (!sel) continue;
+    const key = id || 'new:' + normKey(row.querySelector('[data-sknew]').value);
+    if (seen.has(key)) return { error: `${id ? skillName(id) : row.querySelector('[data-sknew]').value} is listed twice. Keep it once, as primary or secondary.` }; seen.add(key);
+    out[need + 'Skills'].push({ skillId: id, level, _row: row });
+  }
+  fresh.forEach(({ row, name }) => { const m = masterFor('skill', name, CO, { category: 'Technical' }); const it = [...out.primarySkills, ...out.secondarySkills].find((x) => x._row === row); it.skillId = m.id; });
+  const bad = [...out.primarySkills, ...out.secondarySkills].find((x) => !x.skillId); if (bad) return { error: 'HR has kept one of the new skills off the skills list. Choose another skill.' };
+  out.primarySkills = out.primarySkills.map(({ skillId, level }) => ({ skillId, level })); out.secondarySkills = out.secondarySkills.map(({ skillId, level }) => ({ skillId, level }));
+  return out;
+}
+
 /* ---------------------------------------------------------------- requisitions */
 VIEWS.reqs = () => {
   const st = R.q.get('st') || 'active';
@@ -3051,17 +3130,26 @@ const REQ_FIELDS = () => [{ k: 'title', label: 'Job title', req: true }, { k: 'd
   { k: 'replaces', label: 'Replaces (if replacement)', type: 'select', opts: () => S.employees.filter((e) => e.companyId === CO && e.status !== 'active').map((e) => [e.id, `${fullName(e)} (${e.status === 'exited' ? 'left' : 'leaving'})`]), blank: 'Nobody' },
   { k: 'hiringMgr', label: 'Hiring manager', type: 'select', opts: empOpts(CO), req: true }, { k: 'ctcMin', label: 'Budget: CTC from (₹ a year)', type: 'number', req: true }, { k: 'ctcMax', label: 'Budget: CTC up to (₹ a year)', type: 'number', req: true },
   { k: 'expMin', label: 'Experience from (years)', type: 'number', min: 0 }, { k: 'expMax', label: 'Experience up to (years)', type: 'number', min: 0 }, { k: 'targetDate', label: 'Fill by', type: 'date', req: true },
-  { k: 'priority', label: 'Priority', type: 'select', opts: [['high', 'High'], ['normal', 'Normal'], ['low', 'Low']] }, { k: 'skills', label: 'Key skills', wide: true }, { k: 'jd', label: 'Job description', type: 'textarea', wide: true }];
+  { k: 'priority', label: 'Priority', type: 'select', opts: [['high', 'High'], ['normal', 'Normal'], ['low', 'Low']] }, { k: 'skills', label: 'Other skills or notes', wide: true, help: 'Anything about skills that the lists above do not cover' },
+  { k: 'autoShortlist', label: 'Shortlist candidates automatically by skills match', type: 'check', wide: true }, { k: 'matchMin', label: 'Minimum skills match (%)', type: 'number', min: 0, max: 100 },
+  { k: 'primaryMust', label: 'Every primary skill must be at the level needed', type: 'check' }, { k: 'jd', label: 'Job description', type: 'textarea', wide: true }];
 ACT.reqEdit = (b) => {
   const r = b.dataset.id ? reqById(b.dataset.id) : null; const fields = REQ_FIELDS();
-  const v = r || { positions: 1, empType: 'permanent', reason: 'new', hiringMgr: me.id, priority: 'normal', targetDate: addDays(todayISO(), 45), expMin: 2, expMax: 6 };
-  openDlg(`<form class="dlg" id="rqf" novalidate><h2>${r ? 'Edit requisition ' + esc(r.no) : 'Raise a job requisition'}</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="rqe"></p>
+  const v = { matchMin: 70, primaryMust: true, ...(r || { positions: 1, empType: 'permanent', reason: 'new', hiringMgr: me.id, priority: 'normal', targetDate: addDays(todayISO(), 45), expMin: 2, expMax: 6 }) };
+  if (r && r.primaryMust === undefined) v.primaryMust = true;
+  openDlg(`<form class="dlg" id="rqf" novalidate><h2>${r ? 'Edit requisition ' + esc(r.no) : 'Raise a job requisition'}</h2><div class="form">${fields.map((f) => (f.k === 'skills' ? skEditorHtml(r) : '') + fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="rqe"></p>
     <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn" id="rqDraft">Save as draft</button><button class="btn pri">${isHR() ? 'Save and open' : 'Send for approval'}</button></div></form>`, true);
+  wireSkEditor($('#rqf'));
   const save = (submit) => { const d = readForm($('#rqf'), fields); const miss = fields.find((f) => f.req && !d[f.k]); if (miss) { $('#rqe').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
+    if (d.matchMin !== '' && (d.matchMin < 0 || d.matchMin > 100)) { $('#rqe').textContent = 'The minimum skills match is a percentage from 0 to 100.'; return; }
+    const sk = readSkEditor($('#rqf')); if (sk.error) { $('#rqe').textContent = sk.error; return; }
+    if (d.autoShortlist && !sk.primarySkills.length && !sk.secondarySkills.length) { $('#rqe').textContent = 'Add the skills needed before turning on automatic shortlisting.'; return; }
+    Object.assign(d, sk);
     if (d.ctcMax < d.ctcMin) { $('#rqe').textContent = 'The budget upper limit is below the lower limit.'; return; } if (d.positions < 1) { $('#rqe').textContent = 'At least one position.'; return; }
     let rec = r; if (!rec) { rec = { id: uid(), no: nextNo('req', 'REQ-'), companyId: CO, filled: 0, createdBy: me.id, createdAt: Date.now(), approvals: [], status: 'draft' }; S.reqs.push(rec); }
     Object.assign(rec, d); if (submit) { rec.status = isHR() ? 'open' : 'pending'; rec.approvals.push({ by: me.id, at: Date.now(), decision: isHR() ? 'opened' : 'submitted' }); }
-    saveNow(); closeDlg(); toast(submit ? (isHR() ? 'Requisition open' : 'Sent to HR for approval') : 'Draft saved'); go('#/req/' + rec.id); };
+    const sl = autoShortlist(rec);
+    saveNow(); closeDlg(); toast(`${submit ? (isHR() ? 'Requisition open' : 'Sent to HR for approval') : 'Draft saved'}${sl ? `. ${sl} candidate${sl === 1 ? '' : 's'} shortlisted by skills match` : ''}`); go('#/req/' + rec.id); };
   $('#rqf').onsubmit = (e) => { e.preventDefault(); save(true); }; $('#rqDraft').onclick = () => save(false);
 };
 VIEWS.req = () => {
@@ -3070,16 +3158,16 @@ VIEWS.req = () => {
   const t = todayISO();
   const cardOf = (a) => { const c = candById(a.candId); const nx = S.interviews.filter((i) => i.appId === a.id && i.status === 'scheduled').sort((x, y) => (x.date < y.date ? -1 : 1))[0];
     const od = (a.followups || []).some((f) => !f.done && f.due < t);
-    return `<button class="kcard" data-act="openApp" data-id="${a.id}"><b>${esc(c.name)}</b><span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentCompany || '—')}</span><span class="fine">Expects ${inr0(c.expectedCtc)}</span>
+    return `<button class="kcard" data-act="openApp" data-id="${a.id}"><b>${esc(c.name)}</b>${matchBadge(skillMatch(c, r))}<span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentCompany || '—')}</span><span class="fine">Expects ${inr0(c.expectedCtc)}</span>
       ${nx ? `<span class="fine">${MODES[nx.mode]} ${dShort(nx.date)} ${esc(nx.start)}</span>` : ''}${c.exEmpId ? '<span class="badge info">Former employee</span>' : ''}${od ? '<span class="badge bad">Follow-up overdue</span>' : ''}${a.offer && a.offer.status ? `<span class="badge mari">Offer ${esc(a.offer.status)}</span>` : ''}</button>`; };
   const can = isHR(r.companyId) || r.hiringMgr === me.id;
   return { title: `${r.title} (${r.no})`, html: `<div class="card"><div class="hd"><div><h2>${esc(r.title)} <span class="badge ${REQ_STATUS[r.status][1]}">${REQ_STATUS[r.status][0]}</span></h2>
-      <p class="sub">${esc((dept(r.deptId) || {}).name || '')}, ${esc((loc(r.locationId) || {}).name || '')}, grade ${esc((grade(r.gradeId) || {}).name || '—')}. ${r.positions} position${r.positions > 1 ? 's' : ''}, ${r.filled} filled. Budget ${inr0(r.ctcMin)} to ${inr0(r.ctcMax)} a year. ${num(r.expMin)}–${num(r.expMax)} years' experience. Hiring manager ${esc(nameOf(r.hiringMgr))}. Fill by ${dmy(r.targetDate)}.</p></div>
+      <p class="sub">${esc([(dept(r.deptId) || {}).name, (loc(r.locationId) || {}).name, `grade ${(grade(r.gradeId) || {}).name || '—'}`].filter(Boolean).join(', '))}. ${r.positions} position${r.positions > 1 ? 's' : ''}, ${r.filled} filled. Budget ${inr0(r.ctcMin)} to ${inr0(r.ctcMax)} a year. ${num(r.expMin)}–${num(r.expMax)} years' experience. Hiring manager ${esc(nameOf(r.hiringMgr))}. Fill by ${dmy(r.targetDate)}.</p></div>
       <div class="tools">${can && ['draft', 'pending', 'open', 'onhold'].includes(r.status) ? `<button class="btn" data-act="reqEdit" data-id="${r.id}">Edit</button>` : ''}${r.status === 'draft' && can ? '<button class="btn pri" data-act="reqSubmit">Send for approval</button>' : ''}
-        ${r.status === 'pending' && isHR(r.companyId) && r.createdBy !== me.id ? '<button class="btn danger" data-act="reqDecide" data-ok="0">Reject</button><button class="btn ok" data-act="reqDecide" data-ok="1">Approve</button>' : ''}
+        ${r.status === 'pending' && isHR(r.companyId) && r.createdBy !== me.id ? '<button class="btn danger" data-act="jobReqDecide" data-ok="0">Reject</button><button class="btn ok" data-act="jobReqDecide" data-ok="1">Approve</button>' : ''}
         ${r.status === 'open' && isHR(r.companyId) ? '<button class="btn" data-act="reqState" data-s="onhold">Put on hold</button><button class="btn" data-act="reqState" data-s="closed">Close</button>' : ''}${r.status === 'onhold' && isHR(r.companyId) ? '<button class="btn" data-act="reqState" data-s="open">Reopen</button>' : ''}
-        ${r.status === 'open' && can ? '<button class="btn pri" data-act="assignCVs">Assign CVs</button>' : ''}</div></div>
-      ${r.skills ? `<p><b>Skills:</b> ${esc(r.skills)}</p>` : ''}${r.jd ? `<details><summary class="fine" style="cursor:pointer">Job description</summary><p style="white-space:pre-wrap">${esc(r.jd)}</p></details>` : ''}
+        ${r.status === 'open' && can && reqSkills(r).length ? '<button class="btn" data-act="reqShortlist">Shortlist by skills now</button>' : ''}${r.status === 'open' && can ? '<button class="btn pri" data-act="assignCVs">Assign CVs</button>' : ''}</div></div>
+      ${skillsNeededHtml(r)}${r.skills ? `<p><b>${reqSkills(r).length ? 'Other skills' : 'Skills'}:</b> ${esc(r.skills)}</p>` : ''}${r.jd ? `<details><summary class="fine" style="cursor:pointer">Job description</summary><p style="white-space:pre-wrap">${esc(r.jd)}</p></details>` : ''}
       ${r.approvals.length ? `<p class="fine">${r.approvals.map((x) => `${esc(x.decision)} by ${esc(nameOf(x.by))} on ${dt(x.at)}${x.note ? ` (${esc(x.note)})` : ''}`).join('; ')}</p>` : ''}</div>
     <div class="card"><h2>Pipeline</h2><p class="sub">Open a candidate to move them along, schedule interviews, add follow-ups or make an offer. ${apps.filter((a) => ['rejected', 'withdrawn'].includes(a.stage)).length} rejected or withdrawn not shown.</p>
       <div class="kanban">${BOARD.map((s) => { const col = apps.filter((a) => a.stage === s); return `<div class="kcol"><div class="khead">${RSTAGES[s]} <span class="badge">${col.length}</span></div>${col.map(cardOf).join('')}</div>`; }).join('')}</div></div>` };
@@ -3087,22 +3175,28 @@ VIEWS.req = () => {
 ACT.openApp = (b) => go('#/app/' + b.dataset.id);
 const curReq = () => reqById(R.arg);
 ACT.reqSubmit = () => { const r = curReq(); r.status = isHR() ? 'open' : 'pending'; r.approvals.push({ by: me.id, at: Date.now(), decision: 'submitted' }); saveNow(); route(); };
-ACT.reqDecide = async (b) => { const r = curReq(), ok = b.dataset.ok === '1'; const n = ok ? '' : await askText('Reject this requisition?', 'Reason', 'Reject'); if (!ok && n === null) return;
+ACT.jobReqDecide = async (b) => { const r = curReq(), ok = b.dataset.ok === '1'; const n = ok ? '' : await askText('Reject this requisition?', 'Reason', 'Reject'); if (!ok && n === null) return;
   r.status = ok ? 'open' : 'rejected'; r.approvals.push({ by: me.id, at: Date.now(), decision: ok ? 'approved' : 'rejected', note: n }); saveNow(); toast(ok ? 'Requisition approved and open' : 'Requisition rejected'); route(); };
 ACT.reqState = (b) => { const r = curReq(); r.status = b.dataset.s; r.approvals.push({ by: me.id, at: Date.now(), decision: { onhold: 'put on hold', closed: 'closed', open: 'reopened' }[b.dataset.s] }); saveNow(); route(); };
 ACT.assignCVs = () => {
   const r = curReq(); const taken = new Set(S.apps.filter((a) => a.reqId === r.id).map((a) => a.candId));
-  const pool = S.cands.filter((c) => !taken.has(c.id));
+  const pool = S.cands.filter((c) => !taken.has(c.id)).map((c) => ({ c, m: skillMatch(c, r) })).sort((x, y) => ((y.m || {}).pct ?? -1) - ((x.m || {}).pct ?? -1) || x.c.name.localeCompare(y.c.name)).map((x) => x.c);
   openDlg(`<div class="dlg"><h2>Assign CVs to ${esc(r.title)}</h2><p class="fine" style="margin:0">Pick candidates from the pool, or add a new one with their CV.</p>
     <input class="inp" placeholder="Filter by name, skill, company" data-in="cvFilter" style="width:100%">
     <div style="max-height:340px;overflow:auto;border:1px solid var(--rule);border-radius:9px" id="cvList">${pool.map((c) => `<label class="chk cvrow" style="padding:7px 10px;border-bottom:1px solid var(--rule)" data-s="${esc(`${c.name} ${c.skills} ${c.currentCompany} ${c.currentTitle}`.toLowerCase())}"><input type="checkbox" value="${c.id}">
-      <span><b>${esc(c.name)}</b> <span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentTitle || '')} at ${esc(c.currentCompany || '—')}, expects ${inr0(c.expectedCtc)}, notice ${c.noticeDays || 0} days${c.cv ? ', CV attached' : ''}</span>${c.exEmpId ? ' <span class="badge info">Former employee</span>' : ''}</span></label>`).join('') || '<div class="empty">Everyone in the pool is already assigned.</div>'}</div>
+      <span><b>${esc(c.name)}</b> ${matchBadge(skillMatch(c, r))} <span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentTitle || '')} at ${esc(c.currentCompany || '—')}, expects ${inr0(c.expectedCtc)}, notice ${c.noticeDays || 0} days${c.cv ? ', CV attached' : ''}</span>${c.exEmpId ? ' <span class="badge info">Former employee</span>' : ''}</span></label>`).join('') || '<div class="empty">Everyone in the pool is already assigned.</div>'}</div>
     <div class="btns"><button class="btn" data-act="candEdit" data-req="${r.id}">Add a new candidate</button><button class="btn ghost" data-act="close">Cancel</button><button class="btn pri" data-act="assignGo">Assign selected</button></div></div>`, true);
 };
 ACT.cvFilter = (el) => { const q = el.value.toLowerCase(); $$('#cvList .cvrow').forEach((x) => { x.hidden = q && !x.dataset.s.includes(q); }); };
 ACT.assignGo = () => { const r = curReq(); const ids = $$('#cvList input:checked').map((x) => x.value); if (!ids.length) { toast('Tick at least one candidate.'); return; }
-  ids.forEach((cid) => { const a = { id: uid(), reqId: r.id, candId: cid, stage: 'sourced', stageAt: Date.now(), history: [], followups: [], notes: [], createdAt: Date.now() }; setStage(a, 'sourced', `Assigned to ${r.no}`); S.apps.push(a); });
-  saveNow(); closeDlg(); toast(`${ids.length} candidate${ids.length > 1 ? 's' : ''} assigned`); route(); };
+  const made = ids.map((cid) => { const a = { id: uid(), reqId: r.id, candId: cid, stage: 'sourced', stageAt: Date.now(), history: [], followups: [], notes: [], createdAt: Date.now() }; setStage(a, 'sourced', `Assigned to ${r.no}`); S.apps.push(a); return a.id; });
+  const sl = autoShortlist(r, made);
+  saveNow(); closeDlg(); toast(`${ids.length} candidate${ids.length > 1 ? 's' : ''} assigned${sl ? `, ${sl} shortlisted by skills match` : ''}`); route(); };
+ACT.reqShortlist = () => { const r = curReq(); const live = S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced');
+  if (!r.autoShortlist) { const tmp = { ...r, autoShortlist: true }; const ok = live.filter((a) => meetsShortlist(skillMatch(candById(a.candId), tmp), tmp));
+    ok.forEach((a) => { const m = skillMatch(candById(a.candId), r); setStage(a, 'screening', `Shortlisted by skills match ${m.pct}%`); });
+    saveNow(); toast(ok.length ? `${ok.length} of ${live.length} sourced candidate${live.length === 1 ? '' : 's'} shortlisted` : `None of the ${live.length} sourced candidates is rated on every skill and at ${matchMin(r)}% or more`); route(); return; }
+  const n = autoShortlist(r); saveNow(); toast(n ? `${n} of ${live.length} sourced candidate${live.length === 1 ? '' : 's'} shortlisted` : `None of the ${live.length} sourced candidates is rated on every skill and at ${matchMin(r)}% or more`); route(); };
 
 /* ---------------------------------------------------------------- candidates */
 VIEWS.cands = () => {
@@ -3172,7 +3266,7 @@ VIEWS.app = () => {
         <div style="flex:1;${f.done ? 'text-decoration:line-through;color:var(--muted)' : ''}">${esc(f.note)}<div class="fine" style="color:${!f.done && f.due < t ? 'var(--bad)' : 'var(--muted)'}">${dmy(f.due)}, ${esc(nameOf(f.by))}</div></div></div>`).join('') : '<p class="mut">No follow-ups.</p>'}</div>
       <div class="card"><div class="hd"><h2>Notes and history</h2><button class="btn sm" data-act="noteNew">Add note</button></div>
         ${[...(a.notes || []).map((n) => ({ at: n.at, by: n.by, text: n.text, note: true })), ...(a.history || []).map((h) => ({ at: h.at, by: h.by, text: `Moved to ${RSTAGES[h.stage]}${h.note ? `: ${h.note}` : ''}` }))].sort((x, y) => y.at - x.at)
-          .map((n) => `<div style="padding:6px 0;border-bottom:1px solid var(--rule)">${n.note ? '' : '<span class="fine">●</span> '}${esc(n.text)}<div class="fine">${esc(nameOf(n.by))}, ${dt(n.at)}</div></div>`).join('')}</div>` : ''}
+          .map((n) => `<div style="padding:6px 0;border-bottom:1px solid var(--rule)">${n.note ? '' : '<span class="fine">●</span> '}${esc(n.text)}<div class="fine">${n.by ? esc(nameOf(n.by)) : 'Automatic'}, ${dt(n.at)}</div></div>`).join('')}</div>` : ''}
     </div></div>` };
 };
 const curApp = () => appById(R.arg);
@@ -6904,12 +6998,13 @@ const VERIFY = { verified: ['Checked: confirmed', 'ok'], pending: ['Check in pro
 const yearOpts = () => { const y = +todayISO().slice(0, 4); return Array.from({ length: 60 }, (_, i) => [String(y + 5 - i), String(y + 5 - i)]); };
 const BG = {
   prevJobs: { title: 'Previous employment', one: 'previous job', sub: 'Employers before this one, latest first. HR confirms them with each employer.',
-    fields: [{ k: 'employer', label: 'Employer', master: 'employer', req: true }, { k: 'designation', label: 'Designation', req: true }, { k: 'location', label: 'City' },
+    fields: [{ k: 'employer', label: 'Employer', master: 'employer', pick: 'employer', req: true }, { k: 'designation', label: 'Designation', pick: 'desig', req: true }, { k: 'location', label: 'City' },
       { k: 'from', label: 'From', type: 'month', req: true }, { k: 'to', label: 'To', type: 'month', help: 'Leave empty for a job you still hold' }, { k: 'empCode', label: 'Employee number there' },
       { k: 'lastCtc', label: 'Last annual CTC (₹)', type: 'number', min: 0, help: 'Seen only by you and HR' }, { k: 'reason', label: 'Reason for leaving', help: 'Seen only by you and HR' },
-      { k: 'duties', label: 'Main responsibilities', type: 'textarea', wide: true }, { k: 'contact', label: 'HR contact there (name, e-mail or phone)', wide: true }, { k: 'doc', label: 'Relieving or experience letter', type: 'file', wide: true }],
+      { k: 'resp', label: 'Responsibilities', type: 'respMatrix', wide: true }, { k: 'duties', label: 'Other responsibilities, in your words', type: 'textarea', wide: true, help: 'Anything that is not on the list above' },
+      { k: 'contact', label: 'HR contact there (name, e-mail or phone)', wide: true }, { k: 'doc', label: 'Relieving or experience letter', type: 'file', wide: true }],
     sort: (a, b) => String(b.from || '').localeCompare(String(a.from || '')),
-    row: (x) => [`<b>${esc(x.employer)}</b>${x.location ? `<div class="fine">${esc(x.location)}</div>` : ''}`, esc(x.designation), `${esc(monthLbl(x.from))} to ${x.to ? esc(monthLbl(x.to)) : 'now'}<div class="fine">${tenure(x.from, x.to)}</div>`] , head: ['Employer', 'Designation', 'Period'] },
+    row: (x) => [`<b>${esc(x.employer)}</b>${x.location ? `<div class="fine">${esc(x.location)}</div>` : ''}`, `${esc(x.designation)}${respLine('Main', x.mainResp)}${respLine('Secondary', x.secResp)}`, `${esc(monthLbl(x.from))} to ${x.to ? esc(monthLbl(x.to)) : 'now'}<div class="fine">${tenure(x.from, x.to)}</div>`] , head: ['Employer', 'Designation', 'Period'] },
   education: { title: 'Education', one: 'qualification', sub: 'Schooling, degrees, diplomas and certifications, highest first.',
     fields: [{ k: 'level', label: 'Level', type: 'select', opts: () => EDU_LEVELS.map((x) => [x, x]), req: true }, { k: 'qualification', label: 'Qualification', master: 'qualification', req: true, help: 'For example B.E., B.Com, MBA, ITI Fitter' },
       { k: 'specialisation', label: 'Subject or specialisation' }, { k: 'institution', label: 'School, college or institute', master: 'institution', req: true },
@@ -6929,7 +7024,7 @@ const BG = {
   references: { title: 'References', one: 'reference', sub: 'Who referred you for this job, and people HR may contact to confirm your work. Seen only by you and HR.',
     fields: [{ k: 'kind', label: 'This person', type: 'select', opts: [['reference', 'Can confirm my work (professional reference)'], ['referral', 'Referred me for this job']], req: true },
       { k: 'referrerId', label: 'Referred by (an employee here)', type: 'select', opts: () => empOpts(CO)(), blank: 'Someone outside the company' },
-      { k: 'name', label: 'Name' }, { k: 'organisation', label: 'Organisation' }, { k: 'designation', label: 'Their designation' },
+      { k: 'name', label: 'Name' }, { k: 'organisation', label: 'Organisation', master: 'employer', pick: 'employer' }, { k: 'designation', label: 'Their designation', pick: 'desig' },
       { k: 'relation', label: 'How they know you', help: 'For example former manager at Infosys' }, { k: 'phone', label: 'Phone' }, { k: 'email', label: 'E-mail', type: 'email' }, { k: 'years', label: 'Known for (years)', type: 'number', min: 0 }],
     sort: (a, b) => (a.kind === 'referral' ? -1 : 0) - (b.kind === 'referral' ? -1 : 0),
     row: (x) => [`<b>${esc(x.referrerId ? nameOf(x.referrerId) : x.name)}</b><div class="fine">${x.kind === 'referral' ? (x.referrerId ? 'Employee referral' : 'Referred by') : 'Professional reference'}</div>`,
@@ -6937,8 +7032,9 @@ const BG = {
 };
 const monthLbl = (ym) => (ym ? new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '');
 function tenure(from, to) { if (!from) return ''; const end = to || todayISO().slice(0, 7); const m = (+end.slice(0, 4) - +from.slice(0, 4)) * 12 + (+end.slice(5, 7) - +from.slice(5, 7)) + 1; if (m <= 0) return ''; const y = Math.floor(m / 12), r = m % 12; return [y && `${y} yr${y > 1 ? 's' : ''}`, r && `${r} mo`].filter(Boolean).join(' '); }
-const MASTER_FIELD = { employer: 'employerId', qualification: 'qualificationId', institution: 'institutionId', university: 'universityId' };
-const MASTER_KIND = { employer: 'employer', qualification: 'qualification', institution: 'institution', university: 'institution' };
+const MASTER_FIELD = { employer: 'employerId', qualification: 'qualificationId', institution: 'institutionId', university: 'universityId', organisation: 'organisationId' };
+const MASTER_KIND = { employer: 'employer', qualification: 'qualification', institution: 'institution', university: 'institution', organisation: 'employer' };
+const respLine = (label, ids) => ((ids || []).length ? `<div class="fine">${label}: ${esc(ids.map(respName).join(', '))}</div>` : '');
 function verifyBadge(x) { const v = x.verify && VERIFY[x.verify.status]; return v ? `<span class="badge ${v[1]}">${v[0]}</span>` : '<span class="fine">Not checked yet</span>'; }
 function bgCard(e, k, { hr, mine }) {
   const def = BG[k]; const list = (e[k] || []).slice().sort(def.sort); const can = hr || mine;
@@ -6970,6 +7066,55 @@ function masterInput(f, v, kind, coId) {
   return `<label class="field ${f.wide ? 'wide' : ''}">${esc(f.label)}<input class="inp" name="${f.k}" list="dl_${f.k}" value="${esc(v || '')}" autocomplete="off" ${f.req ? 'required' : ''}>
     <datalist id="dl_${f.k}">${items.map((x) => `<option value="${esc(x.name)}">${esc([x.type, x.city].filter(Boolean).join(', '))}</option>`).join('')}</datalist><small>${esc(f.help || 'Choose from the list, or type the full name if it is not there')}</small></label>`;
 }
+/* PeopleDesk 2.12: a drop-down from a list (employers, or the company's designations) with "Others" for a name
+   that is not there. Employers typed under Others still go to HR's review, as with any new name. */
+const PICK_OTHER = '__other';
+function pickNames(kind, coId) {
+  if (kind === 'desig') return [...new Set(S.desigs.filter((x) => x.companyId === coId).map((x) => x.name))].sort((a, b) => a.localeCompare(b));
+  return S.masterItems.filter((x) => x.companyId === coId && x.kind === kind && (x.status === 'approved' || (x.status === 'proposed' && x.proposedBy === me.id))).map((x) => x.name).sort((a, b) => a.localeCompare(b));
+}
+function pickInput(f, v, coId) {
+  const names = pickNames(f.pick, coId); const cur = String(v || '').trim();
+  const hit = cur ? names.find((n) => normKey(n) === normKey(cur)) : '';
+  const other = !!cur && !hit;
+  const src = f.pick === 'desig' ? 'the designation master' : 'the list of employers';
+  return `<label class="field ${f.wide ? 'wide' : ''}">${esc(f.label)}<select class="inp" name="${f.k}" data-pick="${f.k}" ${f.req ? 'required' : ''}>
+    <option value="">${names.length ? 'Choose' : 'Nothing on the list yet'}</option>${names.map((n) => `<option value="${esc(n)}" ${n === hit ? 'selected' : ''}>${esc(n)}</option>`).join('')}<option value="${PICK_OTHER}" ${other ? 'selected' : ''}>Others</option></select>
+    <input class="inp" name="${f.k}${PICK_OTHER}" value="${esc(other ? cur : '')}" placeholder="Type the ${f.pick === 'desig' ? 'designation' : 'name'} in full" autocomplete="off" ${other ? '' : 'hidden'}>
+    <small>${esc(f.help || `From ${src}. Choose Others if it is not there.`)}</small></label>`;
+}
+function wirePicks(form) {
+  $$('select[data-pick]', form).forEach((sel) => { const box = form.elements[sel.name + PICK_OTHER];
+    sel.addEventListener('change', () => { box.hidden = sel.value !== PICK_OTHER; if (!box.hidden) box.focus(); }); });
+}
+/* the chosen name (or what was typed under Others); designations also keep the id of the designation */
+function readPicks(form, fields, d, coId) {
+  fields.filter((f) => f.pick).forEach((f) => {
+    if (d[f.k] === PICK_OTHER) d[f.k] = String(form.elements[f.k + PICK_OTHER].value || '').replace(/\s+/g, ' ').trim();
+    if (f.pick === 'desig') { const ds = S.desigs.find((x) => x.companyId === coId && normKey(x.name) === normKey(d[f.k])); d[f.k === 'designation' ? 'desigId' : f.k + 'Id'] = ds ? ds.id : ''; }
+  });
+}
+/* the responsibility matrix: each responsibility on the list is a main one, a secondary one, or not part of the job */
+function respMatrixHtml(v, coId) {
+  const main = v.mainResp || [], sec = v.secResp || []; const keep = [...main, ...sec];
+  const rank = (x) => (main.includes(x.id) ? 0 : sec.includes(x.id) ? 1 : 2);
+  const list = respOpts(coId, keep).sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  const radio = (x, val, on) => `<td class="c"><input type="radio" name="rsp_${x.id}" value="${val}" ${on ? 'checked' : ''} aria-label="${esc(x.name)}: ${val === 'main' ? 'main' : val === 'sec' ? 'secondary' : 'not part of the job'}"></td>`;
+  return `<div class="field wide">Responsibilities <small>Mark each one you had in this job as main or secondary. You can change your choices at any time.</small>
+    ${list.length ? `${list.length > 8 ? '<input class="inp" placeholder="Filter the list" data-in="respFilter" autocomplete="off">' : ''}
+    <div class="respm"><table class="t"><thead><tr><th>Responsibility</th><th class="c">Main</th><th class="c">Secondary</th><th class="c">Not in this job</th></tr></thead><tbody>
+      ${list.map((x) => `<tr data-s="${esc(`${x.name} ${x.category || ''}`.toLowerCase())}"><td>${esc(x.name)}${x.category ? `<div class="fine">${esc(x.category)}</div>` : ''}</td>${radio(x, 'main', main.includes(x.id))}${radio(x, 'sec', sec.includes(x.id))}${radio(x, '', !main.includes(x.id) && !sec.includes(x.id))}</tr>`).join('')}</tbody></table></div>
+    <small data-respcount>${main.length} main, ${sec.length} secondary</small>`
+    : `<div class="note">${isHR(coId) ? 'The list of responsibilities is empty. Add it under Standard lists › Responsibilities.' : 'HR has not set up the list of responsibilities yet. Describe them below.'}</div>`}</div>`;
+}
+function readRespMatrix(form) {
+  const out = { mainResp: [], secResp: [] };
+  $$('input[type=radio][name^="rsp_"]:checked', form).forEach((r) => { const id = r.name.slice(4); if (r.value === 'main') out.mainResp.push(id); else if (r.value === 'sec') out.secResp.push(id); });
+  return out;
+}
+ACT.respFilter = (el) => { const q = el.value.toLowerCase().trim(); $$('tbody tr', el.closest('.field')).forEach((tr) => { tr.hidden = !!q && !tr.dataset.s.includes(q); }); };
+document.addEventListener('change', (ev) => { const r = ev.target; if (!(r.name || '').startsWith('rsp_')) return; const box = r.closest('.field'); const out = box && box.querySelector('[data-respcount]'); if (!out) return;
+  const all = $$('input[type=radio][name^="rsp_"]:checked', box); out.textContent = `${all.filter((x) => x.value === 'main').length} main, ${all.filter((x) => x.value === 'sec').length} secondary`; });
 const normKey = (s) => String(s || '').toLowerCase().replace(/[.,'’()&-]/g, ' ').replace(/\buniv\b/g, 'university').replace(/\s+/g, ' ').trim();
 const masterById = (id) => S.masterItems.find((x) => x.id === id);
 /* A name typed against a standard list: the matching entry, a name already proposed, or a new proposal for HR. */
@@ -6988,20 +7133,22 @@ ACT.bgEdit = (b) => {
   const e = empById(b.dataset.emp), k = b.dataset.k, def = BG[k]; const x0 = b.dataset.id ? (e[k] || []).find((x) => x.id === b.dataset.id) : null;
   const v = x0 || (k === 'references' ? { kind: 'reference' } : k === 'education' ? { level: 'Graduate', mode: 'full', scoreType: 'pct' } : k === 'awards' ? { category: 'Professional' } : {});
   const prev = CO; CO = e.companyId;
-  const html = def.fields.map((f) => (f.master ? masterInput(f, v[f.k], MASTER_KIND[f.k], e.companyId) : f.type === 'file'
+  const html = def.fields.map((f) => (f.pick ? pickInput(f, v[f.k], e.companyId) : f.type === 'respMatrix' ? respMatrixHtml(v, e.companyId) : f.master ? masterInput(f, v[f.k], MASTER_KIND[f.k], e.companyId) : f.type === 'file'
     ? `<label class="field wide">${esc(f.label)}<input type="file" class="inp" name="${f.k}" accept="image/*,application/pdf"><small>${v.docFileId ? `Attached: ${esc(v.docName || 'document')}. Choose a file to replace it.` : 'Optional. A photo or PDF, up to 10 MB.'}</small></label>` : fieldHtml(f, v[f.k]))).join('');
   CO = prev;
   openDlg(`<form class="dlg" id="bgF" novalidate><h2>${x0 ? 'Edit' : 'Add'} ${esc(def.one)}${e.id !== me.id ? `: ${esc(fullName(e))}` : ''}</h2>
     ${x0 && x0.verify && x0.verify.status && !isHR(e.companyId) ? '<p class="fine" style="margin:0">HR has checked this entry. If you change it, HR checks it again.</p>' : ''}
     <div class="form">${html}</div><p class="err" id="bgE"></p>
     <div class="btns">${x0 ? '<button type="button" class="btn danger" id="bgDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
-  const form = $('#bgF');
+  const form = $('#bgF'); wirePicks(form);
   if (k === 'references') { const sync = () => { const ref = form.elements.kind.value === 'referral'; form.elements.referrerId.closest('.field').style.display = ref ? '' : 'none';
     const inside = ref && form.elements.referrerId.value; ['name', 'organisation', 'designation', 'phone', 'email'].forEach((n) => { form.elements[n].closest('.field').style.display = inside ? 'none' : ''; }); };
     form.elements.kind.addEventListener('change', sync); form.elements.referrerId.addEventListener('change', sync); sync(); }
   form.onsubmit = async (ev) => {
     ev.preventDefault(); const err = (m) => { $('#bgE').textContent = m; };
-    const fields = def.fields.filter((f) => f.type !== 'file'); const d = readForm(form, fields);
+    const fields = def.fields.filter((f) => f.type !== 'file' && f.type !== 'respMatrix'); const d = readForm(form, fields);
+    readPicks(form, fields, d, e.companyId);
+    if (def.fields.some((f) => f.type === 'respMatrix')) Object.assign(d, readRespMatrix(form));
     if (k === 'references') { if (d.kind !== 'referral') d.referrerId = ''; if (d.referrerId) { d.name = ''; d.organisation = ''; d.designation = ''; d.phone = ''; d.email = ''; } if (!d.referrerId && !d.name) return err('Enter the name.'); if (d.kind === 'reference' && !d.phone && !d.email) return err('Give a phone number or e-mail so HR can contact them.'); }
     const miss = fields.find((f) => f.req && (d[f.k] === '' || d[f.k] == null) && !(k === 'references' && f.k === 'name')); if (miss) return err(`Enter ${miss.label.toLowerCase()}.`);
     if (k === 'prevJobs') { if (d.to && d.to < d.from) return err('The job ends before it starts.'); if (d.from > todayISO().slice(0, 7)) return err('The start is in the future.'); if ((e.doj || '') && d.to && d.to > e.doj.slice(0, 7)) return err(`This job ends after ${dmy(e.doj)}, when you joined here.`); }
@@ -7061,6 +7208,7 @@ const STARTER = {
 };
 function masterUse(item) {
   if (item.kind === 'skill') return skillUse(item);
+  if (item.kind === 'responsibility') return respUse(item);
   const idk = Object.values(MASTER_FIELD); let n = 0;
   S.employees.filter((e) => e.companyId === item.companyId).forEach((e) => BG_KEYS.forEach((k) => (e[k] || []).forEach((x) => { if (idk.some((f) => x[f] === item.id)) n++; })));
   return n;
@@ -7086,9 +7234,10 @@ VIEWS.masterdata = () => {
   }
   const list = items.filter((x) => x.kind === tab && x.status === 'approved').sort((a, b) => a.name.localeCompare(b.name));
   const q = (R.q.get('q') || '').toLowerCase(); const shown = q ? list.filter((x) => `${x.name} ${x.city || ''} ${(x.aliases || []).join(' ')}`.toLowerCase().includes(q)) : list;
-  return { title: 'Standard lists', html: `${tabs}<div class="card"><div class="hd"><div><h2>${esc(MASTER_KINDS[tab])}</h2><p class="sub">${list.length} on the list. ${tab === 'skill' ? 'Managers assess these skills in reviews, trainings say which they build, and employees add skills they have.' : `Employees choose from it on the Background tab of their profile${tab === 'employer' ? ' (previous employment)' : ' (education)'}.`} Other spellings matched to an entry are shown under it.</p></div>
+  return { title: 'Standard lists', html: `${tabs}<div class="card"><div class="hd"><div><h2>${esc(MASTER_KINDS[tab])}</h2><p class="sub">${list.length} on the list. ${MASTER_SUB[tab] || `Employees choose from it on the Background tab of their profile${tab === 'employer' ? ' (previous employment and references)' : ' (education)'}.`} Other spellings matched to an entry are shown under it.</p></div>
     <div class="tools"><input class="inp" placeholder="Search" value="${esc(R.q.get('q') || '')}" data-ch="mdQ" style="min-width:180px">${list.length < 10 ? `<button class="btn" data-act="mdStarter" data-k="${tab}">Add the starter list</button>` : ''}<label class="btn">Import from Excel<input type="file" accept=".xlsx,.xls,.csv" hidden data-ch="mdImport" data-k="${tab}"></label><button class="btn" data-act="mdExport" data-k="${tab}">Download Excel</button><button class="btn pri" data-act="mdEdit" data-k="${tab}">Add ${esc(MASTER_ONE[tab])}</button></div></div>
-    ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Name</th>${tab === 'institution' ? '<th>Type</th><th>City</th>' : tab === 'skill' ? '<th>Category</th>' : ''}<th>Also matches</th><th class="r">Used in</th><th>Added</th></tr></thead><tbody>${shown.map((x) => `<tr class="click" data-act="mdEdit" data-k="${tab}" data-id="${x.id}"><td><b>${esc(x.name)}</b>${x.description ? `<div class="fine">${esc(x.description)}</div>` : ''}</td>${tab === 'institution' ? `<td>${esc(x.type || '')}</td><td>${esc(x.city || '')}</td>` : tab === 'skill' ? `<td>${esc(x.category || '')}</td>` : ''}<td class="fine">${esc((x.aliases || []).join(', '))}</td><td class="r">${masterUse(x)}</td><td class="fine">${x.proposedBy && x.proposedBy !== x.decidedBy ? `Proposed by ${esc(nameOf(x.proposedBy))}` : x.source === 'starter' ? 'Starter list' : x.source === 'import' ? 'Imported' : ''}</td></tr>`).join('')}</tbody></table></div>`
+    ${shown.length ? `<div class="scroll"><table class="t"><thead><tr><th>Name</th>${tab === 'institution' ? '<th>Type</th><th>City</th>' : tab === 'skill' ? '<th>Category</th>' : tab === 'responsibility' ? '<th>Area</th>' : ''}<th>Also matches</th><th class="r">Used in</th><th>Added</th><th></th></tr></thead><tbody>${shown.map((x) => `<tr class="click" data-act="mdEdit" data-k="${tab}" data-id="${x.id}"><td><b>${esc(x.name)}</b>${x.description ? `<div class="fine">${esc(x.description)}</div>` : ''}</td>${tab === 'institution' ? `<td>${esc(x.type || '')}</td><td>${esc(x.city || '')}</td>` : ['skill', 'responsibility'].includes(tab) ? `<td>${esc(x.category || '')}</td>` : ''}<td class="fine">${esc((x.aliases || []).join(', '))}</td><td class="r">${masterUse(x)}</td><td class="fine">${x.proposedBy && x.proposedBy !== x.decidedBy ? `Proposed by ${esc(nameOf(x.proposedBy))}` : x.source === 'starter' ? 'Starter list' : x.source === 'import' ? 'Imported' : ''}</td>
+      <td class="r" style="white-space:nowrap"><button class="btn sm" data-act="mdEdit" data-k="${tab}" data-id="${x.id}">Edit</button> <button class="btn sm ghost" data-act="mdDelete" data-id="${x.id}" aria-label="Delete ${esc(x.name)}">Delete</button></td></tr>`).join('')}</tbody></table></div>`
       : `<div class="empty">${list.length ? 'Nothing matches the search.' : 'The list is empty. Add entries, import them from Excel, or start from the starter list.'}</div>`}</div>${tab === 'skill' ? skillRolesCard() : ''}` };
 };
 function masterNearest(x) {
@@ -7099,10 +7248,11 @@ function masterNearest(x) {
 }
 ACT.mdQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/masterdata?' + p); };
 function mdFields(kind) { return [{ k: 'name', label: 'Name, in full', req: true, wide: true }, ...(kind === 'institution' ? [{ k: 'type', label: 'Type', type: 'select', opts: INST_TYPES.map((x) => [x, x]) }, { k: 'city', label: 'City' }] : []),
-  ...(kind === 'skill' ? [{ k: 'category', label: 'Category', type: 'select', opts: SKILL_CATS.map((x) => [x, x]) }, { k: 'description', label: 'What it covers', wide: true }] : []), { k: 'aliasTxt', label: 'Other spellings to match (comma separated)', wide: true, help: 'For example: IIT Bombay, IITB' }]; }
+  ...(kind === 'skill' ? [{ k: 'category', label: 'Category', type: 'select', opts: SKILL_CATS.map((x) => [x, x]) }, { k: 'description', label: 'What it covers', wide: true }] : []),
+  ...(kind === 'responsibility' ? [{ k: 'category', label: 'Area', type: 'select', opts: RESP_AREAS.map((x) => [x, x]) }, { k: 'description', label: 'What it covers', wide: true }] : []), { k: 'aliasTxt', label: 'Other spellings to match (comma separated)', wide: true, help: 'For example: IIT Bombay, IITB' }]; }
 ACT.mdEdit = (b) => {
   const kind = b.dataset.k; const x0 = b.dataset.id ? masterById(b.dataset.id) : null; const fields = mdFields(kind);
-  const v = x0 ? { ...x0, aliasTxt: (x0.aliases || []).join(', ') } : { type: 'College' };
+  const v = x0 ? { ...x0, aliasTxt: (x0.aliases || []).join(', ') } : { type: 'College', category: kind === 'skill' ? 'Technical' : kind === 'responsibility' ? 'Operations' : '' };
   openDlg(`<form class="dlg" id="mdF" novalidate><h2>${x0 ? 'Edit' : 'Add'} ${esc(MASTER_ONE[kind])}</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div>${x0 ? `<p class="fine">Used in ${masterUse(x0)} profile entries. A new name is changed on them too.</p>` : ''}<p class="err" id="mdE"></p>
     <div class="btns">${x0 ? '<button type="button" class="btn danger" id="mdDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
   $('#mdF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields); d.name = d.name.replace(/\s+/g, ' ').trim();
@@ -7112,9 +7262,16 @@ ACT.mdEdit = (b) => {
     if (x0) { const renamed = x0.name !== d.name; Object.assign(x0, d, { aliases }); if (renamed) relinkMaster(x0.id, x0); }
     else S.masterItems.push({ id: uid(), companyId: CO, kind, ...d, aliases, status: 'approved', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() });
     audit('Standard list changed', `${MASTER_ONE[kind]}: ${d.name}`, 'org'); saveNow(); closeDlg(); toast('Saved'); route(); };
-  if ($('#mdDel')) $('#mdDel').onclick = async () => { if (masterUse(x0)) { toast('Profiles use this entry. Rename it, or map a duplicate to it instead.'); return; }
-    if (!(await confirmBox('Remove from the list?', x0.name, 'Remove'))) return; S.masterItems = S.masterItems.filter((y) => y !== x0); saveNow(); closeDlg(); route(); };
+  if ($('#mdDel')) $('#mdDel').onclick = () => masterDelete(x0);
 };
+/* Delete one entry of a standard list: refused while profiles, requisitions or candidates use it */
+async function masterDelete(x) {
+  if (!x) return; const n = masterUse(x);
+  if (n) { toast(`${x.name} is used in ${n} place${n === 1 ? '' : 's'}. Rename it, or map a duplicate to it, instead of deleting it.`); return; }
+  if (!(await confirmBox(`Delete this ${MASTER_ONE[x.kind]}?`, `${x.name} is removed from the list. This cannot be undone.`, 'Delete'))) return;
+  S.masterItems = S.masterItems.filter((y) => y !== x); audit('Standard list: entry deleted', `${MASTER_ONE[x.kind]}: ${x.name}`, 'org'); saveNow(); closeDlg(); toast('Deleted'); route();
+}
+ACT.mdDelete = (b) => masterDelete(masterById(b.dataset.id));
 ACT.mdAccept = (b) => {
   const x = masterById(b.dataset.id); const fields = mdFields(x.kind).filter((f) => f.k !== 'aliasTxt');
   openDlg(`<form class="dlg" id="maF" novalidate><h2>Add to the standard list</h2><p class="fine" style="margin:0">Correct the spelling if needed: ${masterUse(x)} profile entr${masterUse(x) === 1 ? 'y uses' : 'ies use'} it and will show the corrected name.</p><div class="form">${fields.map((f) => fieldHtml(f, x[f.k] || (f.k === 'type' ? 'College' : ''))).join('')}</div><p class="err" id="maE"></p>
@@ -7142,19 +7299,19 @@ ACT.mdReject = async (b) => {
 ACT.mdStarter = (b) => {
   const kind = b.dataset.k; let n = 0;
   STARTER[kind].forEach(([name, type, city]) => { if (S.masterItems.some((y) => y.companyId === CO && y.kind === kind && normKey(y.name) === normKey(name))) return;
-    S.masterItems.push({ id: uid(), companyId: CO, kind, name, ...(type ? (kind === 'skill' ? { category: type } : { type }) : {}), ...(city ? { city } : {}), status: 'approved', source: 'starter', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
+    S.masterItems.push({ id: uid(), companyId: CO, kind, name, ...(type ? (['skill', 'responsibility'].includes(kind) ? { category: type } : { type }) : {}), ...(city ? { city } : {}), status: 'approved', source: 'starter', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
   saveNow(); toast(`${n} added`); route();
 };
 ACT.mdImport = async (el) => {
   const f = el.files[0]; el.value = ''; if (!f) return; const kind = el.dataset.k;
   try { const rows = await readSheet(f); let n = 0, skip = 0;
     rows.forEach((r) => { const k = (names) => String(r[Object.keys(r).find((x) => names.includes(x.toLowerCase().replace(/[^a-z]/g, '')))] ?? '').trim();
-      const name = k(['name', 'institution', 'employer', 'company', 'qualification']).replace(/\s+/g, ' '); if (name.length < 2 || S.masterItems.some((y) => y.companyId === CO && y.kind === kind && y.status === 'approved' && normKey(y.name) === normKey(name))) { skip++; return; }
-      S.masterItems.push({ id: uid(), companyId: CO, kind, name, type: k(['type']) || undefined, city: k(['city']) || undefined, category: k(['category']) || undefined, aliases: k(['alsomatches', 'aliases', 'otherspellings']).split(',').map((s) => s.trim()).filter(Boolean), status: 'approved', source: 'import', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
+      const name = k(['name', 'institution', 'employer', 'company', 'qualification', 'skill', 'responsibility']).replace(/\s+/g, ' '); if (name.length < 2 || S.masterItems.some((y) => y.companyId === CO && y.kind === kind && y.status === 'approved' && normKey(y.name) === normKey(name))) { skip++; return; }
+      S.masterItems.push({ id: uid(), companyId: CO, kind, name, type: k(['type']) || undefined, city: k(['city']) || undefined, category: k(['category', 'area']) || undefined, description: k(['description']) || undefined, aliases: k(['alsomatches', 'aliases', 'otherspellings']).split(',').map((s) => s.trim()).filter(Boolean), status: 'approved', source: 'import', proposedBy: me.id, proposedAt: Date.now(), decidedBy: me.id, decidedAt: Date.now() }); n++; });
     saveNow(); toast(`${n} imported${skip ? `, ${skip} skipped (empty or already on the list)` : ''}`); route();
   } catch (x) { toast(x.message); }
 };
-ACT.mdExport = (b) => { const kind = b.dataset.k; writeBook(`${MASTER_KINDS[kind]}_${company().code}.xlsx`, { [MASTER_ONE[kind]]: S.masterItems.filter((x) => x.companyId === CO && x.kind === kind && x.status === 'approved').map((x) => ({ Name: x.name, ...(kind === 'institution' ? { Type: x.type || '', City: x.city || '' } : {}), 'Also matches': (x.aliases || []).join(', '), 'Used in': masterUse(x) })) }); };
+ACT.mdExport = (b) => { const kind = b.dataset.k; writeBook(`${MASTER_KINDS[kind]}_${company().code}.xlsx`, { [MASTER_ONE[kind]]: S.masterItems.filter((x) => x.companyId === CO && x.kind === kind && x.status === 'approved').map((x) => ({ Name: x.name, ...(kind === 'institution' ? { Type: x.type || '', City: x.city || '' } : {}), ...(['skill', 'responsibility'].includes(kind) ? { Category: x.category || '', Description: x.description || '' } : {}), 'Also matches': (x.aliases || []).join(', '), 'Used in': masterUse(x) })) }); };
 
 /* ---------------------------------------------------------------- contractors (third party) */
 const CON_FIELDS = [{ k: 'name', label: 'Contractor (agency) name', req: true }, { k: 'code', label: 'Short code', req: true }, { k: 'legalName', label: 'Legal name' },
@@ -7479,6 +7636,30 @@ const SKILL_LEVELS = { 1: 'Basic', 2: 'Working', 3: 'Advanced', 4: 'Expert' };
 const SKILL_CATS = ['Technical', 'Functional', 'Behavioural', 'Leadership', 'Safety and compliance', 'Language', 'Other'];
 const SKILL_TO_TR = { Technical: 'Technical', Functional: 'Functional', Behavioural: 'Soft skills', Leadership: 'Leadership and management', 'Safety and compliance': 'Compliance and safety', Language: 'Soft skills', Other: 'Other' };
 MASTER_KINDS.skill = 'Skills'; MASTER_ONE.skill = 'skill';
+/* PeopleDesk 2.12: responsibilities, marked main or secondary on each previous job (the responsibility matrix) */
+MASTER_KINDS.responsibility = 'Responsibilities'; MASTER_ONE.responsibility = 'responsibility';
+const RESP_AREAS = ['Operations', 'People and leadership', 'Sales and customers', 'Finance and compliance', 'Technology', 'Projects', 'Quality and safety', 'Other'];
+const MASTER_SUB = {
+  skill: 'Managers assess these skills in reviews, trainings say which they build, requisitions say which they need (primary or secondary) and candidates rate themselves on them.',
+  responsibility: 'Employees mark each as a main or secondary responsibility of a previous job (Background tab of their profile), and candidates do the same on their form.',
+};
+STARTER.responsibility = [['Team leadership and supervision', 'People and leadership'], ['Hiring and onboarding', 'People and leadership'], ['Training and mentoring', 'People and leadership'],
+  ['Performance reviews of the team', 'People and leadership'], ['Budget ownership', 'Finance and compliance'], ['Financial reporting and closing', 'Finance and compliance'], ['Statutory compliance (PF, ESI, GST, TDS)', 'Finance and compliance'],
+  ['Payroll processing', 'Finance and compliance'], ['Audit support', 'Finance and compliance'], ['Sales and business development', 'Sales and customers'], ['Key account management', 'Sales and customers'],
+  ['Customer support and service', 'Sales and customers'], ['Vendor management and procurement', 'Operations'], ['Inventory and warehouse management', 'Operations'], ['Production planning', 'Operations'],
+  ['Logistics and dispatch', 'Operations'], ['Process improvement', 'Operations'], ['Quality control and inspection', 'Quality and safety'], ['Health, safety and environment', 'Quality and safety'],
+  ['Software development', 'Technology'], ['Testing and quality assurance', 'Technology'], ['IT infrastructure and support', 'Technology'], ['Data analysis and reporting', 'Technology'],
+  ['Project planning and delivery', 'Projects'], ['Stakeholder and client communication', 'Projects'], ['Documentation and SOPs', 'Other']];
+const respById = (id) => S.masterItems.find((x) => x.id === id && x.kind === 'responsibility');
+const respName = (id) => (respById(id) || {}).name || 'No longer listed';
+/* every responsibility on the company's list, plus any already chosen that has since left the list */
+const respOpts = (coId, keep = []) => S.masterItems.filter((x) => x.companyId === coId && x.kind === 'responsibility' && (x.status === 'approved' || keep.includes(x.id))).sort((a, b) => a.name.localeCompare(b.name));
+function respUse(item) {
+  let n = 0; const id = item.id; const has = (j) => (j.mainResp || []).includes(id) || (j.secResp || []).includes(id);
+  S.employees.forEach((e) => (e.prevJobs || []).forEach((j) => { if (has(j)) n++; }));
+  S.cands.forEach((c) => (((c.form || {}).data || {}).prevJobs || []).forEach((j) => { if (has(j)) n++; }));
+  return n;
+}
 STARTER.skill = [['Java', 'Technical'], ['Python', 'Technical'], ['SQL and databases', 'Technical'], ['Cloud infrastructure (AWS, Azure)', 'Technical'], ['Kubernetes and containers', 'Technical'], ['Secure coding', 'Technical'],
   ['System design', 'Technical'], ['Data analysis with Excel', 'Functional'], ['Payroll and statutory compliance', 'Functional'], ['Inventory and stock control', 'Functional'], ['Forklift operation', 'Functional'],
   ['Customer service', 'Behavioural'], ['Negotiation', 'Behavioural'], ['Communication and presentation', 'Behavioural'], ['Problem solving', 'Behavioural'], ['People management', 'Leadership'],
@@ -7496,6 +7677,8 @@ function skillUse(item) {
   S.trainingNeeds.forEach((x) => { if (x.skillId === id) n++; });
   S.employees.forEach((e) => { if ((e.selfSkills || []).some((x) => x.skillId === id)) n++; });
   S.reviews.forEach((r) => { if ((r.skills || []).some((x) => x.skillId === id)) n++; });
+  S.reqs.forEach((r) => { if ([...(r.primarySkills || []), ...(r.secondarySkills || [])].some((x) => x.skillId === id)) n++; });
+  S.cands.forEach((c) => { if ((c.skillLevels || {})[id] != null || (((c.form || {}).data || {}).skillLevels || {})[id] != null) n++; });
   return n;
 }
 /* Everything known about one person's skills: what their role needs, the latest manager assessment, trainings
@@ -8918,11 +9101,11 @@ VIEWS.perfmeeting = () => {
       : d.decision === 'exit' && !decisionFollow(m, d) && !openExitOf(d.empId) ? `<button class="btn sm danger" data-act="exitStart" data-id="${d.empId}">Start the exit</button>`
         : ['develop', 'pip'].includes(d.decision) ? `<button class="btn sm" data-act="skNeed" data-emp="${d.empId}">Raise a development need</button>` : ''; };
   return { title: 'Management meeting', html: `${head}<div class="card"><h2>Minutes</h2>${can ? `<textarea class="inp" style="min-height:140px" data-ch="pmMin" data-id="${m.id}" data-k="text">${esc(typeof m.minutes === 'string' ? m.minutes : (m.minutes || {}).text || '')}</textarea>` : `<p style="white-space:pre-wrap">${esc(typeof m.minutes === 'string' ? m.minutes : (m.minutes || {}).text || 'Not written yet.')}</p>`}</div>
-    <div class="card"><div class="hd"><div><h2>Decisions</h2><p class="sub">One line for each person decided about. A promotion goes on through the promotion workflow and a separation through exit management; the status follows what is done there.</p></div>${can ? `<button class="btn pri" data-act="mdEdit" data-id="${m.id}">Record a decision</button>` : ''}</div>
+    <div class="card"><div class="hd"><div><h2>Decisions</h2><p class="sub">One line for each person decided about. A promotion goes on through the promotion workflow and a separation through exit management; the status follows what is done there.</p></div>${can ? `<button class="btn pri" data-act="mtgDecEdit" data-id="${m.id}">Record a decision</button>` : ''}</div>
       ${ds.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Decision</th><th>Reason</th><th>Owner</th><th>Since then</th><th>Status</th><th></th></tr></thead><tbody>${ds.map((d) => { const e = empById(d.empId) || {}; const rv = S.reviews.filter((r) => r.empId === d.empId && r.cycleId === m.cycleId)[0]; const f = decisionFollow(m, d);
         return `<tr><td><b>${esc(fullName(e))}</b><div class="fine">${esc((desig(e.desigId) || {}).name || '')}${rv && +rv.final ? `, rated ${rv.final}` : ''}</div></td><td>${trBadge(DECISIONS, d.decision)}${d.toDesigId || d.toGradeId ? `<div class="fine">to ${esc([(desig(d.toDesigId) || {}).name, (grade(d.toGradeId) || {}).name && `grade ${(grade(d.toGradeId) || {}).name}`].filter(Boolean).join(', '))}</div>` : ''}${d.effective ? `<div class="fine">from ${dmy(d.effective)}</div>` : ''}</td>
           <td class="fine" style="white-space:pre-wrap">${esc(d.detail || '')}</td><td>${esc(nameOf(d.ownerId))}${d.due ? `<div class="fine">by ${dmy(d.due)}</div>` : ''}</td><td class="fine">${f ? f.html : '—'}</td><td>${trBadge(DEC_ST, decisionStatus(m, d))}</td>
-          <td class="r" style="white-space:nowrap">${fBtns(d)} ${can ? `<button class="btn sm" data-act="mdEdit" data-id="${m.id}" data-d="${d.id}">Edit</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No decisions recorded yet.</div>'}</div>` };
+          <td class="r" style="white-space:nowrap">${fBtns(d)} ${can ? `<button class="btn sm" data-act="mtgDecEdit" data-id="${m.id}" data-d="${d.id}">Edit</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No decisions recorded yet.</div>'}</div>` };
 };
 ACT.pmMin = (el) => { const m = meetById(el.dataset.id);
   if (m.kind === 'management') m.minutes = { ...(typeof m.minutes === 'object' && m.minutes ? m.minutes : {}), text: el.value.trim() }; else m.minutes = { ...(m.minutes || {}), [el.dataset.k]: el.value.trim() };
@@ -8943,7 +9126,7 @@ ACT.pmAck = (b) => { const m = meetById(b.dataset.id);
   $('#pkF').onsubmit = (ev) => { ev.preventDefault(); const agree = ev.target.elements.agree.value === '1'; const c = ev.target.elements.comment.value.trim();
     if (!agree && c.length < 5) { $('#pkE').textContent = 'Write your comments.'; return; } m.empAck = { agree, comment: c, at: Date.now() }; saveNow(); closeDlg(); toast('Saved'); route(); };
 };
-ACT.mdEdit = (b) => {
+ACT.mtgDecEdit = (b) => {
   const m = meetById(b.dataset.id); const d0 = b.dataset.d ? (m.decisions || []).find((x) => x.id === b.dataset.d) : null;
   const pool = mgmtDecidable(m.companyId).filter((e) => e.id !== me.id || isHR(m.companyId));
   const fields = [{ k: 'empId', label: 'Employee', type: 'select', opts: pool.map((e) => [e.id, `${fullName(e)} (${e.empNo})`]), blank: 'Choose', req: true }, { k: 'decision', label: 'Decision', type: 'select', opts: Object.entries(DECISIONS).map(([k, [l]]) => [k, l]) },
@@ -8952,13 +9135,13 @@ ACT.mdEdit = (b) => {
     { k: 'ownerId', label: 'Who takes it forward', type: 'select', opts: (m.attendees || []).map((a) => [a, nameOf(a)]) }, { k: 'due', label: 'By', type: 'date' },
     { k: 'detail', label: 'Reasons and what was agreed', type: 'textarea', wide: true, req: true }, ...(d0 ? [{ k: 'status', label: 'Status', type: 'select', opts: Object.entries(DEC_ST).map(([k, [l]]) => [k, l]) }] : [])];
   const v = d0 || { decision: 'promote', ownerId: me.id, due: addDays(todayISO(), 30), status: 'open' };
-  openDlg(`<form class="dlg" id="mdF" novalidate><h2>${d0 ? 'Edit the decision' : 'Record a decision'}</h2>${isHR(m.companyId) ? '' : '<p class="fine" style="margin:0">You can record decisions about people in your reporting line; HR records the others.</p>'}
-    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="mdE"></p>
-    <div class="btns">${d0 ? '<button type="button" class="btn danger" id="mdDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
-  if ($('#mdDel')) $('#mdDel').onclick = () => { m.decisions = m.decisions.filter((x) => x !== d0); logEntry(m, 'Decision removed', nameOf(d0.empId)); saveNow(); closeDlg(); route(); };
-  $('#mdF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields);
-    if (!d.empId) { $('#mdE').textContent = 'Choose the employee.'; return; } if (!d.detail) { $('#mdE').textContent = 'Write the reasons.'; return; }
-    if (!d0 && (m.decisions || []).some((x) => x.empId === d.empId && x.decision === d.decision)) { $('#mdE').textContent = 'This decision is already recorded for them.'; return; }
+  openDlg(`<form class="dlg" id="mtgDecF" novalidate><h2>${d0 ? 'Edit the decision' : 'Record a decision'}</h2>${isHR(m.companyId) ? '' : '<p class="fine" style="margin:0">You can record decisions about people in your reporting line; HR records the others.</p>'}
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="mtgDecE"></p>
+    <div class="btns">${d0 ? '<button type="button" class="btn danger" id="mtgDecDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  if ($('#mtgDecDel')) $('#mtgDecDel').onclick = () => { m.decisions = m.decisions.filter((x) => x !== d0); logEntry(m, 'Decision removed', nameOf(d0.empId)); saveNow(); closeDlg(); route(); };
+  $('#mtgDecF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields);
+    if (!d.empId) { $('#mtgDecE').textContent = 'Choose the employee.'; return; } if (!d.detail) { $('#mtgDecE').textContent = 'Write the reasons.'; return; }
+    if (!d0 && (m.decisions || []).some((x) => x.empId === d.empId && x.decision === d.decision)) { $('#mtgDecE').textContent = 'This decision is already recorded for them.'; return; }
     if (d0) Object.assign(d0, d); else (m.decisions = m.decisions || []).push({ id: uid(), ...d, status: 'open', by: me.id, at: Date.now() });
     logEntry(m, d0 ? 'Decision changed' : 'Decision recorded', `${nameOf(d.empId)}: ${DECISIONS[d.decision][0]}`);
     audit('Management decision recorded', `${nameOf(d.empId)}: ${DECISIONS[d.decision][0]} (${m.title})`, 'performance');
@@ -9116,12 +9299,13 @@ const CF_SECTIONS = [
   ['Identity and bank', [['pan', 'PAN'], ['aadhaar', 'Aadhaar', (v) => (v ? 'XXXX XXXX ' + String(v).slice(-4) : '')], ['uan', 'UAN'], ['bankName', 'Bank'], ['bankAcc', 'Account number'], ['ifsc', 'IFSC']]],
   ['Current job', [['currentCompany', 'Employer'], ['currentTitle', 'Role'], ['expYears', 'Experience (years)'], ['currentCtc', 'Current CTC', inr0], ['expectedCtc', 'Expected CTC', inr0], ['noticeDays', 'Notice (days)'], ['skills', 'Skills'], ['about', 'About themselves']]],
 ];
-const CF_LISTS = [['education', 'Education', ['qualification', 'specialisation', 'institution', 'university', 'toYear', 'score']], ['prevJobs', 'Previous jobs', ['employer', 'designation', 'from', 'to', 'lastCtc', 'reason']],
+const CF_LISTS = [['education', 'Education', ['qualification', 'specialisation', 'institution', 'university', 'toYear', 'score']], ['prevJobs', 'Previous jobs', ['employer', 'designation', 'from', 'to', 'lastCtc', 'reason', 'mainResp', 'secResp']],
   ['references', 'References', ['name', 'organisation', 'designation', 'relation', 'phone', 'email']], ['family', 'Family', ['relation', 'name', 'dob', 'occupation', 'phone', 'dependant']]];
 function candFormHtml(c) {
   const d = cfData(c) || {};
   return `${CF_SECTIONS.map(([t, fs]) => `<h3>${esc(t)}</h3><table class="t"><tbody>${fs.filter(([k]) => d[k] !== '' && d[k] != null).map(([k, l, fmt]) => `<tr><td class="fine" style="width:34%">${esc(l)}</td><td style="white-space:pre-wrap">${esc(fmt ? fmt(d[k]) : d[k])}</td></tr>`).join('') || '<tr><td class="fine">Nothing entered.</td></tr>'}</tbody></table>`).join('')}
-    ${CF_LISTS.map(([k, t, cols]) => `<h3>${esc(t)}</h3>${(d[k] || []).length ? `<div class="scroll"><table class="t"><tbody>${d[k].map((r) => `<tr>${cols.map((x) => `<td>${esc(typeof r[x] === 'boolean' ? (r[x] ? 'Dependant' : '') : ['from', 'to'].includes(x) ? monthLbl(r[x]) : x === 'dob' ? dmy(r[x]) : x === 'lastCtc' && r[x] ? inr0(r[x]) : r[x] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="fine">None.</p>'}`).join('')}
+    ${CF_LISTS.map(([k, t, cols]) => `<h3>${esc(t)}</h3>${(d[k] || []).length ? `<div class="scroll"><table class="t"><tbody>${d[k].map((r) => `<tr>${cols.map((x) => `<td>${Array.isArray(r[x]) ? (r[x].length ? `<span class="fine">${x === 'mainResp' ? 'Main' : 'Secondary'}:</span> ${esc(r[x].map(respName).join(', '))}` : '') : esc(typeof r[x] === 'boolean' ? (r[x] ? 'Dependant' : '') : ['from', 'to'].includes(x) ? monthLbl(r[x]) : x === 'dob' ? dmy(r[x]) : x === 'lastCtc' && r[x] ? inr0(r[x]) : r[x] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="fine">None.</p>'}`).join('')}
+    ${Object.keys(d.skillLevels || {}).length ? `<h3>Skills (their own rating)</h3><table class="t"><tbody>${Object.entries(d.skillLevels).map(([id, l]) => `<tr><td>${esc(skillName(id))}</td><td>${+l ? esc(levelTxt(+l)) : 'None'}</td></tr>`).join('')}</tbody></table>` : ''}
     <p class="fine">${d.declaration ? 'The candidate declared that these details are true.' : ''}${c.cv ? ` CV: ${esc(c.cv.name)}${c.cv.byCandidate ? ', attached by the candidate' : ''}.` : ''}</p>`;
 }
 ACT.candFormView = (b) => {
@@ -9143,6 +9327,27 @@ ACT.candFormView = (b) => {
   VIEWS.cands = () => { const v = cands(); const sent = S.cands.filter((c) => (cfOf(c) || {}).status === 'submitted' && !c.formCheckedAt);
     if (sent.length && isHR()) v.html = `<div class="note">Details received and not checked yet: ${sent.map((c) => `<a href="#" data-act="candFormView" data-id="${c.id}">${esc(c.name)}</a>`).join(', ')}.</div>` + v.html; return v; };
 }
+/* 2.12: the candidate's skills against what the requisition needs, on the application page */
+function candSkillsCard(c, a) {
+  const r = reqById(a.reqId); const need = r ? reqSkills(r) : []; if (!need.length) return '';
+  const m = skillMatch(c, r); const hr = isHR(c.companyId); const own = candSelfLevels(c);
+  const meets = (n) => { const h = candLevel(c, n.skillId); return h === null ? '<span class="fine">Not rated</span>' : h >= (+n.level || 1) ? '<span class="badge ok">Meets</span>' : '<span class="badge warn">Below</span>'; };
+  return `<div class="card"><div class="hd"><div><h2>Skills match ${matchBadge(m)}</h2><p class="sub">${m.unrated ? `${m.unrated} of ${m.n} skill${m.n === 1 ? ' is' : 's are'} not rated yet: ${(cfOf(c) || {}).status === 'submitted' ? 'add the assessed level' : 'the candidate rates them on their form, or add the assessed level'}. ` : ''}Primary skills count twice. ${hr ? 'An assessed level, after screening or an interview, counts instead of the candidate’s own rating.' : ''}${r.autoShortlist ? ` Shortlisted automatically at ${matchMin(r)}% or more.` : ''}</p></div></div>
+    <div class="scroll"><table class="t sklevels"><thead><tr><th>Skill</th><th>Needed</th><th>Candidate’s own rating</th><th>Assessed level</th><th></th></tr></thead><tbody>
+    ${need.map((n) => { const as = (c.skillLevels || {})[n.skillId]; const ow = own[n.skillId];
+      return `<tr><td><b>${esc(skillName(n.skillId))}</b><div class="fine">${SKILL_NEED[n.need]}</div></td><td>${esc(levelTxt(+n.level))}</td><td>${ow === undefined || ow === '' ? '<span class="fine">—</span>' : +ow ? esc(levelTxt(+ow)) : 'None'}</td>
+        <td>${hr ? `<select class="inp" style="padding:3px 6px" data-ch="candSkillSet" data-c="${c.id}" data-s="${n.skillId}" aria-label="Assessed level of ${esc(skillName(n.skillId))}"><option value="">Not assessed</option><option value="0" ${as === 0 || as === '0' ? 'selected' : ''}>None</option>${Object.entries(SKILL_LEVELS).map(([k, l]) => `<option value="${k}" ${String(as) === k ? 'selected' : ''}>${l}</option>`).join('')}</select>` : as === undefined || as === '' ? '<span class="fine">—</span>' : +as ? esc(levelTxt(+as)) : 'None'}</td><td>${meets(n)}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+}
+ACT.candSkillSet = (el) => {
+  const c = candById(el.dataset.c); if (!c || !isHR(c.companyId)) return;
+  c.skillLevels = { ...(c.skillLevels || {}) }; if (el.value === '') delete c.skillLevels[el.dataset.s]; else c.skillLevels[el.dataset.s] = +el.value;
+  const n = autoShortlistCand(c); saveNow(); toast(n ? 'Saved. Shortlisted by skills match.' : 'Saved'); route();
+};
+{
+  const appView2 = VIEWS.app;
+  VIEWS.app = () => { const v = appView2(); const a = appById(R.arg); if (!a || !canSeeApp(a)) return v; const card = candSkillsCard(candById(a.candId), a); if (!card) return v;
+    const i = v.html.indexOf('<div class="grid g21">'); v.html = i > 0 ? v.html.slice(0, i) + card + v.html.slice(i) : v.html + card; return v; };
+}
 /* what the candidate entered, onto their new employee record */
 function applyCandForm(e, c, coId) {
   const d = cfData(c); if (!d) return 0;
@@ -9156,8 +9361,12 @@ function applyCandForm(e, c, coId) {
   const stamp = () => ({ id: uid(), addedBy: me.id, addedAt: Date.now(), fromCandidate: true });
   const masters = (r, keys) => { keys.forEach((f) => { if (!r[f]) return; const m = masterFor(MASTER_KIND[f], r[f], coId); r[f] = m.name; r[MASTER_FIELD[f]] = m.id; }); return r; };
   e.education = (d.education || []).map((x) => masters({ ...x, ...stamp() }, ['qualification', 'institution', 'university']));
-  e.prevJobs = (d.prevJobs || []).map((x) => masters({ ...x, ...stamp() }, ['employer']));
-  e.references = (d.references || []).map((x) => ({ kind: 'reference', referrerId: '', ...x, ...stamp() }));
+  const desigOf = (n) => (S.desigs.find((x) => x.companyId === coId && normKey(x.name) === normKey(n)) || {}).id || '';
+  e.prevJobs = (d.prevJobs || []).map((x) => masters({ ...x, desigId: desigOf(x.designation), ...stamp() }, ['employer']));
+  e.references = (d.references || []).map((x) => masters({ kind: 'reference', referrerId: '', ...x, desigId: desigOf(x.designation), ...stamp() }, ['organisation']));
+  /* skills: the assessed level where HR recorded one, otherwise the candidate's own rating */
+  const lv = { ...candSelfLevels(c), ...(c.skillLevels || {}) };
+  Object.entries(lv).forEach(([id, l]) => { if (!(+l) || !skillById(id)) return; e.selfSkills = (e.selfSkills || []).filter((x) => x.skillId !== id); e.selfSkills.push({ skillId: id, level: +l, at: Date.now(), fromCandidate: true }); });
   e.family = (d.family || []).map((x) => ({ ...x, id: uid() }));
   return 1;
 }
