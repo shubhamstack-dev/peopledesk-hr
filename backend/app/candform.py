@@ -135,7 +135,8 @@ def public_view(conn, cand: dict) -> dict:
             "jobs": [j for j in jobs if j], "status": form.get("status") or "sent", "note": form.get("note") or "",
             "editable": can_edit(cand), "submittedAt": form.get("submittedAt"), "data": prefill(cand),
             "cv": {"name": cv.get("name"), "size": cv.get("size")} if cv.get("name") else None,
-            "skills": wanted_skills(conn, cand), "levels": LEVELS, "lists": lists_for(conn, cand.get("companyId"))}
+            "skills": wanted_skills(conn, cand), "levels": LEVELS, "lists": lists_for(conn, cand.get("companyId")),
+            "rules": {k: {"req": r["req"], "max": r["max"]} for k, r in form_rules(conn, cand.get("companyId")).items()}}
 
 
 # ---------------------------------------------------------------- what the candidate sends
@@ -374,6 +375,35 @@ def check(d: dict, submit: bool):
         raise Problem("Tick the declaration that the details are true before sending.")
 
 
+def form_rules(conn, company_id: str) -> dict:
+    """2.13: HR's field settings for the candidate's form: {field: {req, max, label}}, top-level fields only."""
+    co = repo.get_records(conn, "companies", [company_id]).get(company_id) or {}
+    rules = ((co.get("fieldRules") or {}).get("candform") or {})
+    out = {}
+    for k, r in rules.items():
+        if k in FIELDS and isinstance(r, dict) and FIELDS[k] not in ("bool",):
+            try:
+                mx = int(r.get("max") or 0)
+            except (TypeError, ValueError):
+                mx = 0
+            out[k] = {"req": bool(r.get("req")), "max": max(0, min(mx, 2000)), "label": str(r.get("label") or k)[:80]}
+    return out
+
+
+def apply_rules(d: dict, rules: dict, submit: bool):
+    """Text is cut to HR's longest entry on every save; required fields are checked when the form is sent."""
+    for k, r in rules.items():
+        if r["max"] and isinstance(d.get(k), str):
+            d[k] = d[k][:r["max"]]
+    if submit:
+        for k, r in rules.items():
+            if r["req"] and d.get(k) in ("", None):
+                lb = r["label"]
+                first = lb.split(" ")[0]
+                lb = lb[:1].lower() + lb[1:] if first[1:].islower() else lb   # "Mobile number" -> "mobile number"; keep LinkedIn, PAN, UAN as written
+                raise Problem(f"Enter {lb} before sending the form.")
+
+
 def check_skills(d: dict, wanted: list, submit: bool):
     """Only the skills asked about are kept; when the form is sent, each must have a level (None is a level)."""
     ids = {s["id"] for s in wanted}
@@ -412,6 +442,7 @@ def save(conn, cand: dict, data: dict, cv, submit: bool) -> dict:
     d = clean(data)
     check(d, submit)
     check_skills(d, wanted_skills(conn, cand), submit)
+    apply_rules(d, form_rules(conn, cand.get("companyId")), submit)
     now = int(time.time() * 1000)
     form = dict(cand.get("form") or {})
     form.update({"data": d, "savedAt": now, "status": "submitted" if submit else "draft"})

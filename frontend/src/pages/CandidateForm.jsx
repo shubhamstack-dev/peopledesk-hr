@@ -32,13 +32,13 @@ const LIST_FIELDS = {
 const LIST_TITLES = { education: ['Education', 'qualification', 'Your schooling, degrees, diplomas and certifications, highest first.'], prevJobs: ['Previous employment', 'job', 'Your employers so far, latest first. Leave empty if this is your first job.'],
   references: ['References', 'reference', 'People who can confirm your work, such as a former manager.'], family: ['Family', 'family member', 'Parents, spouse and children: for medical insurance and nominations.'] };
 
-function Field({ label, type = 'text', value, onChange, opts, wide, help, disabled }) {
+function Field({ label, type = 'text', value, onChange, opts, wide, help, disabled, req, maxLength }) {
   let input;
   if (type === 'select') input = <select className="inp" value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled}>{opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
-  else if (type === 'textarea') input = <textarea className="inp" value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} />;
+  else if (type === 'textarea') input = <textarea className="inp" value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} maxLength={maxLength} required={req} />;
   else if (type === 'check') return <label className="chk" style={{ alignSelf: 'end' }}><input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} disabled={disabled} /> {label}</label>;
-  else input = <input className="inp" type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} inputMode={type === 'number' ? 'decimal' : undefined} />;
-  return <label className={`field${wide ? ' wide' : ''}`}>{label}{input}{help && <small>{help}</small>}</label>;
+  else input = <input className="inp" type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} inputMode={type === 'number' ? 'decimal' : undefined} maxLength={type === 'number' || type === 'date' ? undefined : maxLength} required={req} />;
+  return <label className={`field${wide ? ' wide' : ''}`}>{label}{req && <span className="reqm" aria-label="required"> *</span>}{input}{help && <small>{help}</small>}</label>;
 }
 
 /* 2.12: a drop-down from the company's list, with Others for a name that is not there */
@@ -110,7 +110,11 @@ export default function CandidateForm({ onDone }) {
   const ro = !info.editable;
   const set = (k) => (v) => setD({ ...d, [k]: v });
   const setRow = (list, i, k) => (v) => setD({ ...d, [list]: d[list].map((r, j) => (j === i ? { ...r, [k]: v } : r)) });
-  const F = (k, label, type, extra = {}) => <Field label={label} type={type} value={d[k]} onChange={set(k)} disabled={ro} {...extra} />;
+  /* 2.13: HR's field settings: what must be filled in (the software always needs the first set) and the longest entry */
+  const rules = info.rules || {};
+  const ALWAYS = ['firstName', 'dob', 'gender', 'phone', 'address', 'addrCity', 'emergencyName', 'emergencyPhone'];
+  const isReq = (k) => ALWAYS.includes(k) || !!(rules[k] && rules[k].req);
+  const F = (k, label, type, extra = {}) => <Field label={label} type={type} value={d[k]} onChange={set(k)} disabled={ro} req={isReq(k)} maxLength={(rules[k] && rules[k].max) || undefined} {...extra} />;
   const states = [['', 'Choose'], ...E.IN_STATES.map((x) => [x, x]), ['Outside India', 'Outside India']];
   const lists = info.lists || { employers: [], designations: [], responsibilities: [] };
   const skills = info.skills || [];
@@ -158,7 +162,7 @@ export default function CandidateForm({ onDone }) {
         <div><b>{info.company}</b><small>Your details{info.jobs.length ? ` for ${info.jobs.join(', ')}` : ''}</small></div></div>
       <div className="card"><h2>Hello {info.name.split(' ')[0]}</h2>
         <p className="sub">{ro ? (info.status === 'submitted' ? 'Your details have been sent to HR. If something needs to change, HR will contact you.' : 'This form is closed.')
-          : 'Please fill in your details and attach your CV. You can save and come back to this link before you send it. When you join, these details go into your employee record, so you do not need to enter them again.'}</p>
+          : 'Please fill in your details and attach your CV. You can save and come back to this link before you send it. When you join, these details go into your employee record, so you do not need to enter them again. Fields marked * must be filled in before you send the form.'}</p>
         {info.note && !ro && <div className="note warn">HR asked you to change: {info.note}</div>}
         {msg.text && <div className={`note ${msg.err ? 'bad' : 'ok'}`} role="alert">{msg.text}</div>}
       </div>

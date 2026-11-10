@@ -162,7 +162,7 @@ const ltById = (id) => S.leaveTypes.find((x) => x.id === id);
 /* field: {k, label, type: text|number|date|time|select|check|textarea|email|month, opts: [[v,label]] | fn, req, wide, help, min, max, step} */
 function fieldHtml(f, v) {
   const id = 'f_' + f.k;
-  const attrs = `name="${f.k}" id="${id}" ${f.req ? 'required' : ''} ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.ro ? 'readonly' : ''}`;
+  const attrs = `name="${f.k}" id="${id}" ${f.req ? 'required' : ''} ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.maxLen ? `maxlength="${f.maxLen}"` : ''} ${f.ro ? 'readonly' : ''}`;
   if (f.type === 'check') return `<label class="chk ${f.wide ? 'wide' : ''}" style="${f.wide ? 'grid-column:1/-1' : 'align-self:end'}"><input type="checkbox" ${attrs} ${v ? 'checked' : ''}> ${esc(f.label)}</label>`;
   let input;
   if (f.type === 'select') {
@@ -170,17 +170,42 @@ function fieldHtml(f, v) {
     input = `<select class="inp" ${attrs}>${f.blank !== undefined ? `<option value="">${esc(f.blank)}</option>` : ''}${opts.map(([ov, ol]) => `<option value="${esc(ov)}" ${String(ov) === String(v ?? '') ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select>`;
   } else if (f.type === 'textarea') input = `<textarea class="inp" ${attrs}>${esc(v)}</textarea>`;
   else input = `<input class="inp" type="${f.type || 'text'}" ${attrs} value="${esc(v ?? '')}" ${f.type === 'number' ? 'inputmode="decimal"' : ''}>`;
-  return `<label class="field ${f.wide ? 'wide' : ''}">${esc(f.label)}${input}${f.help ? `<small>${esc(f.help)}</small>` : ''}</label>`;
+  return `<label class="field ${f.wide ? 'wide' : ''}">${reqLabel(f)}${input}${f.help ? `<small>${esc(f.help)}</small>` : ''}</label>`;
 }
+const reqLabel = (f) => `${esc(f.label)}${f.req ? '<span class="reqm" aria-label="required"> *</span>' : ''}`;
 function readForm(form, fields) {
   const out = {};
   fields.forEach((f) => {
     const el = form.elements[f.k]; if (!el) return;
     if (f.type === 'check') out[f.k] = el.checked;
     else if (f.type === 'number') out[f.k] = el.value === '' ? '' : parseNum(el.value);
-    else out[f.k] = el.value.trim();
+    else out[f.k] = f.maxLen ? el.value.trim().slice(0, f.maxLen) : el.value.trim();
   });
   return out;
+}
+/* PeopleDesk 2.13: HR's field rules for each data-entry screen (Field settings): a field the software does not
+   need can be made required, and text fields can be given a longest entry. Kept on the company record as
+   co.fieldRules[formId][fieldKey] = { req, max, label }. Fields the software needs stay required. */
+const ruleable = (f) => !['file', 'respMatrix', 'check'].includes(f.type);
+const lenable = (f) => !!f.pick || !f.type || ['text', 'textarea', 'email', 'tel'].includes(f.type);
+function fieldRulesOf(formId, coId) { return ((coById(coId || CO) || {}).fieldRules || {})[formId] || {}; }
+function ruled(formId, fields, coId) {
+  const r = fieldRulesOf(formId, coId);
+  return fields.map((f) => { const x = r[f.k]; if (!x || !ruleable(f)) return f;
+    return { ...f, ...(f.req ? {} : { req: !!x.req }), ...(x.max && lenable(f) ? { maxLen: +x.max } : {}) }; });
+}
+/* PeopleDesk 2.13: codes given automatically (Code numbering): prefix + running number, per company and list.
+   The next number follows the highest existing code with the same prefix, so codes already in use are kept. */
+const NUMBERED = { depts: ['Departments', 'D', 2], desigs: ['Designations', 'DE', 2], grades: ['Grades', 'G', 2], locations: ['Locations', 'L', 2], reqs: ['Job requisitions', 'REQ-', 5] };
+function numberingOf(list, coId) {
+  const n = ((coById(coId || CO) || {}).numbering || {})[list] || {}; const [, prefix, digits] = NUMBERED[list];
+  return { on: !!n.on, prefix: n.prefix != null ? n.prefix : prefix, digits: +n.digits || digits };
+}
+function nextCode(list, coId) {
+  const n = numberingOf(list, coId); const co = coId || CO; const key = list === 'reqs' ? 'no' : 'code';
+  let top = 0;
+  (S[list] || []).filter((x) => x.companyId === co).forEach((x) => { const c = String(x[key] || ''); if (!c.startsWith(n.prefix)) return; const t = c.slice(n.prefix.length); if (/^\d+$/.test(t)) top = Math.max(top, +t); });
+  return n.prefix + String(top + 1).padStart(n.digits, '0');
 }
 /* Generic list + edit dialog for simple records (masters). opt: {coll, title, fields, cols, filter, defaults, validate, onSave, canDelete, sort} */
 function crudCard(id, opt) {
@@ -199,16 +224,25 @@ ACT_crud();
 function ACT_crud() {
   ACT.crudEdit = (b) => {
     const opt = CRUD[b.dataset.crud]; const L = listOf(opt); const rec = b.dataset.id ? L.find((x) => x.id === b.dataset.id) : null;
-    const v = rec || (typeof opt.defaults === 'function' ? opt.defaults() : { ...(opt.defaults || {}) });
+    let v = rec || (typeof opt.defaults === 'function' ? opt.defaults() : { ...(opt.defaults || {}) });
+    const num = opt.numbering && numberingOf(opt.numbering).on;
+    const fields = ruled('crud.' + b.dataset.crud, opt.fields).map((f) => (num && f.k === 'code' ? { ...f, ro: true, req: false, help: rec ? 'Given automatically' : 'Given automatically when you save (Code numbering)' } : f));
+    if (num && !rec) v = { ...v, code: nextCode(opt.numbering) };
     openDlg(`<form class="dlg" id="crudF" novalidate><h2>${rec ? 'Edit' : 'Add'} ${esc(opt.one || opt.title.toLowerCase())}</h2>
-      <div class="form">${opt.fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div>
+      <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div>
       <p class="err" id="crudE"></p><div class="btns">${rec && opt.canDelete !== false ? '<button type="button" class="btn danger" id="crudDel">Delete</button>' : ''}
       <button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, opt.wide);
     $('#crudF').onsubmit = (e) => {
       e.preventDefault();
-      const data = readForm(e.target, opt.fields);
-      const miss = opt.fields.find((f) => f.req && (data[f.k] === '' || data[f.k] == null));
+      const data = readForm(e.target, fields);
+      const miss = fields.find((f) => f.req && (data[f.k] === '' || data[f.k] == null));
       if (miss) { $('#crudE').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
+      if (num) data.code = rec ? rec.code : nextCode(opt.numbering);
+      if (opt.numbering && data.code) {
+        const coId = (rec && rec.companyId) || CO;
+        const dup = L.find((x) => x !== rec && x.companyId === coId && String(x.code || '').toLowerCase() === data.code.toLowerCase());
+        if (dup) { $('#crudE').textContent = `${dup.name} already has the code ${dup.code}.`; return; }
+      }
       const problem = opt.validate && opt.validate(data, rec);
       if (problem) { $('#crudE').textContent = problem; return; }
       if (rec) Object.assign(rec, data); else L.push({ id: uid(), ...(opt.base ? opt.base() : {}), ...data });
@@ -822,6 +856,8 @@ const MENU = [
     { page: 'org', label: 'Organisation chart' },
     { page: 'masters', label: 'Departments, designations and grades', show: HR },
     { page: 'masterdata', label: 'Standard lists: education, employers, skills, responsibilities', show: HR },
+    { page: 'fieldsetup', label: 'Field settings: required, optional, length', show: HR },
+    { page: 'numbering', label: 'Code numbering', show: HR },
     { page: 'contractors', label: 'Contractors (third party)', show: HR, badge: () => (isHR() ? conWorkersToComplete().length : 0) },
     { page: 'greetings', label: 'Greetings and notifications', show: HR },
     { page: 'reporting', label: 'Reporting structure', show: MGR },
@@ -1367,7 +1403,7 @@ ACT.actConfirm = (b) => {
 /* ---------------------------------------------------------------- masters and companies */
 VIEWS.masters = () => {
   const used = (k) => (r) => (S.employees.some((e) => e[k] === r.id) ? 'Employees use this. Move them first.' : '');
-  const simple = (coll, title, one, k, extra = []) => crudCard(coll, { coll, title, one, filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }), inUse: used(k), sort: (a, b) => a.name.localeCompare(b.name),
+  const simple = (coll, title, one, k, extra = []) => crudCard(coll, { coll, title, one, numbering: coll, filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }), inUse: used(k), sort: (a, b) => a.name.localeCompare(b.name),
     fields: [{ k: 'name', label: 'Name', req: true }, { k: 'code', label: 'Code' }, ...extra], cols: [{ k: 'name', label: 'Name' }, { k: 'code', label: 'Code' }, ...extra.map((f) => ({ k: f.k, label: f.label, fmt: f.fmt })), { label: 'Employees', cls: 'r', fmt: (r) => S.employees.filter((e) => e[k] === r.id && active(e)).length }] });
   return { title: 'Departments and grades', html: `<div class="grid g2">${simple('depts', 'Departments', 'department', 'deptId', [{ k: 'costCenter', label: 'Cost centre' }, { k: 'headId', label: 'Head of department', type: 'select', opts: () => empOpts(CO)(), blank: 'None', fmt: (r) => (r.headId ? nameOf(r.headId) : '') }])}${simple('desigs', 'Designations', 'designation', 'desigId', [{ k: 'gradeId', label: 'Usual grade', type: 'select', opts: coOpts('grades'), blank: 'Any', fmt: (r) => (grade(r.gradeId) || {}).name || '' }])}
     ${simple('grades', 'Grades', 'grade', 'gradeId', [{ k: 'level', label: 'Level (1 = entry)', type: 'number', min: 1, fmt: (r) => r.level || '' }, { k: 'minCTC', label: 'Pay band from (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.minCTC ? inr0(r.minCTC) : '') }, { k: 'maxCTC', label: 'Pay band to (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.maxCTC ? inr0(r.maxCTC) : '') }, { k: 'minMonths', label: 'Months in grade before promotion', type: 'number', min: 0, fmt: (r) => r.minMonths || '' }])}${simple('locations', 'Locations', 'location', 'locationId', [{ k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES), fmt: (r) => STATES[r.state] || '' }, { k: 'metro', label: 'Metro city (50% HRA exemption)', type: 'check', fmt: (r) => (r.metro ? 'Metro' : '') }])}</div>` };
@@ -3093,6 +3129,22 @@ function wireSkEditor(form) {
     if (del) del.closest('.skrow').remove(); });
   form.addEventListener('change', (ev) => { if (!ev.target.matches('[data-sk]')) return; const nw = ev.target.parentNode.querySelector('[data-sknew]'); nw.hidden = ev.target.value !== '__new'; if (!nw.hidden) nw.focus(); });
 }
+/* 2.13: the budget follows the grade's pay band. Picking a designation fills its usual grade if none is chosen;
+   picking a grade fills CTC from and up to, unless they were typed by hand. Both stay editable. */
+function wireReqBudget(form) {
+  const el = form.elements; if (!el.gradeId || !el.ctcMin || !el.ctcMax) return;
+  const auto = { ctcMin: el.ctcMin.value, ctcMax: el.ctcMax.value };
+  const hint = (t) => { let s = el.ctcMax.closest('.field').querySelector('small[data-band]'); if (!s) { s = document.createElement('small'); s.dataset.band = ''; el.ctcMax.closest('.field').append(s); } s.textContent = t; };
+  const fromGrade = (force) => {
+    const g = S.grades.find((x) => x.id === el.gradeId.value); if (!g) { hint(''); return; }
+    [['ctcMin', 'minCTC'], ['ctcMax', 'maxCTC']].forEach(([k, gk]) => { if (!g[gk]) return; const typed = el[k].value !== '' && el[k].value !== String(auto[k]);
+      if (force || !typed) { el[k].value = g[gk]; auto[k] = String(g[gk]); } });
+    hint(g.minCTC || g.maxCTC ? `${g.name} pay band: ${g.minCTC ? inr0(g.minCTC) : '—'} to ${g.maxCTC ? inr0(g.maxCTC) : '—'}. You can change the budget.` : `${g.name} has no pay band. Set it under Departments and grades.`);
+  };
+  el.gradeId.addEventListener('change', () => fromGrade(false));
+  if (el.desigId) el.desigId.addEventListener('change', () => { const ds = S.desigs.find((x) => x.id === el.desigId.value); if (ds && ds.gradeId && !el.gradeId.value) { el.gradeId.value = ds.gradeId; fromGrade(false); } });
+  if (el.gradeId.value) fromGrade(false);
+}
 /* reads the rows; new skills go on the list (or to HR's review). Returns { primarySkills, secondarySkills } or { error } */
 function readSkEditor(form) {
   const out = { primarySkills: [], secondarySkills: [] }; const seen = new Set(); const fresh = [];
@@ -3134,19 +3186,19 @@ const REQ_FIELDS = () => [{ k: 'title', label: 'Job title', req: true }, { k: 'd
   { k: 'autoShortlist', label: 'Shortlist candidates automatically by skills match', type: 'check', wide: true }, { k: 'matchMin', label: 'Minimum skills match (%)', type: 'number', min: 0, max: 100 },
   { k: 'primaryMust', label: 'Every primary skill must be at the level needed', type: 'check' }, { k: 'jd', label: 'Job description', type: 'textarea', wide: true }];
 ACT.reqEdit = (b) => {
-  const r = b.dataset.id ? reqById(b.dataset.id) : null; const fields = REQ_FIELDS();
+  const r = b.dataset.id ? reqById(b.dataset.id) : null; const fields = ruled('req', REQ_FIELDS());
   const v = { matchMin: 70, primaryMust: true, ...(r || { positions: 1, empType: 'permanent', reason: 'new', hiringMgr: me.id, priority: 'normal', targetDate: addDays(todayISO(), 45), expMin: 2, expMax: 6 }) };
   if (r && r.primaryMust === undefined) v.primaryMust = true;
   openDlg(`<form class="dlg" id="rqf" novalidate><h2>${r ? 'Edit requisition ' + esc(r.no) : 'Raise a job requisition'}</h2><div class="form">${fields.map((f) => (f.k === 'skills' ? skEditorHtml(r) : '') + fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="rqe"></p>
     <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn" id="rqDraft">Save as draft</button><button class="btn pri">${isHR() ? 'Save and open' : 'Send for approval'}</button></div></form>`, true);
-  wireSkEditor($('#rqf'));
+  wireSkEditor($('#rqf')); wireReqBudget($('#rqf'));
   const save = (submit) => { const d = readForm($('#rqf'), fields); const miss = fields.find((f) => f.req && !d[f.k]); if (miss) { $('#rqe').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
     if (d.matchMin !== '' && (d.matchMin < 0 || d.matchMin > 100)) { $('#rqe').textContent = 'The minimum skills match is a percentage from 0 to 100.'; return; }
     const sk = readSkEditor($('#rqf')); if (sk.error) { $('#rqe').textContent = sk.error; return; }
     if (d.autoShortlist && !sk.primarySkills.length && !sk.secondarySkills.length) { $('#rqe').textContent = 'Add the skills needed before turning on automatic shortlisting.'; return; }
     Object.assign(d, sk);
     if (d.ctcMax < d.ctcMin) { $('#rqe').textContent = 'The budget upper limit is below the lower limit.'; return; } if (d.positions < 1) { $('#rqe').textContent = 'At least one position.'; return; }
-    let rec = r; if (!rec) { rec = { id: uid(), no: nextNo('req', 'REQ-'), companyId: CO, filled: 0, createdBy: me.id, createdAt: Date.now(), approvals: [], status: 'draft' }; S.reqs.push(rec); }
+    let rec = r; if (!rec) { rec = { id: uid(), no: numberingOf('reqs').on ? nextCode('reqs') : nextNo('req', 'REQ-'), companyId: CO, filled: 0, createdBy: me.id, createdAt: Date.now(), approvals: [], status: 'draft' }; S.reqs.push(rec); }
     Object.assign(rec, d); if (submit) { rec.status = isHR() ? 'open' : 'pending'; rec.approvals.push({ by: me.id, at: Date.now(), decision: isHR() ? 'opened' : 'submitted' }); }
     const sl = autoShortlist(rec);
     saveNow(); closeDlg(); toast(`${submit ? (isHR() ? 'Requisition open' : 'Sent to HR for approval') : 'Draft saved'}${sl ? `. ${sl} candidate${sl === 1 ? '' : 's'} shortlisted by skills match` : ''}`); go('#/req/' + rec.id); };
@@ -3166,7 +3218,7 @@ VIEWS.req = () => {
       <div class="tools">${can && ['draft', 'pending', 'open', 'onhold'].includes(r.status) ? `<button class="btn" data-act="reqEdit" data-id="${r.id}">Edit</button>` : ''}${r.status === 'draft' && can ? '<button class="btn pri" data-act="reqSubmit">Send for approval</button>' : ''}
         ${r.status === 'pending' && isHR(r.companyId) && r.createdBy !== me.id ? '<button class="btn danger" data-act="jobReqDecide" data-ok="0">Reject</button><button class="btn ok" data-act="jobReqDecide" data-ok="1">Approve</button>' : ''}
         ${r.status === 'open' && isHR(r.companyId) ? '<button class="btn" data-act="reqState" data-s="onhold">Put on hold</button><button class="btn" data-act="reqState" data-s="closed">Close</button>' : ''}${r.status === 'onhold' && isHR(r.companyId) ? '<button class="btn" data-act="reqState" data-s="open">Reopen</button>' : ''}
-        ${r.status === 'open' && can && reqSkills(r).length ? '<button class="btn" data-act="reqShortlist">Shortlist by skills now</button>' : ''}${r.status === 'open' && can ? '<button class="btn pri" data-act="assignCVs">Assign CVs</button>' : ''}</div></div>
+        ${r.status === 'open' && can ? `<button class="btn" data-act="reqLinks">Send CV links</button><a class="btn" href="#/shortlist/${r.id}">Run shortlisting</a>` : ''}${r.status === 'open' && can ? '<button class="btn pri" data-act="assignCVs">Assign CVs</button>' : ''}</div></div>
       ${skillsNeededHtml(r)}${r.skills ? `<p><b>${reqSkills(r).length ? 'Other skills' : 'Skills'}:</b> ${esc(r.skills)}</p>` : ''}${r.jd ? `<details><summary class="fine" style="cursor:pointer">Job description</summary><p style="white-space:pre-wrap">${esc(r.jd)}</p></details>` : ''}
       ${r.approvals.length ? `<p class="fine">${r.approvals.map((x) => `${esc(x.decision)} by ${esc(nameOf(x.by))} on ${dt(x.at)}${x.note ? ` (${esc(x.note)})` : ''}`).join('; ')}</p>` : ''}</div>
     <div class="card"><h2>Pipeline</h2><p class="sub">Open a candidate to move them along, schedule interviews, add follow-ups or make an offer. ${apps.filter((a) => ['rejected', 'withdrawn'].includes(a.stage)).length} rejected or withdrawn not shown.</p>
@@ -3182,16 +3234,19 @@ ACT.assignCVs = () => {
   const r = curReq(); const taken = new Set(S.apps.filter((a) => a.reqId === r.id).map((a) => a.candId));
   const pool = S.cands.filter((c) => !taken.has(c.id)).map((c) => ({ c, m: skillMatch(c, r) })).sort((x, y) => ((y.m || {}).pct ?? -1) - ((x.m || {}).pct ?? -1) || x.c.name.localeCompare(y.c.name)).map((x) => x.c);
   openDlg(`<div class="dlg"><h2>Assign CVs to ${esc(r.title)}</h2><p class="fine" style="margin:0">Pick candidates from the pool, or add a new one with their CV.</p>
-    <input class="inp" placeholder="Filter by name, skill, company" data-in="cvFilter" style="width:100%">
-    <div style="max-height:340px;overflow:auto;border:1px solid var(--rule);border-radius:9px" id="cvList">${pool.map((c) => `<label class="chk cvrow" style="padding:7px 10px;border-bottom:1px solid var(--rule)" data-s="${esc(`${c.name} ${c.skills} ${c.currentCompany} ${c.currentTitle}`.toLowerCase())}"><input type="checkbox" value="${c.id}">
+    <div style="display:flex;gap:8px"><input class="inp" placeholder="Search by name, skill, company or role" data-in="cvFilter" style="flex:1">${reqSkills(r).length ? '<select class="inp" data-ch="cvFilter" id="cvMin" aria-label="Minimum skills match"><option value="">Any match</option><option value="50">50% or more</option><option value="70">70% or more</option><option value="90">90% or more</option></select>' : ''}</div>
+    <div style="max-height:340px;overflow:auto;border:1px solid var(--rule);border-radius:9px" id="cvList">${pool.map((c) => `<label class="chk cvrow" style="padding:7px 10px;border-bottom:1px solid var(--rule)" data-s="${esc(`${c.name} ${c.skills} ${c.currentCompany} ${c.currentTitle} ${Object.keys({ ...candSelfLevels(c), ...(c.skillLevels || {}) }).map(skillName).join(' ')}`.toLowerCase())}" data-m="${(skillMatch(c, r) || {}).pct ?? ''}"><input type="checkbox" value="${c.id}">
       <span><b>${esc(c.name)}</b> ${matchBadge(skillMatch(c, r))} <span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentTitle || '')} at ${esc(c.currentCompany || '—')}, expects ${inr0(c.expectedCtc)}, notice ${c.noticeDays || 0} days${c.cv ? ', CV attached' : ''}</span>${c.exEmpId ? ' <span class="badge info">Former employee</span>' : ''}</span></label>`).join('') || '<div class="empty">Everyone in the pool is already assigned.</div>'}</div>
-    <div class="btns"><button class="btn" data-act="candEdit" data-req="${r.id}">Add a new candidate</button><button class="btn ghost" data-act="close">Cancel</button><button class="btn pri" data-act="assignGo">Assign selected</button></div></div>`, true);
+    <div class="btns"><button class="btn" data-act="candEdit" data-req="${r.id}">Add a new candidate</button><button class="btn ghost" data-act="close">Cancel</button><button class="btn pri" data-act="assignGo">Assign selected</button></div>
+    <label class="chk"><input type="checkbox" id="cvSend" checked> Send each the link to fill in their details and CV</label></div>`, true);
 };
-ACT.cvFilter = (el) => { const q = el.value.toLowerCase(); $$('#cvList .cvrow').forEach((x) => { x.hidden = q && !x.dataset.s.includes(q); }); };
+ACT.cvFilter = () => { const q = ($('[data-in=cvFilter]') || {}).value.toLowerCase(); const mn = +(($('#cvMin') || {}).value || 0);
+  $$('#cvList .cvrow').forEach((x) => { x.hidden = (q && !x.dataset.s.includes(q)) || (mn > 0 && !(x.dataset.m !== '' && +x.dataset.m >= mn)); }); };
 ACT.assignGo = () => { const r = curReq(); const ids = $$('#cvList input:checked').map((x) => x.value); if (!ids.length) { toast('Tick at least one candidate.'); return; }
   const made = ids.map((cid) => { const a = { id: uid(), reqId: r.id, candId: cid, stage: 'sourced', stageAt: Date.now(), history: [], followups: [], notes: [], createdAt: Date.now() }; setStage(a, 'sourced', `Assigned to ${r.no}`); S.apps.push(a); return a.id; });
-  const sl = autoShortlist(r, made);
-  saveNow(); closeDlg(); toast(`${ids.length} candidate${ids.length > 1 ? 's' : ''} assigned${sl ? `, ${sl} shortlisted by skills match` : ''}`); route(); };
+  const sl = autoShortlist(r, made); const send = $('#cvSend') && $('#cvSend').checked;
+  saveNow(); closeDlg(); toast(`${ids.length} candidate${ids.length > 1 ? 's' : ''} assigned${sl ? `, ${sl} shortlisted by skills match` : ''}`); route();
+  if (send) setTimeout(() => sendCvLinks(ids.map(candById).filter((c) => c && !cvIn(c)), `CV links for ${r.title}`), 400); };
 ACT.reqShortlist = () => { const r = curReq(); const live = S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced');
   if (!r.autoShortlist) { const tmp = { ...r, autoShortlist: true }; const ok = live.filter((a) => meetsShortlist(skillMatch(candById(a.candId), tmp), tmp));
     ok.forEach((a) => { const m = skillMatch(candById(a.candId), r); setStage(a, 'screening', `Shortlisted by skills match ${m.pct}%`); });
@@ -3220,13 +3275,13 @@ ACT.candEdit = (b) => {
   const c = b.dataset.id ? candById(b.dataset.id) : null; const v = c || { source: 'Job portal', noticeDays: 30 }; let cv = c ? c.cv : null;
   const apps = c ? S.apps.filter((a) => a.candId === c.id) : [];
   openDlg(`<form class="dlg" id="cdf" novalidate><h2>${c ? esc(c.name) : 'Add a candidate'}</h2>${c && c.exEmpId ? `<div class="note">Former employee: ${esc(fullName(empById(c.exEmpId)))} (${esc(empById(c.exEmpId).empNo)}). If hired, the old record is rehired.</div>` : ''}
-    <div class="form">${CAND_FIELDS.map((f) => fieldHtml(f, v[f.k])).join('')}<label class="field wide">CV (PDF or Word, up to 2 MB)<input type="file" class="inp" id="cvFile" accept=".pdf,.doc,.docx,.rtf,.txt"><small id="cvName">${cv ? `${esc(cv.name)}, ${Math.round(cv.size / 1024)} KB` : 'No CV attached'}</small></label></div>
+    <div class="form">${ruled('cand', CAND_FIELDS).map((f) => fieldHtml(f, v[f.k])).join('')}<label class="field wide">CV (PDF or Word, up to 2 MB)<input type="file" class="inp" id="cvFile" accept=".pdf,.doc,.docx,.rtf,.txt"><small id="cvName">${cv ? `${esc(cv.name)}, ${Math.round(cv.size / 1024)} KB` : 'No CV attached'}</small></label></div>
     ${apps.length ? `<p class="fine">Applications: ${apps.map((a) => `<a href="#/app/${a.id}">${esc(reqById(a.reqId).title)}</a> (${RSTAGES[a.stage]})`).join(', ')}</p>` : ''}<p class="err" id="cde"></p>
     <div class="btns">${cv ? '<button type="button" class="btn" id="cvOpen">Open CV</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${b.dataset.req ? 'Save and assign' : 'Save'}</button></div></form>`, true);
   $('#cvFile').onchange = (ev) => { const f = ev.target.files[0]; if (!f) return; if (f.size > 2 * 1024 * 1024) { $('#cde').textContent = 'The CV is larger than 2 MB.'; ev.target.value = ''; return; }
     const fr = new FileReader(); fr.onload = () => { cv = { name: f.name, type: f.type, size: f.size, data: fr.result, at: Date.now() }; $('#cvName').textContent = `${f.name}, ${Math.round(f.size / 1024)} KB, ready to save`; }; fr.readAsDataURL(f); };
   if ($('#cvOpen')) $('#cvOpen').onclick = () => openCv(c);
-  $('#cdf').onsubmit = (e) => { e.preventDefault(); const d = readForm(e.target, CAND_FIELDS); const miss = CAND_FIELDS.find((f) => f.req && !d[f.k]); if (miss) { $('#cde').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
+  $('#cdf').onsubmit = (e) => { e.preventDefault(); const CF = ruled('cand', CAND_FIELDS); const d = readForm(e.target, CF); const miss = CF.find((f) => f.req && (d[f.k] === '' || d[f.k] == null)); if (miss) { $('#cde').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.email)) { $('#cde').textContent = 'Enter a valid e-mail.'; return; }
     const dup = S.cands.find((x) => x !== c && (x.email.toLowerCase() === d.email.toLowerCase() || x.phone.replace(/\D/g, '').slice(-10) === d.phone.replace(/\D/g, '').slice(-10)));
     if (dup) { $('#cde').textContent = `${dup.name} already has this e-mail or phone. Open that candidate instead.`; return; }
@@ -7016,7 +7071,7 @@ const BG = {
     row: (x) => [`<b>${esc(x.qualification)}</b>${x.specialisation ? `<div class="fine">${esc(x.specialisation)}</div>` : ''}<div class="fine">${esc(x.level)}</div>`, `${esc(x.institution)}${x.university ? `<div class="fine">${esc(x.university)}</div>` : ''}`,
       `${esc(x.toYear || '')}${x.score ? `<div class="fine">${esc(x.score)}${x.scoreType === 'pct' ? '%' : x.scoreType === 'cgpa' ? ' CGPA' : ''}</div>` : ''}`], head: ['Qualification', 'Institution', 'Passed'] },
   awards: { title: 'Awards and achievements', one: 'award', sub: 'Recognition before and outside this job: academic, professional, sports or community.',
-    fields: [{ k: 'title', label: 'Award or achievement', req: true }, { k: 'issuer', label: 'Given by', help: 'Organisation, institution or event' }, { k: 'date', label: 'Date', type: 'date' },
+    fields: [{ k: 'title', label: 'Award or achievement', req: true }, { k: 'issuer', label: 'Given by', pick: 'worked' }, { k: 'date', label: 'Date', type: 'date' },
       { k: 'category', label: 'Kind', type: 'select', opts: [['Professional', 'Professional'], ['Academic', 'Academic'], ['Sports', 'Sports'], ['Community', 'Community and social'], ['Other', 'Other']] },
       { k: 'description', label: 'What it was for', type: 'textarea', wide: true }, { k: 'doc', label: 'Certificate or photo', type: 'file', wide: true }],
     sort: (a, b) => String(b.date || '').localeCompare(String(a.date || '')),
@@ -7073,14 +7128,45 @@ function pickNames(kind, coId) {
   if (kind === 'desig') return [...new Set(S.desigs.filter((x) => x.companyId === coId).map((x) => x.name))].sort((a, b) => a.localeCompare(b));
   return S.masterItems.filter((x) => x.companyId === coId && x.kind === kind && (x.status === 'approved' || (x.status === 'proposed' && x.proposedBy === me.id))).map((x) => x.name).sort((a, b) => a.localeCompare(b));
 }
-function pickInput(f, v, coId) {
+/* 2.13: awards are given by an organisation the employee worked at (this company or a previous job) or, for an
+   academic award, studied at. Others is offered only for sports, community and other awards. */
+const AWARD_OPEN_KINDS = ['Sports', 'Community', 'Other'];
+function workedAt(e) {
+  const co = coById(e.companyId) || {};
+  return [...new Set([co.legalName || co.name, ...(e.prevJobs || []).map((j) => j.employer)].map((x) => String(x || '').trim()).filter(Boolean))];
+}
+const studiedAt = (e) => [...new Set((e.education || []).flatMap((x) => [x.institution, x.university]).map((x) => String(x || '').trim()).filter(Boolean))];
+function workedPickInput(f, v, e) {
+  const w = workedAt(e), st = studiedAt(e).filter((n) => !w.some((x) => normKey(x) === normKey(n))); const cur = String(v || '').trim();
+  const hit = [...w, ...st].find((n) => normKey(n) === normKey(cur)) || ''; const other = !!cur && !hit;
+  const og = (label, list) => (list.length ? `<optgroup label="${label}">${list.map((n) => `<option value="${esc(n)}" ${n === hit ? 'selected' : ''}>${esc(n)}</option>`).join('')}</optgroup>` : '');
+  return `<label class="field ${f.wide ? 'wide' : ''}">${reqLabel(f)}<select class="inp" name="${f.k}" data-pick="${f.k}" ${f.req ? 'required' : ''}>
+    <option value="">Choose</option>${og('Where you worked', w)}${og('Where you studied', st)}<option value="${PICK_OTHER}" data-open ${other ? 'selected' : ''}>Others (sports, community and other awards)</option></select>
+    <input class="inp" name="${f.k}${PICK_OTHER}" value="${esc(other ? cur : '')}" placeholder="Organisation, body or event" autocomplete="off" ${f.maxLen ? `maxlength="${f.maxLen}"` : ''} ${other ? '' : 'hidden'}>
+    <small>This company and the employers under Previous employment${st.length ? ', or where you studied' : ''}. Add a previous job first if the organisation is missing.</small></label>`;
+}
+function wireAwardIssuer(form) {
+  const kind = form.elements.category, sel = form.elements.issuer; if (!kind || !sel) return;
+  const sync = () => { const open = AWARD_OPEN_KINDS.includes(kind.value); const o = sel.querySelector('option[data-open]'); o.disabled = !open; o.hidden = !open;
+    const studied = sel.querySelector('optgroup[label="Where you studied"]'); if (studied) studied.disabled = kind.value === 'Professional'; };
+  kind.addEventListener('change', sync); sync();
+}
+function awardIssuerProblem(d, e) {
+  if (!d.issuer) return '';
+  const inList = (list) => list.some((n) => normKey(n) === normKey(d.issuer));
+  if (d.category === 'Professional' && !inList(workedAt(e))) return 'A professional award is given by an organisation you worked at: this company or one under Previous employment.';
+  if (d.category === 'Academic' && !inList([...workedAt(e), ...studiedAt(e)])) return 'An academic award is given by an institution you studied at, or an organisation you worked at.';
+  return '';
+}
+function pickInput(f, v, coId, e) {
+  if (f.pick === 'worked') return workedPickInput(f, v, e);
   const names = pickNames(f.pick, coId); const cur = String(v || '').trim();
   const hit = cur ? names.find((n) => normKey(n) === normKey(cur)) : '';
   const other = !!cur && !hit;
   const src = f.pick === 'desig' ? 'the designation master' : 'the list of employers';
-  return `<label class="field ${f.wide ? 'wide' : ''}">${esc(f.label)}<select class="inp" name="${f.k}" data-pick="${f.k}" ${f.req ? 'required' : ''}>
+  return `<label class="field ${f.wide ? 'wide' : ''}">${reqLabel(f)}<select class="inp" name="${f.k}" data-pick="${f.k}" ${f.req ? 'required' : ''}>
     <option value="">${names.length ? 'Choose' : 'Nothing on the list yet'}</option>${names.map((n) => `<option value="${esc(n)}" ${n === hit ? 'selected' : ''}>${esc(n)}</option>`).join('')}<option value="${PICK_OTHER}" ${other ? 'selected' : ''}>Others</option></select>
-    <input class="inp" name="${f.k}${PICK_OTHER}" value="${esc(other ? cur : '')}" placeholder="Type the ${f.pick === 'desig' ? 'designation' : 'name'} in full" autocomplete="off" ${other ? '' : 'hidden'}>
+    <input class="inp" name="${f.k}${PICK_OTHER}" value="${esc(other ? cur : '')}" placeholder="Type the ${f.pick === 'desig' ? 'designation' : 'name'} in full" autocomplete="off" ${f.maxLen ? `maxlength="${f.maxLen}"` : ''} ${other ? '' : 'hidden'}>
     <small>${esc(f.help || `From ${src}. Choose Others if it is not there.`)}</small></label>`;
 }
 function wirePicks(form) {
@@ -7090,7 +7176,7 @@ function wirePicks(form) {
 /* the chosen name (or what was typed under Others); designations also keep the id of the designation */
 function readPicks(form, fields, d, coId) {
   fields.filter((f) => f.pick).forEach((f) => {
-    if (d[f.k] === PICK_OTHER) d[f.k] = String(form.elements[f.k + PICK_OTHER].value || '').replace(/\s+/g, ' ').trim();
+    if (d[f.k] === PICK_OTHER) d[f.k] = String(form.elements[f.k + PICK_OTHER].value || '').replace(/\s+/g, ' ').trim().slice(0, f.maxLen || 200);
     if (f.pick === 'desig') { const ds = S.desigs.find((x) => x.companyId === coId && normKey(x.name) === normKey(d[f.k])); d[f.k === 'designation' ? 'desigId' : f.k + 'Id'] = ds ? ds.id : ''; }
   });
 }
@@ -7130,30 +7216,31 @@ function masterFor(kind, name, coId, extra = {}) {
   return { id: rec.id, name: n, isNew: true, approved: isHR(coId) };
 }
 ACT.bgEdit = (b) => {
-  const e = empById(b.dataset.emp), k = b.dataset.k, def = BG[k]; const x0 = b.dataset.id ? (e[k] || []).find((x) => x.id === b.dataset.id) : null;
+  const e = empById(b.dataset.emp), k = b.dataset.k, def = BG[k]; const dfields = ruled('bg.' + k, BG[k].fields, empById(b.dataset.emp).companyId); const x0 = b.dataset.id ? (e[k] || []).find((x) => x.id === b.dataset.id) : null;
   const v = x0 || (k === 'references' ? { kind: 'reference' } : k === 'education' ? { level: 'Graduate', mode: 'full', scoreType: 'pct' } : k === 'awards' ? { category: 'Professional' } : {});
   const prev = CO; CO = e.companyId;
-  const html = def.fields.map((f) => (f.pick ? pickInput(f, v[f.k], e.companyId) : f.type === 'respMatrix' ? respMatrixHtml(v, e.companyId) : f.master ? masterInput(f, v[f.k], MASTER_KIND[f.k], e.companyId) : f.type === 'file'
+  const html = dfields.map((f) => (f.pick ? pickInput(f, v[f.k], e.companyId, e) : f.type === 'respMatrix' ? respMatrixHtml(v, e.companyId) : f.master ? masterInput(f, v[f.k], MASTER_KIND[f.k], e.companyId) : f.type === 'file'
     ? `<label class="field wide">${esc(f.label)}<input type="file" class="inp" name="${f.k}" accept="image/*,application/pdf"><small>${v.docFileId ? `Attached: ${esc(v.docName || 'document')}. Choose a file to replace it.` : 'Optional. A photo or PDF, up to 10 MB.'}</small></label>` : fieldHtml(f, v[f.k]))).join('');
   CO = prev;
   openDlg(`<form class="dlg" id="bgF" novalidate><h2>${x0 ? 'Edit' : 'Add'} ${esc(def.one)}${e.id !== me.id ? `: ${esc(fullName(e))}` : ''}</h2>
     ${x0 && x0.verify && x0.verify.status && !isHR(e.companyId) ? '<p class="fine" style="margin:0">HR has checked this entry. If you change it, HR checks it again.</p>' : ''}
     <div class="form">${html}</div><p class="err" id="bgE"></p>
     <div class="btns">${x0 ? '<button type="button" class="btn danger" id="bgDel" style="margin-right:auto">Remove</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
-  const form = $('#bgF'); wirePicks(form);
+  const form = $('#bgF'); wirePicks(form); if (k === 'awards') wireAwardIssuer(form);
   if (k === 'references') { const sync = () => { const ref = form.elements.kind.value === 'referral'; form.elements.referrerId.closest('.field').style.display = ref ? '' : 'none';
     const inside = ref && form.elements.referrerId.value; ['name', 'organisation', 'designation', 'phone', 'email'].forEach((n) => { form.elements[n].closest('.field').style.display = inside ? 'none' : ''; }); };
     form.elements.kind.addEventListener('change', sync); form.elements.referrerId.addEventListener('change', sync); sync(); }
   form.onsubmit = async (ev) => {
     ev.preventDefault(); const err = (m) => { $('#bgE').textContent = m; };
-    const fields = def.fields.filter((f) => f.type !== 'file' && f.type !== 'respMatrix'); const d = readForm(form, fields);
+    const fields = dfields.filter((f) => f.type !== 'file' && f.type !== 'respMatrix'); const d = readForm(form, fields);
     readPicks(form, fields, d, e.companyId);
-    if (def.fields.some((f) => f.type === 'respMatrix')) Object.assign(d, readRespMatrix(form));
+    if (dfields.some((f) => f.type === 'respMatrix')) Object.assign(d, readRespMatrix(form));
     if (k === 'references') { if (d.kind !== 'referral') d.referrerId = ''; if (d.referrerId) { d.name = ''; d.organisation = ''; d.designation = ''; d.phone = ''; d.email = ''; } if (!d.referrerId && !d.name) return err('Enter the name.'); if (d.kind === 'reference' && !d.phone && !d.email) return err('Give a phone number or e-mail so HR can contact them.'); }
     const miss = fields.find((f) => f.req && (d[f.k] === '' || d[f.k] == null) && !(k === 'references' && f.k === 'name')); if (miss) return err(`Enter ${miss.label.toLowerCase()}.`);
     if (k === 'prevJobs') { if (d.to && d.to < d.from) return err('The job ends before it starts.'); if (d.from > todayISO().slice(0, 7)) return err('The start is in the future.'); if ((e.doj || '') && d.to && d.to > e.doj.slice(0, 7)) return err(`This job ends after ${dmy(e.doj)}, when you joined here.`); }
     if (k === 'education' && d.fromYear && d.toYear && d.toYear < d.fromYear) return err('The year passed is before the start.');
     if (k === 'awards' && d.date && d.date > todayISO()) return err('The date is in the future.');
+    if (k === 'awards') { const bad = awardIssuerProblem(d, e); if (bad) return err(bad); }
     if (d.phone && !/^\+?[\d\s-]{8,16}$/.test(d.phone)) return err('Enter the phone with digits only.');
     const file = form.elements.doc && form.elements.doc.files[0];
     let added = 0, proposed = 0;
@@ -9348,6 +9435,151 @@ ACT.candSkillSet = (el) => {
   VIEWS.app = () => { const v = appView2(); const a = appById(R.arg); if (!a || !canSeeApp(a)) return v; const card = candSkillsCard(candById(a.candId), a); if (!card) return v;
     const i = v.html.indexOf('<div class="grid g21">'); v.html = i > 0 ? v.html.slice(0, i) + card + v.html.slice(i) : v.html + card; return v; };
 }
+/* ---------------------------------------------------------------- 2.13: CV links in bulk, and the shortlisting run
+   From a requisition, HR assigns CVs from the pool (or adds candidates), sends each the link to fill in their
+   details and CV in the company's format (they can save a draft and come back), and, once the CVs are in,
+   runs shortlisting: candidates are ranked by skills match against the requisition's rules, HR reviews the
+   proposal and confirms. Each run is kept on the requisition. */
+const CF_LABEL = { sent: ['Link sent', 'info'], draft: ['Draft saved', 'warn'], submitted: ['CV received', 'ok'], returned: ['Returned for changes', 'warn'], closed: ['CV received', 'ok'] };
+const cvStatus = (c) => { const f = cfOf(c); return f ? (CF_LABEL[f.status] || ['Link sent', 'info']) : ['No link sent', '']; };
+const cvIn = (c) => { const f = cfOf(c); return !!f && ['submitted', 'closed'].includes(f.status); };
+async function sendCvLinks(cands, title) {
+  if (!cands.length) { toast('Everyone has already sent their CV.'); return; }
+  openDlg(`<div class="dlg"><h2>${esc(title)}</h2><p class="fine" id="lkP">Sending 0 of ${cands.length}…</p><div id="lkL"></div></div>`, true);
+  const out = [];
+  for (const c of cands) {
+    try { const res = await api.post('/api/candidate-form/link', { candId: c.id, send: true }); c.form = res.form; out.push({ c, res }); } catch (e) { out.push({ c, err: e.message }); }
+    const p = $('#lkP'); if (p) p.textContent = `Sending ${out.length} of ${cands.length}…`;
+  }
+  const mailed = out.filter((x) => x.res && x.res.sent).length, failed = out.filter((x) => x.err).length;
+  const toCopy = out.filter((x) => x.res && !x.res.sent);
+  replaceHtml($('#dlgBody'), `<div class="dlg"><h2>${esc(title)}</h2>
+    <div class="note ${failed ? 'warn' : 'ok'}">${mailed ? `${mailed} e-mailed. ` : ''}${toCopy.length ? `${toCopy.length} to send yourself (copy the links below). ` : ''}${failed ? `${failed} could not be sent.` : ''}</div>
+    <div class="scroll"><table class="t"><thead><tr><th>Candidate</th><th>Sent</th><th>Link</th></tr></thead><tbody>${out.map((x) => `<tr><td><b>${esc(x.c.name)}</b><div class="fine">${esc(x.c.email || '')}</div></td>
+      <td>${x.err ? `<span class="badge bad">Not sent</span><div class="fine">${esc(x.err)}</div>` : x.res.sent ? '<span class="badge ok">By e-mail</span>' : '<span class="badge warn">Send it yourself</span>'}</td>
+      <td>${x.res ? `<input class="inp mono" readonly value="${esc(x.res.url)}" style="width:100%;font-size:12px">` : ''}</td></tr>`).join('')}</tbody></table></div>
+    <p class="fine">The links work for ${(out.find((x) => x.res) || { res: { days: 14 } }).res.days} days. Candidates can save their form and come back to it; a new link stops older ones.</p>
+    <div class="btns"><button class="btn pri" data-act="close">Done</button></div></div>`);
+  route();
+}
+/* requisition: send the CV link to everyone assigned who has not sent their CV yet */
+ACT.reqLinks = () => { const r = curReq(); const cs = S.apps.filter((a) => a.reqId === r.id && !['rejected', 'withdrawn', 'joined'].includes(a.stage)).map((a) => candById(a.candId)).filter((c) => c && !cvIn(c));
+  sendCvLinks(cs, `CV links for ${r.title}`); };
+
+VIEWS.shortlist = () => {
+  const r = reqById(R.arg); if (!r || !canSeeReq(r)) return { title: 'Shortlisting', html: '<div class="card empty">This requisition is not available.</div>' };
+  const q = R.q; const min = q.get('min') !== null ? Math.max(0, Math.min(100, +q.get('min') || 0)) : matchMin(r);
+  const pm = q.get('pm') !== null ? q.get('pm') === '1' : r.primaryMust !== false; const onlyIn = q.get('in') !== '0';
+  const rule = { ...r, autoShortlist: true, matchMin: min, primaryMust: pm };
+  const apps = S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced');
+  const rows = apps.map((a) => { const c = candById(a.candId); const m = skillMatch(c, rule); const ready = !onlyIn || cvIn(c); return { a, c, m, ready, ok: ready && meetsShortlist(m, rule) }; })
+    .sort((x, y) => (y.ok - x.ok) || ((y.m || {}).pct ?? -1) - ((x.m || {}).pct ?? -1) || x.c.name.localeCompare(y.c.name));
+  const noCv = rows.filter((x) => !cvIn(x.c)); const needSkills = reqSkills(r).length;
+  const why = (x) => { if (!needSkills) return 'No skills on the requisition'; if (!x.ready) return 'CV not received yet'; if (!x.m || x.m.unrated) return `${x.m ? x.m.unrated : ''} skill${x.m && x.m.unrated === 1 ? '' : 's'} not rated`;
+    if (x.m.pct < min) return `Below ${min}%`; if (pm && !x.m.primaryOk) return 'A primary skill is below the level'; return 'Meets the rules'; };
+  const runs = (r.shortlistRuns || []).slice(-3).reverse();
+  return { title: `Shortlisting: ${r.title}`, html: `
+    <div class="card"><div class="hd"><div><h2>${esc(r.no)} ${esc(r.title)}</h2><p class="sub">Candidates in Sourced, ranked by skills match. Review the proposal, untick or tick anyone, then shortlist. Shortlisted candidates move to Screening.</p></div>
+      <div class="tools"><a class="btn" href="#/req/${r.id}">Back to the requisition</a></div></div>
+      ${needSkills ? skillsNeededHtml({ ...r, autoShortlist: false }) : '<div class="note warn">This requisition lists no skills. Edit it and add the primary and secondary skills needed, so candidates can be matched.</div>'}
+      <div class="form" style="margin-top:12px">
+        <label class="field">Minimum skills match (%)<input class="inp" type="number" min="0" max="100" value="${min}" data-ch="slSet" data-k="min"></label>
+        <label class="chk" style="align-self:end"><input type="checkbox" ${pm ? 'checked' : ''} data-ch="slSet" data-k="pm"> Every primary skill at the level needed</label>
+        <label class="chk" style="align-self:end"><input type="checkbox" ${onlyIn ? 'checked' : ''} data-ch="slSet" data-k="in"> Only candidates who sent their CV</label>
+        <label class="chk" style="align-self:end"><input type="checkbox" id="slRej"> Move the others with a CV to Rejected</label></div></div>
+    <div class="grid g4" style="margin:12px 0">
+      <div class="kpi"><span>In Sourced</span><b>${rows.length}</b></div><div class="kpi"><span>CV received</span><b>${rows.length - noCv.length}</b></div>
+      <div class="kpi"><span>Waiting for their CV</span><b>${noCv.length}</b><small>${noCv.length ? '<button class="btn sm" data-act="slLinks">Send them the link</button>' : ''}</small></div>
+      <div class="kpi"><span>Proposed for shortlist</span><b>${rows.filter((x) => x.ok).length}</b></div></div>
+    <div class="card">${rows.length ? `<div class="scroll"><table class="t" id="slT"><thead><tr><th style="width:34px"><input type="checkbox" aria-label="Tick all" data-ch="slAll"></th><th>Candidate</th><th>CV</th><th>Skills match</th><th>Below the level needed</th><th>Proposal</th></tr></thead><tbody>
+      ${rows.map((x) => { const st = cvStatus(x.c); return `<tr><td><input type="checkbox" value="${x.a.id}" ${x.ok ? 'checked' : ''} aria-label="Shortlist ${esc(x.c.name)}"></td>
+        <td><a href="#/app/${x.a.id}"><b>${esc(x.c.name)}</b></a><div class="fine">${esc([x.c.expYears ? `${num(x.c.expYears, 1)} yrs` : '', [x.c.currentTitle, x.c.currentCompany].filter(Boolean).join(' at ')].filter(Boolean).join(', ') || x.c.email || '')}</div></td>
+        <td><span class="badge ${st[1]}">${st[0]}</span></td><td>${matchBadge(x.m) || '<span class="fine">—</span>'}</td>
+        <td class="fine">${x.m && x.m.gaps.length ? esc(x.m.gaps.map((g) => `${skillName(g.skillId)}${g.need === 'primary' ? ' (primary)' : ''}`).join(', ')) : '—'}</td>
+        <td>${x.ok ? '<span class="badge ok">Shortlist</span>' : `<span class="fine">${esc(why(x))}</span>`}</td></tr>`; }).join('')}</tbody></table></div>
+      <div class="btns"><button class="btn pri" data-act="slGo">Shortlist the ticked candidates</button></div>`
+      : `<div class="empty">Nobody is in Sourced for this requisition. <a href="#/req/${r.id}">Assign CVs</a> first.</div>`}</div>
+    ${runs.length ? `<div class="card"><h2>Earlier runs</h2><table class="t"><tbody>${runs.map((x) => `<tr><td>${dt(x.at)}</td><td>${esc(nameOf(x.by))}</td><td>${x.shortlisted.length} shortlisted${x.rejected.length ? `, ${x.rejected.length} rejected` : ''}</td><td class="fine">At ${x.min}%${x.primaryMust ? ', primary skills at level' : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}` };
+};
+ACT.slSet = (el) => { const q = new URLSearchParams(R.q); q.set(el.dataset.k, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value); go(`#/shortlist/${R.arg}?${q}`); };
+ACT.slAll = (el) => { $$('#slT tbody input[type=checkbox]').forEach((x) => { x.checked = el.checked; }); };
+ACT.slLinks = () => { const r = reqById(R.arg); const cs = S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced').map((a) => candById(a.candId)).filter((c) => c && !cvIn(c)); sendCvLinks(cs, `CV links for ${r.title}`); };
+ACT.slGo = async () => {
+  const r = reqById(R.arg); const ids = $$('#slT tbody input:checked').map((x) => x.value); const rej = $('#slRej') && $('#slRej').checked;
+  const min = R.q.get('min') !== null ? +R.q.get('min') : matchMin(r); const pm = R.q.get('pm') !== null ? R.q.get('pm') === '1' : r.primaryMust !== false;
+  const others = rej ? S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced' && !ids.includes(a.id) && cvIn(candById(a.candId))) : [];
+  if (!ids.length && !others.length) { toast('Tick at least one candidate.'); return; }
+  if (!(await confirmBox('Run the shortlisting?', `${ids.length} move to Screening${others.length ? ` and ${others.length} to Rejected` : ''}.`, 'Shortlist'))) return;
+  ids.forEach((id) => { const a = appById(id); const m = skillMatch(candById(a.candId), r); setStage(a, 'screening', `Shortlisted${m ? `: skills match ${m.pct}%` : ''}`); });
+  others.forEach((a) => { const m = skillMatch(candById(a.candId), r); setStage(a, 'rejected', `Not shortlisted${m ? `: skills match ${m.pct}%` : ''}`); });
+  (r.shortlistRuns = r.shortlistRuns || []).push({ at: Date.now(), by: me.id, min, primaryMust: pm, shortlisted: ids, rejected: others.map((a) => a.id) });
+  audit('Shortlisting run', `${r.no}: ${ids.length} shortlisted, ${others.length} rejected`, 'recruitment');
+  saveNow(); toast(`${ids.length} shortlisted${others.length ? `, ${others.length} rejected` : ''}`); go(`#/req/${r.id}`);
+};
+
+/* ---------------------------------------------------------------- 2.13: set-up pages: field settings and code numbering */
+const CANDFORM_FIELDS = [['firstName', 'First name', 1], ['lastName', 'Last name'], ['gender', 'Gender', 1, 'select'], ['dob', 'Date of birth', 1, 'date'], ['marital', 'Marital status', 0, 'select'],
+  ['fatherName', 'Father’s or husband’s name'], ['blood', 'Blood group', 0, 'select'], ['nationality', 'Nationality'], ['phone', 'Mobile', 1], ['altPhone', 'Other phone'], ['languages', 'Languages you speak'],
+  ['linkedin', 'LinkedIn profile'], ['address', 'Current address', 1, 'textarea'], ['addrCity', 'City', 1], ['addrState', 'State or union territory', 0, 'select'], ['addrPin', 'PIN code'], ['permAddress', 'Permanent address', 0, 'textarea'],
+  ['emergencyName', 'Emergency contact: name', 1], ['emergencyRelation', 'Emergency contact: relationship'], ['emergencyPhone', 'Emergency contact: phone', 1], ['pan', 'PAN', 0, 'fixed'], ['aadhaar', 'Aadhaar number', 0, 'fixed'],
+  ['uan', 'UAN (PF)', 0, 'fixed'], ['bankName', 'Bank', 0, 'select'], ['bankAcc', 'Bank account number'], ['ifsc', 'IFSC', 0, 'fixed'], ['currentCompany', 'Current or last employer'], ['currentTitle', 'Current role'],
+  ['expYears', 'Total experience (years)', 0, 'number'], ['currentCtc', 'Current annual CTC', 0, 'number'], ['expectedCtc', 'Expected annual CTC', 0, 'number'], ['noticeDays', 'Notice period (days)', 0, 'number'],
+  ['skills', 'Other skills'], ['about', 'Anything else', 0, 'textarea']].map(([k, label, req, type]) => ({ k, label, req: !!req, type: type === 'fixed' ? 'select' : type }));
+function formRegistry() {
+  const out = [
+    { id: 'bg.prevJobs', group: 'Employee profile, Background tab', title: 'Previous job', fields: BG.prevJobs.fields },
+    { id: 'bg.education', group: 'Employee profile, Background tab', title: 'Qualification', fields: BG.education.fields },
+    { id: 'bg.awards', group: 'Employee profile, Background tab', title: 'Award', fields: BG.awards.fields },
+    { id: 'bg.references', group: 'Employee profile, Background tab', title: 'Reference', fields: BG.references.fields },
+    { id: 'req', group: 'Recruitment', title: 'Job requisition', fields: REQ_FIELDS() },
+    { id: 'cand', group: 'Recruitment', title: 'Candidate, added by HR', fields: CAND_FIELDS },
+    { id: 'candform', group: 'Recruitment', title: 'Candidate’s own form (the CV format)', fields: CANDFORM_FIELDS, note: 'The candidate cannot send the form until every required field is filled in.' },
+  ];
+  /* set-up screens built on the common list dialog: open them once so their dialogs are known */
+  ['masters', 'leaveadmin', 'paysetup', 'expcats', 'otpolicy', 'roster', 'cycles'].forEach((v) => { try { if (VIEWS[v]) VIEWS[v](); } catch (e) { /* a screen that needs more context is left out */ } });
+  Object.entries(CRUD).filter(([id]) => !['companies'].includes(id)).forEach(([id, o]) => out.push({ id: 'crud.' + id, group: 'Set-up lists', title: o.title, fields: o.fields }));
+  return out;
+}
+VIEWS.fieldsetup = () => {
+  if (!isHR()) return { title: 'Field settings', html: '<div class="card empty">Only HR sets the fields.</div>' };
+  const co = company(); const reg = formRegistry(); const groups = [...new Set(reg.map((x) => x.group))]; const open = R.q.get('f') || '';
+  const row = (fm, f) => { const r = ((co.fieldRules || {})[fm.id] || {})[f.k] || {}; const fixed = !!f.req;
+    return `<tr><td>${esc(f.label)}</td><td>${!ruleable(f) ? '<span class="fine">—</span>' : fixed ? '<span class="badge">Always required</span>'
+      : `<select class="inp" style="padding:3px 6px" data-ch="frSet" data-form="${fm.id}" data-k="${f.k}" data-w="req" data-l="${esc(f.label)}" aria-label="${esc(f.label)}: required or optional"><option value="0">Optional</option><option value="1" ${r.req ? 'selected' : ''}>Required</option></select>`}</td>
+      <td>${lenable(f) ? `<input class="inp" style="padding:3px 6px;width:110px" type="number" min="1" max="2000" placeholder="No limit" value="${r.max || ''}" data-ch="frSet" data-form="${fm.id}" data-k="${f.k}" data-w="max" data-l="${esc(f.label)}" aria-label="${esc(f.label)}: longest entry">` : '<span class="fine">—</span>'}</td></tr>`; };
+  return { title: 'Field settings', html: `<div class="card"><h2>Field settings for ${esc(co.name)}</h2><p class="sub">For each data-entry screen, choose which fields must be filled in and how long a text entry may be. Fields the software needs are always required. Changes apply the next time a screen is opened; the candidate’s form follows them too.</p></div>
+    ${groups.map((g) => `<h3 style="margin:18px 4px 8px">${esc(g)}</h3>${reg.filter((x) => x.group === g).map((fm) => { const n = Object.values((co.fieldRules || {})[fm.id] || {}).filter((x) => x.req || x.max).length;
+      return `<details class="card" ${open === fm.id ? 'open' : ''}><summary style="cursor:pointer"><b>${esc(fm.title)}</b> <span class="fine">${fm.fields.filter(ruleable).length} fields${n ? `, ${n} set` : ''}</span></summary>
+        ${fm.note ? `<p class="fine">${esc(fm.note)}</p>` : ''}<div class="scroll"><table class="t"><thead><tr><th>Field</th><th>Required or optional</th><th>Longest entry (characters)</th></tr></thead><tbody>${fm.fields.filter((f) => f.label).map((f) => row(fm, f)).join('')}</tbody></table></div></details>`; }).join('')}`).join('')}` };
+};
+ACT.frSet = (el) => {
+  const co = company(); if (!isHR(co.id)) return; const fr = co.fieldRules = { ...(co.fieldRules || {}) }; const f = fr[el.dataset.form] = { ...(fr[el.dataset.form] || {}) };
+  const r = f[el.dataset.k] = { ...(f[el.dataset.k] || {}), label: el.dataset.l };
+  if (el.dataset.w === 'req') r.req = el.value === '1'; else { const n = Math.round(+el.value); if (el.value !== '' && (!(n >= 1) || n > 2000)) { toast('Enter a length from 1 to 2000 characters, or leave it empty.'); el.value = r.max || ''; return; } r.max = el.value === '' ? 0 : n; }
+  if (!r.req && !r.max) delete f[el.dataset.k];
+  audit('Field settings changed', `${el.dataset.form}: ${el.dataset.l}`, 'org'); saveNow(); toast('Saved');
+};
+VIEWS.numbering = () => {
+  if (!isHR()) return { title: 'Code numbering', html: '<div class="card empty">Only HR sets code numbering.</div>' };
+  const co = company();
+  return { title: 'Code numbering', html: `<div class="card"><h2>Code numbering for ${esc(co.name)}</h2><p class="sub">Codes given automatically: a prefix followed by a running number. With numbering on, the code is filled in when an entry is added and cannot be typed. The next number follows the highest code already in use with the same prefix, so existing codes stay as they are.</p>
+    <div class="scroll"><table class="t"><thead><tr><th>List</th><th>Automatic</th><th>Prefix</th><th>Digits</th><th>Next code</th></tr></thead><tbody>
+    ${Object.entries(NUMBERED).map(([k, [label]]) => { const n = numberingOf(k); return `<tr><td><b>${esc(label)}</b></td>
+      <td><label class="chk"><input type="checkbox" ${n.on ? 'checked' : ''} data-ch="numSet" data-k="${k}" data-w="on"> On</label></td>
+      <td><input class="inp" style="padding:3px 6px;width:110px" maxlength="10" value="${esc(n.prefix)}" data-ch="numSet" data-k="${k}" data-w="prefix" aria-label="${esc(label)}: prefix"></td>
+      <td><input class="inp" style="padding:3px 6px;width:70px" type="number" min="1" max="8" value="${n.digits}" data-ch="numSet" data-k="${k}" data-w="digits" aria-label="${esc(label)}: digits"></td>
+      <td class="mono">${n.on ? esc(nextCode(k)) : `<span class="fine">${esc(nextCode(k))} when on</span>`}</td></tr>`; }).join('')}</tbody></table></div>
+    <p class="fine">Employee numbers follow the company code (Companies), and job requisitions keep their numbers from before numbering was turned on.</p></div>` };
+};
+ACT.numSet = (el) => {
+  const co = company(); if (!isHR(co.id)) return; const k = el.dataset.k; const cur = numberingOf(k); const nb = co.numbering = { ...(co.numbering || {}) };
+  const x = nb[k] = { on: cur.on, prefix: cur.prefix, digits: cur.digits };
+  if (el.dataset.w === 'on') x.on = el.checked;
+  else if (el.dataset.w === 'prefix') { const p = el.value.trim(); if (!/^[A-Za-z0-9/_-]{0,10}$/.test(p)) { toast('Use up to 10 letters, digits, - / or _ in the prefix.'); el.value = cur.prefix; return; } x.prefix = p.toUpperCase(); }
+  else { const d = Math.round(+el.value); if (!(d >= 1 && d <= 8)) { toast('Use 1 to 8 digits.'); el.value = cur.digits; return; } x.digits = d; }
+  audit('Code numbering changed', `${NUMBERED[k][0]}: ${x.on ? `${x.prefix} + ${x.digits} digits` : 'off'}`, 'org'); saveNow(); toast('Saved'); route();
+};
+
 /* what the candidate entered, onto their new employee record */
 function applyCandForm(e, c, coId) {
   const d = cfData(c); if (!d) return 0;

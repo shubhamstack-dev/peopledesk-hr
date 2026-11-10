@@ -342,9 +342,21 @@ def record_company(conn, coll: str, rec: dict, ctx: Ctx):
     return None
 
 
+CODED = {"depts": "departments", "desigs": "designations", "grades": "grades", "locations": "locations"}
+
+
 def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
     """Returns the record to store, or raises Rejected."""
     co_new, co_old = record_company(conn, coll, new, ctx), record_company(conn, coll, old, ctx)
+    if coll in CODED and str(new.get("code") or "").strip():
+        # two departments, designations, grades or locations of one company never share a code (checked here too,
+        # not only on the screen)
+        from sqlalchemy import text as _t
+        clash = conn.execute(_t(f"SELECT JSON_UNQUOTE(JSON_EXTRACT(data, '$.name')) FROM {CODED[coll]} WHERE company_id=:c AND id<>:i "
+                                "AND UPPER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data, '$.code'))))=:k LIMIT 1"),
+                             {"c": new.get("companyId") or co_new, "i": new.get("id"), "k": str(new["code"]).strip().upper()}).scalar()
+        if clash:
+            raise Rejected(f"{clash} already has the code {str(new['code']).strip()}")
     if coll == "cands":
         # what the candidate entered through their link is kept as stored (candform.py)
         try:

@@ -331,3 +331,10 @@ ul.otree{display:flex;justify-content:center;margin:0;padding:0;transform-origin
 .sklevels td{vertical-align:middle}
 @media (max-width:560px){.skrow{grid-template-columns:minmax(0,1fr) auto}.skrow [data-sklv]{grid-column:1;grid-row:2}.skrow [data-sknew]{grid-row:3}}
 @media (max-width:560px){.respm .t th,.respm .t td{padding:6px 5px}.respm .t th.c{white-space:normal;font-size:11px;width:58px;line-height:1.2}}
+/* 2.13: required mark, field settings */
+.reqm{color:var(--bad,#b3261e);font-weight:700}
+details.card>summary{list-style:none}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:'▸ ';color:var(--muted)}
+details.card[open]>summary::before{content:'▾ '}
+details.card[open]>summary{margin-bottom:10px}
