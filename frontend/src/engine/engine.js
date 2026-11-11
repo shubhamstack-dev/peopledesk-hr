@@ -1257,7 +1257,7 @@ VIEWS.profile = () => {
   const co = coById(e.companyId);
   return { title: mine ? 'My profile' : fullName(e), html: `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">${photoBox(e, hr || mine)}
       <div style="flex:1;min-width:220px"><h2 style="font-size:22px">${esc(fullName(e))}</h2><div class="mut">${esc((desig(e.desigId) || {}).name || 'No designation')}, ${esc((dept(e.deptId) || {}).name || 'no department')}</div>
-        <div class="fine">${esc(e.empNo)}, ${esc(co ? co.name : '')}, ${esc((loc(e.locationId) || {}).name || '')}. Joined ${dmy(e.doj)}. Reports to ${esc(nameOf(e.managerId))}${(e.matrixManagerIds || []).length ? `; dotted line to ${esc(e.matrixManagerIds.map(nameOf).join(', '))}` : ''}.</div></div>
+        <div class="fine">${esc([e.empNo, co ? co.name : '', (loc(e.locationId) || {}).name].filter(Boolean).join(', '))}. Joined ${dmy(e.doj)}. Reports to ${esc(nameOf(e.managerId))}${(e.matrixManagerIds || []).length ? `; dotted line to ${esc(e.matrixManagerIds.map(nameOf).join(', '))}` : ''}.</div></div>
       <div class="tools">${statusBadge(e)}${hr && e.status === 'active' ? `<button class="btn" data-act="empActions" data-id="${e.id}">Personnel action</button><button class="btn" data-act="empLink" data-id="${e.id}" title="A link to set a password, for people without a company Google or Microsoft account">Access link</button>` : ''}
         ${exitOf(e.id) && !mine && (hr || e.managerId === me.id) && e.status !== 'active' ? `<a class="btn" href="#/exit/${exitOf(e.id).id}">Exit process</a>` : ''}${mine && e.status === 'active' && !openExitOf(e.id) ? '<button class="btn" data-act="resign">Resign</button>' : ''}
         ${mine && openExitOf(e.id) ? `<a class="btn" href="#/exit/${openExitOf(e.id).id}">My resignation</a>` : ''}${hr && e.status === 'exited' ? `<button class="btn pri" data-act="rehireStart" data-id="${e.id}">Rehire</button>` : ''}</div></div></div>
@@ -10341,7 +10341,9 @@ const LEAVE_REASONS = ['Better role or career growth', 'Higher pay', 'Relocation
 const photoUrl = (e) => (e && e.photoId ? `/api/files/${e.photoId}` : '');
 function avatar(e, tag = 'span', cls = '') { const u = photoUrl(e); return `<${tag} class="av ${cls}">${u ? `<img src="${u}" alt="" loading="lazy">` : esc(initials(fullName(e)))}</${tag}>`; }
 function photoBox(e, can) {
-  return `<div class="photobox">${avatar(e, 'div', 'lg')}${can ? `<label class="btn sm ghost">${e.photoId ? 'Change photo' : 'Add photo'}<input type="file" accept="image/jpeg,image/png,image/webp" hidden data-ch="photoPick" data-id="${e.id}"></label>${e.photoId ? `<button class="btn sm ghost" data-act="photoRemove" data-id="${e.id}">Remove</button>` : ''}` : ''}</div>`;
+  // the picture itself also opens the file picker (a label pointing at the same file input)
+  const pick = `ph-${e.id}`;
+  return `<div class="photobox">${can ? `<label for="${pick}" class="avpick" title="${e.photoId ? 'Change photo' : 'Add photo'}" aria-label="${e.photoId ? 'Change photo' : 'Add photo'}">${avatar(e, 'div', 'lg')}<span class="avcam" aria-hidden="true">📷</span></label>` : avatar(e, 'div', 'lg')}${can ? `<label class="btn sm ghost">${e.photoId ? 'Change photo' : 'Add photo'}<input id="${pick}" type="file" accept="image/jpeg,image/png,image/webp" hidden data-ch="photoPick" data-id="${e.id}"></label>${e.photoId ? `<button class="btn sm ghost" data-act="photoRemove" data-id="${e.id}">Remove</button>` : ''}` : ''}</div>`;
 }
 /* a square crop, at most 320 pixels, as JPEG: small enough for the organisation chart */
 async function squarePhoto(file, size = 320) {
