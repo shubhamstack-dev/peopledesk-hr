@@ -18,19 +18,25 @@ const BLANK_ROW = {
   prevJobs: { employer: '', designation: '', location: '', from: '', to: '', empCode: '', lastCtc: '', reason: '', mainResp: [], secResp: [], duties: '', contact: '' },
   references: { name: '', organisation: '', designation: '', relation: '', phone: '', email: '', years: '' },
   family: { relation: 'Father', name: '', dob: '', gender: '', occupation: '', phone: '', dependant: false },
+  awards: { title: '', issuer: '', date: '', category: 'Professional', description: '' },
 };
 const LIST_FIELDS = {
   education: [['level', 'Level', 'select', () => E.EDU_LEVELS.map((x) => [x, x])], ['qualification', 'Qualification (e.g. B.E., B.Com, ITI Fitter)'], ['specialisation', 'Subject or specialisation'],
     ['institution', 'School, college or institute'], ['university', 'Board or university'], ['mode', 'Mode', 'select', () => [['full', 'Full time'], ['part', 'Part time'], ['distance', 'Distance or online']]],
     ['fromYear', 'From (year)', 'number'], ['toYear', 'Passed in (year)', 'number'], ['score', 'Result (e.g. 78.4 or First class)'], ['scoreType', 'Result as', 'select', () => [['pct', 'Percentage'], ['cgpa', 'CGPA'], ['grade', 'Grade or class']]]],
-  prevJobs: [['employer', 'Employer', 'pick', 'employers'], ['designation', 'Designation', 'pick', 'designations'], ['location', 'City'], ['from', 'From', 'month'], ['to', 'To (empty if current)', 'month'], ['empCode', 'Employee number there'],
-    ['lastCtc', 'Last annual CTC (₹)', 'number'], ['reason', 'Reason for leaving'], ['resp', 'Responsibilities', 'resp'], ['duties', 'Other responsibilities, in your words', 'textarea'], ['contact', 'HR contact there (name, e-mail or phone)']],
+  prevJobs: [['employer', 'Employer', 'pick', 'employers'], ['designation', 'Designation', 'pick', 'designations'], ['location', 'City', 'pick', 'cities'], ['from', 'From', 'month'], ['to', 'To (empty if current)', 'month'], ['empCode', 'Employee number there'],
+    ['lastCtc', 'Last annual CTC (₹)', 'number'], ['reason', 'Reason for leaving', 'pick', 'leaveReasons'], ['resp', 'Responsibilities', 'resp'], ['duties', 'Other responsibilities, in your words', 'textarea'], ['contact', 'HR contact there (name, e-mail or phone)']],
   references: [['name', 'Name'], ['organisation', 'Organisation', 'pick', 'employers'], ['designation', 'Their designation', 'pick', 'designations'], ['relation', 'How they know you (e.g. former manager)'], ['phone', 'Phone'], ['email', 'E-mail', 'email'], ['years', 'Known for (years)', 'number']],
   family: [['relation', 'Relationship', 'select', () => E.FAMILY_RELATIONS.map((x) => [x, x])], ['name', 'Name'], ['dob', 'Date of birth', 'date'], ['gender', 'Gender', 'select', () => [['', '—'], ...GENDERS]],
     ['occupation', 'Occupation'], ['phone', 'Phone'], ['dependant', 'Depends on me', 'check']],
+  /* 2.14 */
+  awards: [['title', 'Award or achievement'], ['issuer', 'Given by (organisation or body)'], ['date', 'Date', 'date'],
+    ['category', 'Kind', 'select', () => [['Professional', 'Professional'], ['Academic', 'Academic'], ['Sports', 'Sports'], ['Community', 'Community and social'], ['Other', 'Other']]],
+    ['description', 'What it was for', 'textarea']],
 };
 const LIST_TITLES = { education: ['Education', 'qualification', 'Your schooling, degrees, diplomas and certifications, highest first.'], prevJobs: ['Previous employment', 'job', 'Your employers so far, latest first. Leave empty if this is your first job.'],
-  references: ['References', 'reference', 'People who can confirm your work, such as a former manager.'], family: ['Family', 'family member', 'Parents, spouse and children: for medical insurance and nominations.'] };
+  references: ['References', 'reference', 'People who can confirm your work, such as a former manager.'], family: ['Family', 'family member', 'Parents, spouse and children: for medical insurance and nominations.'],
+  awards: ['Awards and achievements', 'award', 'Academic, professional, sports or community recognition. Leave empty if none.'] };
 
 function Field({ label, type = 'text', value, onChange, opts, wide, help, disabled, req, maxLength }) {
   let input;
@@ -38,7 +44,7 @@ function Field({ label, type = 'text', value, onChange, opts, wide, help, disabl
   else if (type === 'textarea') input = <textarea className="inp" value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} maxLength={maxLength} required={req} />;
   else if (type === 'check') return <label className="chk" style={{ alignSelf: 'end' }}><input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} disabled={disabled} /> {label}</label>;
   else input = <input className="inp" type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} disabled={disabled} inputMode={type === 'number' ? 'decimal' : undefined} maxLength={type === 'number' || type === 'date' ? undefined : maxLength} required={req} />;
-  return <label className={`field${wide ? ' wide' : ''}`}>{label}{req && <span className="reqm" aria-label="required"> *</span>}{input}{help && <small>{help}</small>}</label>;
+  return <label className={`field${wide ? ' wide' : ''}`}><span>{label}{req && <span className="reqm" aria-label="required"> *</span>}</span>{input}{help && <small>{help}</small>}</label>;
 }
 
 /* 2.12: a drop-down from the company's list, with Others for a name that is not there */
@@ -100,7 +106,7 @@ export default function CandidateForm({ onDone }) {
 
   useEffect(() => {
     if (!token) { setBad('This link is not complete. Open it again from the message you were sent.'); return; }
-    api.post('/api/apply/open', { token }).then((r) => { setInfo(r); setD({ education: [], prevJobs: [], references: [], family: [], skillLevels: {}, ...r.data }); }).catch((e) => setBad(e.message));
+    api.post('/api/apply/open', { token }).then((r) => { setInfo(r); setD({ education: [], prevJobs: [], references: [], family: [], skillLevels: {}, ...r.data, awards: (r.data && r.data.awards) || [] }); }).catch((e) => setBad(e.message));
   }, [token]);
 
   if (bad) return (
@@ -116,7 +122,7 @@ export default function CandidateForm({ onDone }) {
   const isReq = (k) => ALWAYS.includes(k) || !!(rules[k] && rules[k].req);
   const F = (k, label, type, extra = {}) => <Field label={label} type={type} value={d[k]} onChange={set(k)} disabled={ro} req={isReq(k)} maxLength={(rules[k] && rules[k].max) || undefined} {...extra} />;
   const states = [['', 'Choose'], ...E.IN_STATES.map((x) => [x, x]), ['Outside India', 'Outside India']];
-  const lists = info.lists || { employers: [], designations: [], responsibilities: [] };
+  const lists = { employers: [], designations: [], responsibilities: [], cities: [], leaveReasons: [], ...(info.lists || {}) };
   const skills = info.skills || [];
   const levels = Object.entries(info.levels || { 0: 'None', 1: 'Basic', 2: 'Working', 3: 'Advanced', 4: 'Expert' });
   const lv = d.skillLevels || {};
@@ -160,6 +166,7 @@ export default function CandidateForm({ onDone }) {
     <div className="apply" ref={top}>
       <div className="apply-head"><span className="logo"><img src="/aequm-mark.png" alt="" /></span>
         <div><b>{info.company}</b><small>Your details{info.jobs.length ? ` for ${info.jobs.join(', ')}` : ''}</small></div></div>
+      {info.jobs.length > 0 && !ro && <div className="note">You are applying for <b>{info.jobs.join(', ')}</b>. You do not need a CV to start: fill in your experience, education{skills.length ? ', your level in the skills the job needs' : ''} and the rest, and attach a CV later if you have one.</div>}
       <div className="card"><h2>Hello {info.name.split(' ')[0]}</h2>
         <p className="sub">{ro ? (info.status === 'submitted' ? 'Your details have been sent to HR. If something needs to change, HR will contact you.' : 'This form is closed.')
           : 'Please fill in your details and attach your CV. You can save and come back to this link before you send it. When you join, these details go into your employee record, so you do not need to enter them again. Fields marked * must be filled in before you send the form.'}</p>
@@ -210,7 +217,7 @@ export default function CandidateForm({ onDone }) {
         </div>
       )}
 
-      {listCard('education')}{listCard('prevJobs')}{listCard('references')}{listCard('family')}
+      {listCard('education')}{listCard('prevJobs')}{listCard('awards')}{listCard('references')}{listCard('family')}
 
       <div className="card"><h2>CV</h2>
         <p className="sub">{info.cv ? `Attached: ${info.cv.name}.` : 'No CV attached yet.'}{cv ? ` Ready to save: ${cv.name}.` : ''}</p>

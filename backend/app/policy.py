@@ -24,13 +24,15 @@ Teams (2.10), given by HR on the employee record (`teams`), for their own compan
 """
 from dataclasses import dataclass, field
 
+from sqlalchemy import text
+
 from . import candform, comp, perf, repo, training, workforce
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
            "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns",
            "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles", "contractors",
-           "goalLib"}
+           "goalLib", "reimbRuns"}
 # Performance meetings and succession plans follow their own rules (perf.py)
 PERF = {"perfMeetings", "succession"}
 # Compensation planning: budgets and recommendations follow their own rules (comp.py)
@@ -235,6 +237,8 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
     training.visible(st, ctx)
     perf.visible(st, ctx)
     st["cands"] = [x if ctx.is_hr_for(x.get("companyId")) else candform.redact(x) for x in st.get("cands", [])]
+    # 2.15: reimbursement runs are Finance's and HR's; employees see the run number on their claims
+    st["reimbRuns"] = [x for x in st.get("reimbRuns", []) if ctx.is_hr_for(x.get("companyId")) or fin(x.get("companyId"))]
     hr_cos = {c.get("id") for c in st.get("companies", []) if ctx.is_hr_for(c.get("id"))}
     st["masterItems"] = [x for x in st.get("masterItems", []) if x.get("companyId") in hr_cos] + \
         workforce.visible_masters([x for x in st.get("masterItems", []) if x.get("companyId") not in hr_cos], ctx.id)
@@ -376,6 +380,7 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
     hr_ok = all(c is None or ctx.is_hr_for(c) for c in (co_new, co_old)) and ctx.is_hr
 
     if coll == "employees":
+        _check_photo(conn, new, old, ctx, hr_ok)
         return _employee(new, old, ctx, hr_ok)
 
     if hr_ok:
@@ -581,6 +586,21 @@ def _participant(coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
             if {k: v for k, v in t.items() if k != "log"} != {k: v for k, v in ot.items() if k != "log"} and ctx.id not in (ot.get("ownerIds") or []):
                 raise Rejected("that task belongs to another department")
     return merged
+
+
+def _check_photo(conn, new: dict, old: dict | None, ctx: Ctx, hr_ok: bool):
+    """2.15: a profile photo is seen by everyone in the company, so it must be an image uploaded by the person setting
+    it (or by HR), never another file the writer happens to know the id of."""
+    pid = new.get("photoId")
+    if not pid or pid == (old or {}).get("photoId"):
+        return
+    if not isinstance(pid, str) or len(pid) > 64:
+        raise Rejected("that photo cannot be used")
+    row = conn.execute(text("SELECT mime, owner_emp FROM files WHERE id=:i"), {"i": pid}).fetchone()
+    if not row or not str(row.mime or "").startswith("image/"):
+        raise Rejected("the photo must be an image")
+    if row.owner_emp != ctx.id and not hr_ok:
+        raise Rejected("upload the photo yourself")
 
 
 def _employee(new: dict, old: dict | None, ctx: Ctx, hr_ok: bool) -> dict:

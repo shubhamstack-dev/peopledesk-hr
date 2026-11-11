@@ -30,6 +30,8 @@ PeopleDesk HR API (the middle tier between the React app and MySQL).
   POST /api/contractor/workers/{id}/access   contractor portal: an access link for a worker
   POST /api/contractor/password      contractor portal: change your password
   POST /api/candidate-form/link      HR: a link with which a candidate fills in their details and CV
+  POST /api/reimb/run                Finance or HR: pay the approved expense claims now (reimbursement run)
+  POST /api/reimb/paid               Finance or HR: record the bank transfer of a reimbursement run
   POST /api/apply/open               the candidate's form, from that link (no session)
   POST /api/apply/save               the candidate saves or sends the form (no session)
 """
@@ -47,7 +49,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import candform, doctemplates, mailer, migrate, perf, policy, portal, repo, training, workforce
+from . import candform, doctemplates, mailer, migrate, perf, policy, portal, reimb, repo, training, workforce
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
@@ -62,6 +64,8 @@ app = FastAPI(title="PeopleDesk HR API", version="2.0")
 @app.on_event("startup")
 def _migrate():
     migrate.run(repo.engine)
+    # 2.15: automatic reimbursement runs on each company's cycle
+    reimb.start(repo.engine, send=mailer.send if mailer.configured() else None)
 if CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                        allow_methods=["GET", "POST"], allow_headers=["content-type", "x-peopledesk"])
@@ -558,10 +562,11 @@ def candidate_form_link(body: CandLinkBody, request: Request, me=Depends(current
         co = repo.get_records(conn, "companies", [cand.get("companyId")]).get(cand.get("companyId")) or {}
         url = candform.link_url(_base_url(request), candform.make_link(cand["id"], nonce))
         form = rec["form"]
+        jobs = candform.job_titles(conn, cand)
     sent = False
     to = cand.get("email") or ""
     if body.send and to and mailer.configured():
-        subject, text_ = candform.link_mail(cand.get("name") or "", co.get("legalName") or co.get("name", ""), url)
+        subject, text_ = candform.link_mail(cand.get("name") or "", co.get("legalName") or co.get("name", ""), url, jobs)
         try:
             mailer.send([to], subject, text_)
             sent = True
@@ -841,7 +846,12 @@ def wipe(resp: Response, me=Depends(current_user)):
 
 
 # ---------------------------------------------------------------- files (expense receipts and similar)
-ALLOWED_MIME = ("image/", "application/pdf")
+ALLOWED_MIME = ("image/", "application/pdf",
+                # 2.16: documents shared in the knowledge hub
+                "application/msword", "application/vnd.openxmlformats-officedocument.", "application/vnd.ms-excel",
+                "application/vnd.ms-powerpoint", "text/plain", "text/csv")
+# Never stored: an SVG (or HTML) opened from this site could run scripts in the user's session
+BLOCKED_MIME = ("image/svg+xml", "text/html", "application/xhtml+xml")
 
 
 def _store_file(data: bytes, filename: str, mime: str, company_id, owner_emp) -> str:
@@ -873,9 +883,11 @@ async def upload_file(file: UploadFile = File(...), me=Depends(current_user)):
     data = await file.read()
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(413, f"Files can be up to {MAX_UPLOAD_MB} MB.")
-    mime = file.content_type or "application/octet-stream"
+    mime = (file.content_type or "application/octet-stream").lower()
+    if mime.startswith(BLOCKED_MIME) or (file.filename or "").lower().endswith((".svg", ".svgz", ".html", ".htm")):
+        raise HTTPException(400, "This kind of file cannot be attached. Use a photo, a PDF or an Office document.")
     if not mime.startswith(ALLOWED_MIME):
-        raise HTTPException(400, "Attach a photo or a PDF.")
+        raise HTTPException(400, "Attach a photo, a PDF or an Office document.")
     fid = _store_file(data, file.filename, mime, me.get("companyId"), me["id"])
     return {"id": fid, "name": file.filename, "size": len(data), "mime": mime}
 
@@ -889,14 +901,28 @@ def get_file(fid: str, me=Depends(current_user)):
         allowed = r.owner_emp == me["id"] or (me.get("role") == "super" and r.company_id not in repo.registered_companies(conn)) or (me.get("role") == "hr" and r.company_id in {me.get("companyId"), *(me.get("hrCompanies") or [])})
         if not allowed:
             allowed = _file_visible(conn, fid, me)
+        photo = _photo_company(conn, fid)
+        if not allowed and photo:
+            # 2.15: a profile photo is seen by everyone in the employee's company (the organisation chart)
+            allowed = photo in {me.get("companyId"), *(me.get("hrCompanies") or [])} or (me.get("role") == "super" and photo not in repo.registered_companies(conn))
     if not allowed:
         raise HTTPException(403, "You cannot open this file.")
     root = os.path.realpath(UPLOAD_DIR)
     p = os.path.realpath(os.path.join(root, r.path))
     if not p.startswith(root + os.sep) or not os.path.isfile(p):
         raise HTTPException(404, "File not found")
-    # private, no-store: on a shared computer the next person signing in must not get the file from the browser cache
-    return FileResponse(p, media_type=r.mime, filename=r.name, content_disposition_type="inline", headers={"Cache-Control": "private, no-store"})
+    # private, no-store: on a shared computer the next person signing in must not get the file from the browser cache.
+    # Photos may be kept for an hour (a new photo is a new file), so the organisation chart does not fetch them each time.
+    cache = "private, max-age=3600" if photo else "private, no-store"
+    # nosniff: the browser keeps to the stored type; anything that is not a picture, a PDF or text is downloaded
+    inline = str(r.mime or "").startswith(("image/", "application/pdf", "text/plain")) and not str(r.mime).startswith(BLOCKED_MIME)
+    return FileResponse(p, media_type=r.mime, filename=r.name, content_disposition_type="inline" if inline else "attachment",
+                        headers={"Cache-Control": cache, "X-Content-Type-Options": "nosniff"})
+
+
+def _photo_company(conn, fid: str):
+    """The company of the employee whose profile photo this file is, or None."""
+    return conn.execute(text("SELECT company_id FROM employees WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.photoId'))=:f LIMIT 1"), {"f": fid}).scalar()
 
 
 def _file_visible(conn, fid: str, me: dict) -> bool:
@@ -919,6 +945,12 @@ def _file_visible(conn, fid: str, me: dict) -> bool:
             return True
         if any(perf.sees_meeting(repo.loads(d), me["id"], ctx.line) for _e, d in m_rows):
             return True
+    # 2.16: files on posts of the news and knowledge hub, for the people the post goes to
+    for _emp, d in hit("posts"):
+        p = repo.loads(d)
+        if p.get("status", "published") != "draft" and p.get("companyId") in {me.get("companyId"), *(me.get("hrCompanies") or [])} \
+                and (not p.get("depts") or me.get("deptId") in p["depts"]) and (not p.get("locations") or me.get("locationId") in p["locations"]):
+            return True
     tr_rows = hit("trainings")
     for _emp, d in tr_rows:     # training content: the trainers and the people who attended
         t = repo.loads(d)
@@ -933,6 +965,60 @@ def _file_visible(conn, fid: str, me: dict) -> bool:
             if emp == me["id"] or emp in ctx.line or any(me["id"] in (st or {}).get("approverIds", []) for st in rec.get("steps") or []):
                 return True
     return False
+
+
+# ---------------------------------------------------------------- 2.15: reimbursement runs (see reimb.py)
+class ReimbRunBody(BaseModel):
+    companyId: str
+    claimIds: list[str] | None = None
+
+
+class ReimbPaidBody(BaseModel):
+    runId: str
+    ref: str
+    paidOn: str
+
+
+def _reimb_ctx(conn, me, company_id):
+    ctx = _ctx(conn, me)
+    if not (ctx.is_hr_for(company_id) or ctx.is_finance_for(company_id)):
+        raise HTTPException(403, "Only Finance or HR runs reimbursements.")
+    return ctx
+
+
+@app.post("/api/reimb/run")
+def reimb_run(body: ReimbRunBody, me=Depends(current_user)):
+    """Finance or HR: pays the approved claims now, in the company's reimbursement mode (Run now)."""
+    with repo.engine.begin() as conn:
+        ctx = _reimb_ctx(conn, me, body.companyId)
+        co = repo.get_records(conn, "companies", [body.companyId]).get(body.companyId)
+        if not co:
+            raise HTTPException(404, "Company not found")
+        run = reimb.make_run(conn, co, reimb._today(), by=me["id"], only=body.claimIds, not_of="" if ctx.is_hr_for(body.companyId) else me["id"])
+        if not run:
+            raise HTTPException(400, "No approved claims are waiting to be paid.")
+        out = reimb.mails(conn, run, co) if (co.get("reimb") or {}).get("notify") and mailer.configured() else []
+    for to, subj, text_ in out:
+        try:
+            mailer.send([to], subj, text_)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Reimbursement mail to %s failed: %s", to, e)
+    return {"run": run, "mailed": len(out)}
+
+
+@app.post("/api/reimb/paid")
+def reimb_paid(body: ReimbPaidBody, me=Depends(current_user)):
+    """Finance or HR: the bank transfer of a run is made; its claims are paid."""
+    with repo.engine.begin() as conn:
+        run = repo.get_records(conn, "reimbRuns", [body.runId]).get(body.runId)
+        if not run:
+            raise HTTPException(404, "Run not found")
+        _reimb_ctx(conn, me, run.get("companyId"))
+        try:
+            run = reimb.mark_paid(conn, run, body.ref, body.paidOn, me["id"])
+        except reimb.Problem as e:
+            raise HTTPException(400, str(e)) from None
+    return {"run": run}
 
 
 class NotifyBody(BaseModel):

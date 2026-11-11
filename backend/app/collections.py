@@ -94,6 +94,9 @@ COLLS = [
     Coll("goalLib", "goal_library", {"code": ("code", "str"), "title": ("title", "str"), "kind": ("kind", "str")}),
     Coll("perfMeetings", "performance_meetings", {"kind": ("kind", "str"), "cycle_id": ("cycleId", "str"), "status": ("status", "str"), "day": ("date", "date")}),
     Coll("succession", "succession_plans", {"cycle_id": ("cycleId", "str"), "incumbent_id": ("incumbentId", "str"), "status": ("status", "str")}),
+    # v2.15: reimbursement runs. Approved expense claims paid together on the company's reimbursement cycle, with the
+    # next salary or as a separate bank transfer; created by Finance or automatically on the run day (see reimb.py)
+    Coll("reimbRuns", "reimbursement_runs", {"run_no": ("no", "str"), "status": ("status", "str"), "run_date": ("runDate", "date")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 

@@ -16,7 +16,9 @@ export const COLLECTIONS = ['companies', 'employees', 'depts', 'desigs', 'grades
   // workforce (2.7): standard lists and contractors
   'masterItems', 'contractors',
   // performance (2.11): goal library, review and management meetings, succession plans
-  'goalLib', 'perfMeetings', 'succession'];
+  'goalLib', 'perfMeetings', 'succession',
+  // reimbursement runs (2.15): made by the server; listed so the app's copy stays in step
+  'reimbRuns'];
 const SINGLETONS = ['group', 'settings', 'stat', 'seq'];
 const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 

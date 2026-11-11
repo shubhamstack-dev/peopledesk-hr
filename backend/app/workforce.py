@@ -31,7 +31,7 @@ class Problem(Exception):
     pass
 
 
-BG_LISTS = ("prevJobs", "education", "awards", "references")
+BG_LISTS = ("prevJobs", "education", "awards", "references", "prevTrainings")   # 2.16: professional trainings
 MASTER_KINDS = {"institution", "qualification", "employer"}
 LOCKED_COLLS = {"punches", "regs", "leaveReqs"}
 # fields whose change matters for attendance (a log entry or a note may still be added after the lock)
@@ -437,3 +437,4 @@ Guard.check_controls = _guard_controls
 Guard.check_attendance_request = _guard_attendance_request
 MASTER_KINDS.add("skill")
 MASTER_KINDS.add("responsibility")          # 2.12: responsibilities of previous jobs
+MASTER_KINDS.add("training")                # 2.16: professional trainings attended before joining

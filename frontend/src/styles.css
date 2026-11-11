@@ -338,3 +338,18 @@ details.card>summary::-webkit-details-marker{display:none}
 details.card>summary::before{content:'▸ ';color:var(--muted)}
 details.card[open]>summary::before{content:'▾ '}
 details.card[open]>summary{margin-bottom:10px}
+/* 2.14: the candidate dialog's tabs stay in view; history rows */
+#cdf .tabs{position:sticky;top:-20px;background:var(--surface);z-index:2;padding-top:4px}
+#cdf section[data-cdsec]{min-height:280px}
+#cdf .apply-row .btns{margin-top:6px}
+/* 2.15: profile photos */
+.av{overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover;display:block}
+.photobox{display:flex;flex-direction:column;align-items:center;gap:4px}
+.photobox .btn.sm{padding:2px 8px;font-size:12px}
+/* 2.16: the news and knowledge hub */
+.hubpost.unread{border-left:4px solid var(--pri)}
+.hubtext{white-space:pre-wrap;line-height:1.5}
+.hubitem{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--rule)}
+.hubitem:last-child{border-bottom:0}
+.hubpop{border:1px solid var(--rule);border-radius:10px;padding:10px 12px}

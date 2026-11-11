@@ -18,6 +18,10 @@ Sending a new link makes older ones stop working.
 previous jobs carry main and secondary responsibilities, and the candidate rates their level on each skill the
 requisitions they are in need. When the form is sent, their levels are kept as `selfLevels` and, on requisitions
 that shortlist automatically, a sourced candidate who matches well enough moves to Screening.
+
+2.14: the form also asks for awards, and starts from the employment history, education and awards HR recorded on the
+candidate. When it is sent, those lists on the candidate become what the candidate sent (HR's links to the standard
+lists are kept on the rows the candidate did not remove). The e-mail names the jobs the candidate is invited for.
 """
 import base64
 import re
@@ -61,8 +65,15 @@ LISTS = {
                  "lastCtc": "num", "reason": 300, "duties": L, "contact": 200, "mainResp": "ids", "secResp": "ids"},
     "references": {"name": S, "organisation": S, "designation": S, "relation": 200, "phone": 20, "email": S, "years": "num"},
     "family": {"relation": 40, "name": S, "dob": "date", "gender": 2, "occupation": 80, "phone": 20, "dependant": "bool"},
+    "awards": {"title": S, "issuer": S, "date": "date", "category": 20, "description": 600},
 }
+# 2.14: the lists HR may record on the candidate, and that the candidate's form starts from
+HIST = ("prevJobs", "education", "awards")
 LIST_MAX = 20
+# 2.15: the standard reasons for leaving a job (the same list as LEAVE_REASONS in the app); "Others" lets them type one
+LEAVE_REASONS = ("Better role or career growth", "Higher pay", "Relocation", "Contract or project ended", "Company closed, downsized or layoff",
+                 "Higher studies", "Family or personal reasons", "Health reasons", "Better work-life balance", "Retirement",
+                 "Asked to leave by the employer", "Still working there")
 IDS_MAX = 40
 ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 LEVELS = {0: "None", 1: "Basic", 2: "Working", 3: "Advanced", 4: "Expert"}
@@ -83,11 +94,27 @@ def link_url(base: str, token: str) -> str:
     return f"{base.rstrip('/')}/#/apply?t={token}"
 
 
-def link_mail(name: str, company: str, url: str) -> tuple[str, str]:
-    subject = f"Your details for {company}"
-    body = (f"Dear {name},\n\nThank you for your interest in {company}. Please fill in your details and attach your CV using this "
-            f"link (it works for {LINK_DAYS} days):\n{url}\n\nYou can save the form and come back to it before you send it.\n")
+def link_mail(name: str, company: str, url: str, jobs: list | None = None) -> tuple[str, str]:
+    jobs = [j for j in (jobs or []) if j]
+    what = f" for the position of {', '.join(jobs[:3])}" if jobs else ""
+    subject = f"{jobs[0]} at {company}: your details" if len(jobs) == 1 else f"Your details for {company}"
+    body = (f"Dear {name},\n\nThank you for your interest in {company}{what}. Please fill in your details, your experience and "
+            f"education{' and your level in the skills the job needs' if jobs else ''}, and attach your CV, using this link "
+            f"(it works for {LINK_DAYS} days):\n{url}\n\nNo CV yet? You can fill in the form now and attach it later. "
+            f"You can save the form and come back to it before you send it.\n")
     return subject, body
+
+
+def job_titles(conn, cand: dict) -> list:
+    """The titles of the live requisitions the candidate is in."""
+    apps = repo.records_where(conn, "apps", "cand_id", cand["id"])
+    reqs = repo.get_records(conn, "reqs", [a.get("reqId") for a in apps if a.get("reqId")])
+    out = []
+    for a in apps:
+        t = (reqs.get(a.get("reqId")) or {}).get("title")
+        if t and a.get("stage") not in ("rejected", "withdrawn") and t not in out:
+            out.append(t)
+    return out
 
 
 def open_candidate(conn, token: str) -> dict:
@@ -121,14 +148,23 @@ def prefill(cand: dict) -> dict:
             "location": cand.get("location") or "", "currentCompany": cand.get("currentCompany") or "", "currentTitle": cand.get("currentTitle") or "",
             "expYears": cand.get("expYears") or "", "currentCtc": cand.get("currentCtc") or "", "expectedCtc": cand.get("expectedCtc") or "",
             "noticeDays": cand.get("noticeDays") or "", "skills": cand.get("skills") or "", "addrCountry": "India", "nationality": "Indian",
-            "education": [], "prevJobs": [], "references": [], "family": []}
+            "references": [], "family": [], **{k: _hist_rows(cand.get(k), LISTS[k]) for k in HIST}}
+
+
+def _hist_rows(rows, spec: dict) -> list:
+    """HR's rows, in the form's shape."""
+    out = []
+    for r in (rows or [])[:LIST_MAX]:
+        if isinstance(r, dict):
+            row = {k: (r.get(k) if r.get(k) is not None else ([] if kind == "ids" else False if kind == "bool" else "")) for k, kind in spec.items()}
+            row["id"] = re.sub(r"[^A-Za-z0-9]", "", str(r.get("id") or ""))[:20]
+            out.append(row)
+    return out
 
 
 def public_view(conn, cand: dict) -> dict:
     co = repo.get_records(conn, "companies", [cand.get("companyId")]).get(cand.get("companyId")) or {}
-    apps = repo.records_where(conn, "apps", "cand_id", cand["id"])
-    reqs = repo.get_records(conn, "reqs", [a.get("reqId") for a in apps if a.get("reqId")])
-    jobs = [reqs[a["reqId"]].get("title") for a in apps if a.get("reqId") in reqs and a.get("stage") not in ("rejected", "withdrawn")]
+    jobs = job_titles(conn, cand)
     form = cand.get("form") or {}
     cv = cand.get("cv") or {}
     return {"company": co.get("legalName") or co.get("name") or "", "name": cand.get("name") or "", "email": cand.get("email") or "",
@@ -251,7 +287,8 @@ def lists_for(conn, company_id: str) -> dict:
     items = [x for x in repo.records_where(conn, "masterItems", "company_id", company_id) if x.get("status") == "approved"]
     by = lambda kind: sorted((x for x in items if x.get("kind") == kind), key=lambda x: str(x.get("name") or "").lower())
     desigs = sorted({str(d.get("name") or "").strip() for d in repo.records_where(conn, "desigs", "company_id", company_id)} - {""}, key=str.lower)
-    return {"employers": [x["name"] for x in by("employer")], "designations": desigs,
+    cities = sorted({str(x.get("name") or "").strip() for x in repo.records_where(conn, "locations", "company_id", company_id)} - {""}, key=str.lower)
+    return {"employers": [x["name"] for x in by("employer")], "designations": desigs, "cities": cities, "leaveReasons": list(LEAVE_REASONS),
             "responsibilities": [{"id": x["id"], "name": x["name"], "category": x.get("category") or ""} for x in by("responsibility")]}
 
 
@@ -353,6 +390,9 @@ def check(d: dict, submit: bool):
     for e in d["education"]:
         if e["fromYear"] and e["toYear"] and e["toYear"] < e["fromYear"]:
             raise Problem(f"{e['qualification'] or 'A qualification'} is passed before it starts.")
+    for a in d["awards"]:
+        if a["date"] and a["date"] > today:
+            raise Problem(f"The date of {a['title'] or 'an award'} is in the future.")
     if not submit:
         return
     need = [("firstName", "your first name"), ("dob", "your date of birth"), ("gender", "your gender"), ("phone", "your mobile number"),
@@ -371,6 +411,9 @@ def check(d: dict, submit: bool):
     for f in d["family"]:
         if not (f["relation"] and f["name"]):
             raise Problem("Give the relationship and name of each family member.")
+    for a in d["awards"]:
+        if not a["title"]:
+            raise Problem("Give the name of each award under Awards.")
     if not d["declaration"]:
         raise Problem("Tick the declaration that the details are true before sending.")
 
@@ -463,6 +506,10 @@ def save(conn, cand: dict, data: dict, cv, submit: bool) -> dict:
             if v not in ("", None):
                 rec[k] = v
         rec["selfLevels"] = dict(d["skillLevels"])
+        # 2.14: the candidate's history replaces HR's; links HR made to the standard lists stay on the rows kept
+        for k in HIST:
+            old = {str(x.get("id")): x for x in (cand.get(k) or []) if isinstance(x, dict) and x.get("id")}
+            rec[k] = [{**{kk: vv for kk, vv in old.get(r["id"], {}).items() if kk not in LISTS[k] and kk != "verify"}, **r} for r in d[k]]
     repo.upsert(conn, "cands", [rec], None)
     if submit:
         auto_shortlist(conn, rec)

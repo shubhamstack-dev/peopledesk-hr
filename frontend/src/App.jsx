@@ -71,6 +71,7 @@ export default function App() {
 
   /* The engine calls these: redraw after a change, sign out, a refused or failed save */
   E.hooks.refresh = refresh;
+  E.hooks.reload = reload;
   E.hooks.logout = () => signOut();
   E.hooks.onSessionEnded = () => signOut(SESSION_ENDED);
   E.hooks.onSyncRejected = (msg) => { E.toast(msg); reload(); };

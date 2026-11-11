@@ -26,9 +26,9 @@ export default function Home() {
   const cel = E.coEmployees(me.companyId).filter((e) => soon(e.dob) || (soon(e.doj) && e.doj.slice(0, 4) < t.slice(0, 4)) || (e.shareAnniversary !== false && soon(e.anniversary)));
   const notices = E.myNotices();
   const posts = [
-    ...S.posts.filter((x) => x.companyId === me.companyId).map((x) => ({ ...x, kind: 'post' })),
+    ...E.feedPosts().map((x) => ({ ...x, kind: 'post' })),
     ...S.feedback.filter((f) => f.type === 'kudos' && !f.private && (E.empById(f.to) || {}).companyId === me.companyId).map((f) => ({ ...f, kind: 'kudos' })),
-  ].sort((a, b) => b.at - a.at).slice(0, 8);
+  ].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.at - a.at).slice(0, 8);
   const tasks = E.pendingForMe();
   const checklist = E.myDetailsChecklist();              // contract workers: what is left to fill in
   const left = checklist.filter((x) => !x.done);
@@ -122,12 +122,13 @@ export default function Home() {
           </div>
 
           <div className="card feed">
-            <div className="hd"><div><h2>Company feed</h2><p className="sub">Announcements and kudos.</p></div>
-              <div className="tools">{E.isHR() && <button className="btn sm" data-act="postNew">Post announcement</button>}<button className="btn sm" data-act="kudosNew">Give kudos</button></div>
+            <div className="hd"><div><h2>Company feed</h2><p className="sub">News from HR and kudos. <a href="#/hub">News and knowledge hub</a></p></div>
+              <div className="tools">{E.isHR() && <button className="btn sm" data-act="postNew">Post news</button>}<button className="btn sm" data-act="kudosNew">Give kudos</button></div>
             </div>
             {posts.length ? posts.map((x) => (x.kind === 'post' ? (
-              <div className="post" key={x.id}><div className="av">{E.initials(E.nameOf(x.by))}</div>
-                <div><b>{x.title}</b><div>{x.text}</div><div className="fine">{E.nameOf(x.by)}, {E.dt(x.at)}</div></div></div>
+              <div className="post" key={x.id}><div className="av" aria-hidden="true">{x.icon}</div>
+                <div><a href={`#/hub/${x.id}`}><b>{x.title}</b></a>{x.unread && <span className="badge info" style={{ marginLeft: 6 }}>New</span>}
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{(x.text || '').length > 280 ? `${x.text.slice(0, 280)}…` : x.text}</div><div className="fine">{x.kindLabel}{x.pinned ? ', pinned' : ''}. {E.nameOf(x.by)}, {E.dt(x.at)}</div></div></div>
             ) : (
               <div className="post" key={x.id}><div className="av" style={{ background: 'var(--mari-soft)', color: 'var(--warn)' }}>★</div>
                 <div><b>{E.nameOf(x.from)}</b> recognised <b>{E.nameOf(x.to)}</b>{x.value ? ` for ${x.value}` : ''}<div>{x.text}</div><div className="fine">{E.dt(x.at)}</div></div></div>
@@ -156,7 +157,7 @@ export default function Home() {
           <div className="card"><h2>Celebrations this week</h2>
             {cel.length ? cel.map((e) => (
               <div key={e.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0' }}>
-                <div className="av">{E.initials(E.fullName(e))}</div>
+                <div className="av">{e.photoId ? <img src={`/api/files/${e.photoId}`} alt="" loading="lazy" /> : E.initials(E.fullName(e))}</div>
                 <div><b>{E.fullName(e)}</b><div className="fine">{[
                   soon(e.dob) && `Birthday, ${E.dShort(`${t.slice(0, 4)}-${md(e.dob)}`)}`,
                   e.shareAnniversary !== false && soon(e.anniversary) && `Wedding anniversary, ${E.dShort(`${t.slice(0, 4)}-${md(e.anniversary)}`)}`,

@@ -10,7 +10,7 @@ import { createSync } from './sync.js';
 import { api } from '../api.js';
 
 /* What the React app plugs in */
-const hooks = { refresh: () => {}, logout: () => {}, onSyncRejected: () => {}, onSessionEnded: () => {} };
+const hooks = { refresh: () => {}, logout: () => {}, onSyncRejected: () => {}, onSessionEnded: () => {}, reload: async () => {} };
 /* =====================================================================
    PeopleDesk HR — single-file HTML5 HR application
    Personnel, leave, time and shifts, performance, and payroll with Indian
@@ -84,7 +84,9 @@ function sha256(str) {
 }
 const hashPw = (salt, pw) => { let h = salt + ':' + pw; for (let i = 0; i < 400; i++) h = sha256(salt + h); return h; };
 
-const STATES = { '01': 'Jammu and Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat', '27': 'Maharashtra', '29': 'Karnataka', '30': 'Goa', '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry', '36': 'Telangana', '37': 'Andhra Pradesh' };
+const STATES = { '01': 'Jammu and Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha', '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat', '27': 'Maharashtra', '29': 'Karnataka', '30': 'Goa', '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry', '36': 'Telangana', '37': 'Andhra Pradesh',
+  /* 2.15: the other states and union territories (GST state codes), for the list of cities */
+  '11': 'Sikkim', '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '26': 'Dadra and Nagar Haveli and Daman and Diu', '31': 'Lakshadweep', '35': 'Andaman and Nicobar Islands', '38': 'Ladakh' };
 
 /* ---------------------------------------------------------------- store */
 const KEY = 'peopledesk.v1';
@@ -103,6 +105,7 @@ function blank() {
     trainings: [], trainingEnrols: [], trainingFeedback: [], trainingNeeds: [],
     contractors: [], masterItems: [], assetTypes: [],
     goalLib: [], perfMeetings: [], succession: [],
+    reimbRuns: [],
   };
 }
 /* Storage: the MySQL database behind the Python API. Changes are sent as they happen (see sync.js). */
@@ -172,7 +175,7 @@ function fieldHtml(f, v) {
   else input = `<input class="inp" type="${f.type || 'text'}" ${attrs} value="${esc(v ?? '')}" ${f.type === 'number' ? 'inputmode="decimal"' : ''}>`;
   return `<label class="field ${f.wide ? 'wide' : ''}">${reqLabel(f)}${input}${f.help ? `<small>${esc(f.help)}</small>` : ''}</label>`;
 }
-const reqLabel = (f) => `${esc(f.label)}${f.req ? '<span class="reqm" aria-label="required"> *</span>' : ''}`;
+const reqLabel = (f) => (f.req ? `<span>${esc(f.label)}<span class="reqm" aria-label="required"> *</span></span>` : esc(f.label));   // one line: the star stays next to the label
 function readForm(form, fields) {
   const out = {};
   fields.forEach((f) => {
@@ -850,12 +853,13 @@ const HR = () => isHR(), MGR = () => isManager() || isHR(), PAY = () => canPay()
 const MENU = [
   { page: 'home', label: 'Home' },
   { page: 'inbox', label: 'Approvals', badge: () => pendingForMe().length, show: () => isManager() || isHR() || pendingForMe().length > 0 },
+  { page: 'hub', label: 'News and knowledge hub', badge: () => unreadPosts().length },
   { grp: 'personnel', label: 'Personnel Information', items: [
     { page: 'profile', label: 'My profile' },
     { page: 'people', label: 'Employee directory', show: HR },
     { page: 'org', label: 'Organisation chart' },
     { page: 'masters', label: 'Departments, designations and grades', show: HR },
-    { page: 'masterdata', label: 'Standard lists: education, employers, skills, responsibilities', show: HR },
+    { page: 'masterdata', label: 'Standard lists: education, employers, skills, trainings', show: HR },
     { page: 'fieldsetup', label: 'Field settings: required, optional, length', show: HR },
     { page: 'numbering', label: 'Code numbering', show: HR },
     { page: 'contractors', label: 'Contractors (third party)', show: HR, badge: () => (isHR() ? conWorkersToComplete().length : 0) },
@@ -945,7 +949,9 @@ const MENU = [
   { grp: 'exp', label: 'Expenses', items: [
     { page: 'expenses', label: 'My expense claims', show: () => !cwSelf() },
     { page: 'expenses', tab: 'team', label: 'Claims to approve and pay', show: () => isHR() || isFinance() || isManager() || S.expenseClaims.some((c) => (c.participants || []).includes(me.id) && c.empId !== me.id) },
-    { page: 'expcats', label: 'Expense categories and limits', show: HR },
+    { page: 'expcats', label: 'Expense categories, purposes and limits', show: HR },
+    { page: 'reimb', label: 'Reimbursement runs', show: PAY },
+    { page: 'reimb', tab: 'cycle', label: 'Reimbursement cycle', show: HR },
   ] },
   { grp: 'admin', label: 'Administration', items: [{ page: 'teams', label: 'Teams: Administration, IT and Finance', show: HR }, { page: 'flows', label: 'Approval workflows', show: HR },
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
@@ -1134,7 +1140,7 @@ ACT.postNew = async () => {
 /* =====================================================================
    Personnel: directory, profile, personnel actions, organisation chart, masters, companies
    ===================================================================== */
-const coOpts = (coll) => () => S[coll].filter((x) => x.companyId === CO).map((x) => [x.id, x.name + (x.code ? ` (${x.code})` : '')]);
+const coOpts = (coll) => () => S[coll].filter((x) => x.companyId === CO && !(coll === 'locations' && x.kind === 'city')).map((x) => [x.id, x.name + (x.code ? ` (${x.code})` : '')]);
 const empOpts = (coId, exclude) => () => S.employees.filter((e) => e.companyId === coId && active(e) && e.id !== exclude).map((e) => [e.id, `${fullName(e)} (${e.empNo})`]);
 
 VIEWS.people = () => {
@@ -1147,7 +1153,7 @@ VIEWS.people = () => {
       <select class="inp" data-ch="pplDept"><option value="">All departments</option>${S.depts.filter((d) => d.companyId === CO).map((d) => `<option value="${d.id}" ${d.id === dp ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
       <button class="btn" data-act="pplExport">Download Excel</button><button class="btn pri" data-act="empNew">Add employee</button></div></div>
     ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Number</th><th>Designation</th><th>Department</th><th>Location</th><th>Category</th><th>Manager</th><th>Joined</th><th>Status</th></tr></thead><tbody>
-      ${list.map((e) => `<tr class="click" data-act="openEmp" data-id="${e.id}"><td><div class="tools" style="flex-wrap:nowrap"><div class="av">${esc(initials(fullName(e)))}</div><div><b>${esc(fullName(e))}</b><div class="fine">${esc(e.email)}</div></div></div></td>
+      ${list.map((e) => `<tr class="click" data-act="openEmp" data-id="${e.id}"><td><div class="tools" style="flex-wrap:nowrap">${avatar(e, 'div')}<div><b>${esc(fullName(e))}</b><div class="fine">${esc(e.email)}</div></div></div></td>
         <td class="mono">${esc(e.empNo)}</td><td>${esc((desig(e.desigId) || {}).name || '')}</td><td>${esc((dept(e.deptId) || {}).name || '')}</td><td>${esc((loc(e.locationId) || {}).name || '')}</td><td>${esc(catLabel(e))}<div class="fine">${GROUPS[attGroup(e)]}${otEligibleOf(e) ? ', overtime' : ''}</div></td><td>${esc(nameOf(e.managerId))}</td>
         <td>${dmy(e.doj)}</td><td>${statusBadge(e)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No employees match.</div>'}</div>` };
 };
@@ -1249,7 +1255,7 @@ VIEWS.profile = () => {
       ${(e.history || []).length ? `<table class="t"><thead><tr><th>Effective</th><th>Action</th><th>Details</th><th>By</th></tr></thead><tbody>${e.history.slice().reverse().map((h) => `<tr><td>${dmy(h.date)}</td><td><b>${esc(h.type)}</b></td><td>${esc(h.note || '')}</td><td>${esc(h.by ? nameOf(h.by) : '')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No actions yet.</div>'}</div>`;
   }
   const co = coById(e.companyId);
-  return { title: mine ? 'My profile' : fullName(e), html: `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><div class="av lg">${esc(initials(fullName(e)))}</div>
+  return { title: mine ? 'My profile' : fullName(e), html: `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">${photoBox(e, hr || mine)}
       <div style="flex:1;min-width:220px"><h2 style="font-size:22px">${esc(fullName(e))}</h2><div class="mut">${esc((desig(e.desigId) || {}).name || 'No designation')}, ${esc((dept(e.deptId) || {}).name || 'no department')}</div>
         <div class="fine">${esc(e.empNo)}, ${esc(co ? co.name : '')}, ${esc((loc(e.locationId) || {}).name || '')}. Joined ${dmy(e.doj)}. Reports to ${esc(nameOf(e.managerId))}${(e.matrixManagerIds || []).length ? `; dotted line to ${esc(e.matrixManagerIds.map(nameOf).join(', '))}` : ''}.</div></div>
       <div class="tools">${statusBadge(e)}${hr && e.status === 'active' ? `<button class="btn" data-act="empActions" data-id="${e.id}">Personnel action</button><button class="btn" data-act="empLink" data-id="${e.id}" title="A link to set a password, for people without a company Google or Microsoft account">Access link</button>` : ''}
@@ -1403,10 +1409,10 @@ ACT.actConfirm = (b) => {
 /* ---------------------------------------------------------------- masters and companies */
 VIEWS.masters = () => {
   const used = (k) => (r) => (S.employees.some((e) => e[k] === r.id) ? 'Employees use this. Move them first.' : '');
-  const simple = (coll, title, one, k, extra = []) => crudCard(coll, { coll, title, one, numbering: coll, filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }), inUse: used(k), sort: (a, b) => a.name.localeCompare(b.name),
+  const simple = (coll, title, one, k, extra = [], more = {}) => crudCard(coll, { coll, title, one, numbering: coll, filter: more.filter || ((x) => x.companyId === CO), base: more.base || (() => ({ companyId: CO })), sub: more.sub, inUse: used(k), sort: (a, b) => a.name.localeCompare(b.name),
     fields: [{ k: 'name', label: 'Name', req: true }, { k: 'code', label: 'Code' }, ...extra], cols: [{ k: 'name', label: 'Name' }, { k: 'code', label: 'Code' }, ...extra.map((f) => ({ k: f.k, label: f.label, fmt: f.fmt })), { label: 'Employees', cls: 'r', fmt: (r) => S.employees.filter((e) => e[k] === r.id && active(e)).length }] });
   return { title: 'Departments and grades', html: `<div class="grid g2">${simple('depts', 'Departments', 'department', 'deptId', [{ k: 'costCenter', label: 'Cost centre' }, { k: 'headId', label: 'Head of department', type: 'select', opts: () => empOpts(CO)(), blank: 'None', fmt: (r) => (r.headId ? nameOf(r.headId) : '') }])}${simple('desigs', 'Designations', 'designation', 'desigId', [{ k: 'gradeId', label: 'Usual grade', type: 'select', opts: coOpts('grades'), blank: 'Any', fmt: (r) => (grade(r.gradeId) || {}).name || '' }])}
-    ${simple('grades', 'Grades', 'grade', 'gradeId', [{ k: 'level', label: 'Level (1 = entry)', type: 'number', min: 1, fmt: (r) => r.level || '' }, { k: 'minCTC', label: 'Pay band from (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.minCTC ? inr0(r.minCTC) : '') }, { k: 'maxCTC', label: 'Pay band to (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.maxCTC ? inr0(r.maxCTC) : '') }, { k: 'minMonths', label: 'Months in grade before promotion', type: 'number', min: 0, fmt: (r) => r.minMonths || '' }])}${simple('locations', 'Locations', 'location', 'locationId', [{ k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES), fmt: (r) => STATES[r.state] || '' }, { k: 'metro', label: 'Metro city (50% HRA exemption)', type: 'check', fmt: (r) => (r.metro ? 'Metro' : '') }])}</div>` };
+    ${simple('grades', 'Grades', 'grade', 'gradeId', [{ k: 'level', label: 'Level (1 = entry)', type: 'number', min: 1, fmt: (r) => r.level || '' }, { k: 'minCTC', label: 'Pay band from (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.minCTC ? inr0(r.minCTC) : '') }, { k: 'maxCTC', label: 'Pay band to (₹ a year)', type: 'number', min: 0, fmt: (r) => (r.maxCTC ? inr0(r.maxCTC) : '') }, { k: 'minMonths', label: 'Months in grade before promotion', type: 'number', min: 0, fmt: (r) => r.minMonths || '' }])}${simple('locations', 'Locations', 'location', 'locationId', [{ k: 'state', label: 'State', type: 'select', opts: Object.entries(STATES), fmt: (r) => STATES[r.state] || '' }, { k: 'metro', label: 'Metro city (50% HRA exemption)', type: 'check', fmt: (r) => (r.metro ? 'Metro' : '') }], { filter: (x) => x.companyId === CO && x.kind !== 'city', base: () => ({ companyId: CO, kind: 'office' }), sub: 'Where people work. The cities of India for addresses and previous jobs are kept under Cities below.' })}</div>` };
 };
 const CO_FIELDS = [
   { k: 'name', label: 'Company name', req: true }, { k: 'code', label: 'Company code', req: true, help: 'Used in employee numbers and as the SAP company code' }, { k: 'legalName', label: 'Legal name' },
@@ -1458,7 +1464,7 @@ VIEWS.org = () => {
     const canMove = isHR(e.companyId);
     const dl = (e.matrixManagerIds || []).filter((id) => empById(id)), dr = matrixReportees(e.id);
     return `<div class="onode ${hit(e) ? 'hit' : ''}" style="--dc:${col}" data-org="${e.id}" ${canMove ? 'draggable="true"' : ''}>
-      <button class="obody" data-act="orgOpen" data-id="${e.id}" title="Open profile"><span class="av" style="background:${col}1F;color:${col}">${esc(initials(fullName(e)))}</span>
+      <button class="obody" data-act="orgOpen" data-id="${e.id}" title="Open profile">${e.photoId ? avatar(e) : `<span class="av" style="background:${col}1F;color:${col}">${esc(initials(fullName(e)))}</span>`}
         <span class="otext"><b>${esc(fullName(e))}</b><span>${esc((desig(e.desigId) || {}).name || '')}</span><small>${esc((dept(e.deptId) || {}).name || '')}${all ? ' · ' + esc((coById(e.companyId) || {}).code || '') : ''}</small></span></button>
       ${dl.length || dr.length ? `<div class="odot" title="Dotted-line reporting">${dl.length ? `⋯ also to ${esc(dl.map((id) => fullName(empById(id)).split(' ')[0]).join(', '))}` : ''}${dl.length && dr.length ? ' · ' : ''}${dr.length ? `⋯ ${dr.length} dotted report${dr.length > 1 ? 's' : ''}` : ''}</div>` : ''}
       ${canMove ? `<button class="omove" data-act="orgMove" data-id="${e.id}" title="Move or change reporting" aria-label="Move ${esc(fullName(e))}">⇄</button>` : ''}
@@ -3184,7 +3190,9 @@ const REQ_FIELDS = () => [{ k: 'title', label: 'Job title', req: true }, { k: 'd
   { k: 'expMin', label: 'Experience from (years)', type: 'number', min: 0 }, { k: 'expMax', label: 'Experience up to (years)', type: 'number', min: 0 }, { k: 'targetDate', label: 'Fill by', type: 'date', req: true },
   { k: 'priority', label: 'Priority', type: 'select', opts: [['high', 'High'], ['normal', 'Normal'], ['low', 'Low']] }, { k: 'skills', label: 'Other skills or notes', wide: true, help: 'Anything about skills that the lists above do not cover' },
   { k: 'autoShortlist', label: 'Shortlist candidates automatically by skills match', type: 'check', wide: true }, { k: 'matchMin', label: 'Minimum skills match (%)', type: 'number', min: 0, max: 100 },
-  { k: 'primaryMust', label: 'Every primary skill must be at the level needed', type: 'check' }, { k: 'jd', label: 'Job description', type: 'textarea', wide: true }];
+  { k: 'primaryMust', label: 'Every primary skill must be at the level needed', type: 'check' },
+  { k: 'minEdu', label: 'Minimum qualification', type: 'select', opts: () => EDU_LEVELS.map((x) => [x, x]), blank: 'Any' }, { k: 'fitMin', label: 'Minimum profile fit for shortlisting (%)', type: 'number', min: 0, max: 100, help: 'Skills, experience, budget, notice, location, designation and qualification against this requisition. Empty: not used' },
+  { k: 'jd', label: 'Job description', type: 'textarea', wide: true }];
 ACT.reqEdit = (b) => {
   const r = b.dataset.id ? reqById(b.dataset.id) : null; const fields = ruled('req', REQ_FIELDS());
   const v = { matchMin: 70, primaryMust: true, ...(r || { positions: 1, empType: 'permanent', reason: 'new', hiringMgr: me.id, priority: 'normal', targetDate: addDays(todayISO(), 45), expMin: 2, expMax: 6 }) };
@@ -3194,6 +3202,7 @@ ACT.reqEdit = (b) => {
   wireSkEditor($('#rqf')); wireReqBudget($('#rqf'));
   const save = (submit) => { const d = readForm($('#rqf'), fields); const miss = fields.find((f) => f.req && !d[f.k]); if (miss) { $('#rqe').textContent = `Enter ${miss.label.toLowerCase()}.`; return; }
     if (d.matchMin !== '' && (d.matchMin < 0 || d.matchMin > 100)) { $('#rqe').textContent = 'The minimum skills match is a percentage from 0 to 100.'; return; }
+    if (d.fitMin !== '' && d.fitMin != null && (d.fitMin < 0 || d.fitMin > 100)) { $('#rqe').textContent = 'The minimum profile fit is a percentage from 0 to 100.'; return; }
     const sk = readSkEditor($('#rqf')); if (sk.error) { $('#rqe').textContent = sk.error; return; }
     if (d.autoShortlist && !sk.primarySkills.length && !sk.secondarySkills.length) { $('#rqe').textContent = 'Add the skills needed before turning on automatic shortlisting.'; return; }
     Object.assign(d, sk);
@@ -3210,7 +3219,7 @@ VIEWS.req = () => {
   const t = todayISO();
   const cardOf = (a) => { const c = candById(a.candId); const nx = S.interviews.filter((i) => i.appId === a.id && i.status === 'scheduled').sort((x, y) => (x.date < y.date ? -1 : 1))[0];
     const od = (a.followups || []).some((f) => !f.done && f.due < t);
-    return `<button class="kcard" data-act="openApp" data-id="${a.id}"><b>${esc(c.name)}</b>${matchBadge(skillMatch(c, r))}<span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentCompany || '—')}</span><span class="fine">Expects ${inr0(c.expectedCtc)}</span>
+    return `<button class="kcard" data-act="openApp" data-id="${a.id}"><b>${esc(c.name)}</b>${matchBadge(skillMatch(c, r))}${fitBadge(profileFit(c, r))}<span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentCompany || '—')}</span><span class="fine">Expects ${inr0(c.expectedCtc)}</span>
       ${nx ? `<span class="fine">${MODES[nx.mode]} ${dShort(nx.date)} ${esc(nx.start)}</span>` : ''}${c.exEmpId ? '<span class="badge info">Former employee</span>' : ''}${od ? '<span class="badge bad">Follow-up overdue</span>' : ''}${a.offer && a.offer.status ? `<span class="badge mari">Offer ${esc(a.offer.status)}</span>` : ''}</button>`; };
   const can = isHR(r.companyId) || r.hiringMgr === me.id;
   return { title: `${r.title} (${r.no})`, html: `<div class="card"><div class="hd"><div><h2>${esc(r.title)} <span class="badge ${REQ_STATUS[r.status][1]}">${REQ_STATUS[r.status][0]}</span></h2>
@@ -3267,10 +3276,10 @@ VIEWS.cands = () => {
 ACT.candQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/cands?' + p); };
 ACT.candSrc = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('src', el.value) : p.delete('src'); go('#/cands?' + p); };
 const CAND_FIELDS = [{ k: 'name', label: 'Full name', req: true }, { k: 'email', label: 'E-mail', type: 'email', req: true }, { k: 'phone', label: 'Mobile', req: true }, { k: 'gender', label: 'Gender', type: 'select', opts: [['M', 'Male'], ['F', 'Female'], ['O', 'Other']], blank: 'Not stated' },
-  { k: 'location', label: 'Current location' }, { k: 'currentCompany', label: 'Current employer' }, { k: 'currentTitle', label: 'Current role' }, { k: 'expYears', label: 'Experience (years)', type: 'number', step: 0.5 },
+  { k: 'location', label: 'Current location', pick: 'location' }, { k: 'currentCompany', label: 'Current employer', pick: 'employer' }, { k: 'currentTitle', label: 'Current designation', pick: 'desig' }, { k: 'expYears', label: 'Experience (years)', type: 'number', step: 0.5 },
   { k: 'currentCtc', label: 'Current CTC (₹ a year)', type: 'number' }, { k: 'expectedCtc', label: 'Expected CTC (₹ a year)', type: 'number' }, { k: 'noticeDays', label: 'Notice period (days)', type: 'number' },
-  { k: 'source', label: 'Source', type: 'select', opts: SOURCES.map((s) => [s, s]) }, { k: 'referredBy', label: 'Referred by', type: 'select', opts: () => S.employees.filter(active).map((e) => [e.id, fullName(e)]), blank: 'No one' },
-  { k: 'skills', label: 'Skills', wide: true }, { k: 'notes', label: 'Notes', type: 'textarea', wide: true }];
+  { k: 'relocate', label: 'Willing to relocate', type: 'check' }, { k: 'source', label: 'Source', type: 'select', opts: SOURCES.map((s) => [s, s]) }, { k: 'referredBy', label: 'Referred by', type: 'select', opts: () => S.employees.filter(active).map((e) => [e.id, fullName(e)]), blank: 'No one' },
+  { k: 'skills', label: 'Other skills', wide: true, help: 'Skills that are not on the requisition' }, { k: 'notes', label: 'Notes', type: 'textarea', wide: true }];
 ACT.candEdit = (b) => {
   const c = b.dataset.id ? candById(b.dataset.id) : null; const v = c || { source: 'Job portal', noticeDays: 30 }; let cv = c ? c.cv : null;
   const apps = c ? S.apps.filter((a) => a.candId === c.id) : [];
@@ -3312,8 +3321,8 @@ VIEWS.app = () => {
       <div class="card"><div class="hd"><div><h2>Interviews</h2><p class="sub">Face-to-face, video or phone rounds with a panel. Panel members give feedback after the interview.</p></div>${full && !closed ? '<button class="btn pri" data-act="ivNew">Schedule interview</button>' : ''}</div>
         ${ivs.length ? ivs.map((i) => { const mineFb = (i.panel || []).includes(me.id) && !(i.feedback || {})[me.id] && i.status !== 'cancelled' && i.date <= t;
           return `<div class="ivbox"><div class="hd" style="margin:0"><div><b>${esc(i.round)}</b> <span class="badge ${i.status === 'completed' ? 'ok' : i.status === 'scheduled' ? 'info' : 'bad'}">${{ scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled', noshow: 'Did not attend' }[i.status]}</span>
-            <div class="fine">${D(i.date).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}, ${esc(i.start)} for ${i.duration} minutes. ${MODES[i.mode]}${i.mode === 'f2f' ? ` at ${esc(i.venue)}` : i.link ? `, ${esc(i.link)}` : ''}. Panel: ${(i.panel || []).map(nameOf).map(esc).join(', ')}.${i.callSent ? ` Call letter sent ${dt(i.callSent)}.` : ''}</div></div>
-            <div class="tools">${full && i.status === 'scheduled' ? `<button class="btn sm" data-act="ivCall" data-id="${i.id}">Interview call letter</button><button class="btn sm" data-act="ivStatus" data-id="${i.id}">Update</button>` : ''}${mineFb || (isHR(r.companyId) && i.status === 'completed') ? `<button class="btn sm pri" data-act="ivFb" data-id="${i.id}">Give feedback</button>` : ''}</div></div>
+            <div class="fine">${D(i.date).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}, ${esc(i.start)} for ${i.duration} minutes. ${MODES[i.mode]}${i.mode === 'f2f' ? ` at ${esc(i.venue)}` : i.link ? `, ${esc(i.link)}` : ''}. Panel: ${(i.panel || []).map(nameOf).map(esc).join(', ')}.${i.callSent ? ` Call letter sent ${dt(i.callSent)}.` : ''}</div>${ivMsHtml(i)}</div>
+            <div class="tools">${full && i.status === 'scheduled' ? `<button class="btn sm" data-act="ivCall" data-id="${i.id}">Interview call letter</button>${ivMsButtons(i)}<button class="btn sm" data-act="ivStatus" data-id="${i.id}">Update</button>` : ''}${mineFb || (isHR(r.companyId) && i.status === 'completed') ? `<button class="btn sm pri" data-act="ivFb" data-id="${i.id}">Give feedback</button>` : ''}</div></div>
             ${Object.entries(i.feedback || {}).map(([by, f]) => `<div class="fine" style="margin-top:6px;color:var(--ink)"><b>${esc(nameOf(by))}</b>: ${'★'.repeat(+f.rating)}${'☆'.repeat(5 - f.rating)} ${RECS[f.rec]}. ${esc(f.comments)}</div>`).join('')}</div>`; }).join('') : '<p class="mut">No interviews yet.</p>'}</div>
       ${full || isOfferApprover(a) ? offerSection(a, c, r) : ''}
     </div><div>
@@ -3396,7 +3405,7 @@ VIEWS.interviews = () => {
   const list = S.interviews.filter((i) => (tab === 'mine' ? (i.panel || []).includes(me.id) : visibleApps.has(i.appId))).sort((a, b) => (a.date + a.start < b.date + b.start ? -1 : 1));
   const up = list.filter((i) => i.date >= t && i.status === 'scheduled'), past = list.filter((i) => !(i.date >= t && i.status === 'scheduled')).reverse();
   const row = (i) => { const a = appById(i.appId), c = candById(a.candId), r = reqById(a.reqId); const myFb = (i.panel || []).includes(me.id) && !(i.feedback || {})[me.id] && i.date <= t && i.status !== 'cancelled';
-    return `<tr class="click" data-act="openApp" data-id="${a.id}"><td>${D(i.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}<div class="fine">${esc(i.start)}, ${i.duration} min</div></td><td><b>${esc(c.name)}</b><div class="fine">${esc(r.title)}</div></td><td>${esc(i.round)}</td><td>${MODES[i.mode]}<div class="fine">${esc(i.mode === 'f2f' ? i.venue : i.link || '')}</div></td>
+    return `<tr class="click" data-act="openApp" data-id="${a.id}"><td>${D(i.date).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}<div class="fine">${esc(i.start)}, ${i.duration} min</div></td><td><b>${esc(c.name)}</b><div class="fine">${esc(r.title)}</div></td><td>${esc(i.round)}</td><td>${MODES[i.mode]}${i.ms && i.ms.id ? ' <span class="badge info" title="Meeting request sent from Outlook">Outlook</span>' : ''}<div class="fine">${esc(i.mode === 'f2f' ? i.venue : i.link || '')}</div></td>
       <td>${(i.panel || []).map(nameOf).map(esc).join(', ')}</td><td>${Object.keys(i.feedback || {}).length}/${(i.panel || []).length} ${myFb ? '<span class="badge warn">Your feedback due</span>' : ''}</td></tr>`; };
   const tbl = (rows) => (rows.length ? `<div class="scroll"><table class="t"><thead><tr><th>When</th><th>Candidate</th><th>Round</th><th>Type</th><th>Panel</th><th>Feedback</th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table></div>` : '<div class="empty">None.</div>');
   return { title: 'Interviews', html: `<nav class="tabs"><a href="#/interviews?tab=mine" class="${tab === 'mine' ? 'on' : ''}">Where I am on the panel</a>${isHR() || isManager() ? `<a href="#/interviews?tab=all" class="${tab === 'all' ? 'on' : ''}">All interviews</a>` : ''}</nav>
@@ -3435,7 +3444,7 @@ function offerSection(a, c, r) {
   return `<div class="card"><div class="hd"><div><h2>Offer ${o.letterNo ? esc(o.letterNo) : ''} <span class="badge ${o.status === 'accepted' ? 'ok' : o.status === 'declined' || o.status === 'rejected' ? 'bad' : 'mari'}">${expired ? 'Expired' : { draft: 'Draft', pending: 'Waiting for approval', approved: 'Approved, ready to issue', rejected: 'Not approved', issued: 'Issued', accepted: 'Accepted', declined: 'Declined' }[o.status]}</span></h2>
       <p class="sub">${esc((desig(o.desigId) || {}).name || r.title)}, grade ${esc((grade(o.gradeId) || {}).name || '—')}, ${esc((loc(o.locationId) || {}).name || '')}, reporting to ${esc(nameOf(o.managerId))}. Joining ${dmy(o.doj)}; probation ${o.probationMonths} months.${o.expiry ? ` Offer valid until ${dmy(o.expiry)}.` : ''}</p></div>
       <div class="tools">${!canSeeReq(r) ? '' : `${['draft', 'rejected'].includes(o.status) ? '<button class="btn" data-act="offerEdit">Edit</button><button class="btn pri" data-act="offerSubmit">Send for payroll approval</button>' : ''}${o.status === 'approved' ? '<button class="btn pri" data-act="offerIssue">Issue offer letter</button>' : ''}
-        ${['issued', 'accepted', 'declined'].includes(o.status) ? '<button class="btn" data-act="offerLetter">Offer letter</button>' : ''}${o.status === 'issued' ? '<button class="btn danger" data-act="offerResp" data-r="declined">Declined</button><button class="btn ok" data-act="offerResp" data-r="accepted">Accepted</button>' : ''}
+        ${['issued', 'accepted', 'declined'].includes(o.status) ? '<button class="btn" data-act="offerLetter">Offer letter</button>' : ''}${['approved', 'issued'].includes(o.status) ? '<button class="btn" data-act="negoNew">Candidate wants to negotiate</button>' : ''}${o.status === 'issued' ? '<button class="btn danger" data-act="offerResp" data-r="declined">Declined</button><button class="btn ok" data-act="offerResp" data-r="accepted">Accepted</button>' : ''}
         ${o.status === 'accepted' && a.stage !== 'joined' ? `<button class="btn pri" data-act="offerJoin">${c.exEmpId ? 'Rehire as employee' : 'Convert to employee'}</button>` : ''}`}</div></div>
     <div class="grid g2"><div><table class="t"><thead><tr><th>Salary (payroll view)</th><th class="r">Monthly</th><th class="r">Annual</th></tr></thead><tbody>
       ${comps.map((x) => (k.st.amounts[x.code] ? `<tr><td>${esc(x.name)}</td><td class="r">${inr0(k.st.amounts[x.code])}</td><td class="r">${inr0(k.st.amounts[x.code] * 12)}</td></tr>` : '')).join('')}
@@ -3507,7 +3516,7 @@ ACT.offerResp = async (b) => { const a = curApp(), o = a.offer, ok = b.dataset.r
   o.status = b.dataset.r; o.respondedAt = Date.now(); o.declineReason = n; setStage(a, ok ? 'accepted' : 'rejected', ok ? 'Offer accepted' : `Offer declined: ${n}`);
   if (ok) (a.followups = a.followups || []).push({ id: uid(), due: addDays(o.doj, -3) < todayISO() ? todayISO() : addDays(o.doj, -3), note: 'Confirm joining date', done: false, by: me.id });
   saveNow(); toast(ok ? 'Offer accepted' : 'Offer declined'); route(); };
-function markJoined(a, e) { const r = reqById(a.reqId); setStage(a, 'joined', `Joined as ${e.empNo}`); a.empId = e.id; r.filled = (r.filled || 0) + 1; if (r.filled >= r.positions) { r.status = 'closed'; r.approvals.push({ by: me.id, at: Date.now(), decision: 'filled' }); } }
+function markJoined(a, e) { const r = reqById(a.reqId); setStage(a, 'joined', `Joined as ${e.empNo}`); a.empId = e.id; a.closure = { ...(a.closure || {}), outcome: 'joined', outcomeAt: Date.now(), outcomeBy: me.id, joinedOn: e.doj }; r.filled = (r.filled || 0) + 1; if (r.filled >= r.positions) { r.status = 'closed'; r.approvals.push({ by: me.id, at: Date.now(), decision: 'filled' }); } }
 ACT.offerJoin = () => {
   const a = curApp(), o = a.offer, r = reqById(a.reqId), c = candById(a.candId), co = coById(r.companyId);
   if (c.exEmpId) { ACT.rehireStart({ dataset: { id: c.exEmpId } }, { companyId: r.companyId, doj: o.doj, deptId: r.deptId, desigId: o.desigId, gradeId: o.gradeId, locationId: o.locationId, managerId: o.managerId, ctc: o.ctc, probationMonths: o.probationMonths, source: `Rehired through ${r.no}`, onDone: (e) => markJoined(a, e) }); return; }
@@ -3906,7 +3915,7 @@ const FLOW_TYPES = {
 };
 const LEVELS = { manager: 'Line manager', matrix: 'Dotted-line manager', skip: 'Manager’s manager', deptHead: 'Head of department', payroll: 'Payroll approver', person: 'A named person', finance: 'Finance team', hr: 'HR' };
 const flowFor = (coId, type) => (((coById(coId) || {}).flows || {})[type] || FLOW_TYPES[type].def);
-function buildSteps(type, emp, amount, requesterId) {
+function buildSteps(type, emp, amount, requesterId, data) {
   const co = coById(emp.companyId) || {};
   const steps = [];
   const resolve = (l) => {
@@ -3922,7 +3931,7 @@ function buildSteps(type, emp, amount, requesterId) {
     return [];
   };
   const unit = FLOW_TYPES[type].unit;
-  let chain = flowFor(emp.companyId, type).filter((l) => !(+l.minAmount > 0) || (unit ? (+amount || 0) > +l.minAmount : (+amount || 0) >= +l.minAmount));
+  let chain = flowFor(emp.companyId, type).filter((l) => !(+l.minAmount > 0) || (unit ? (+amount || 0) > +l.minAmount : (+amount || 0) >= +l.minAmount)).filter((l) => stepApplies(l, data));
   if (FLOW_TYPES[type].hrLast && (!chain.length || chain[chain.length - 1].level !== 'hr')) chain = [...chain, { level: 'hr' }];
   chain.forEach((l) => {
     const ids = uniq(resolve(l)).filter((id) => empById(id) && active(empById(id)) && id !== emp.id && (l.level === 'hr' || id !== requesterId));
@@ -3958,7 +3967,7 @@ VIEWS.flows = () => {
   return { title: 'Approval workflows', html: `<div class="card"><h2>Approval workflows for ${esc(co.name)}</h2>
     <p class="sub">Who approves each kind of request, in order. A step is skipped when nobody holds that role (for example no dotted-line manager), and someone never approves their own request. Leave, attendance, overtime and goals keep their own rules under Leave and Time Management.</p></div>
     ${Object.entries(FLOW_TYPES).filter(([, t]) => !t.hidden).map(([k, t]) => { const ch = flows[k] || t.def; return `<div class="card"><div class="hd"><div><h2>${esc(t.label)}</h2><p class="sub">${t.note || (t.hrLast ? 'HR always approves last, because the result changes pay or leave records.' : 'After approval, HR pays the claim through payroll or marks it paid.')}</p></div><button class="btn" data-act="flowEdit" data-k="${k}">Change</button></div>
-      <ol class="steps">${ch.map((l) => `<li><b>${esc(l.level === 'person' ? nameOf(l.personId) : LEVELS[l.level])}</b>${+l.minAmount > 0 ? ` <span class="fine">only for ${t.unit ? `more than ${l.minAmount} ${t.unit}` : `${inr0(l.minAmount)} or more`}</span>` : ''}</li>`).join('')}${t.hrLast && ch[ch.length - 1]?.level !== 'hr' ? '<li><b>HR</b> <span class="fine">added automatically</span></li>' : ''}</ol></div>`; }).join('')}` };
+      <ol class="steps">${ch.map((l) => `<li><b>${esc(l.level === 'person' ? nameOf(l.personId) : LEVELS[l.level])}</b>${+l.minAmount > 0 ? ` <span class="fine">only for ${t.unit ? `more than ${l.minAmount} ${t.unit}` : `${inr0(l.minAmount)} or more`}</span>` : ''}${k === 'expense' ? stepCondTxt(l) : ''}</li>`).join('')}${t.hrLast && ch[ch.length - 1]?.level !== 'hr' ? '<li><b>HR</b> <span class="fine">added automatically</span></li>' : ''}</ol></div>`; }).join('')}` };
 };
 ACT.flowEdit = (b) => {
   const co = company(); const k = b.dataset.k; let ch = JSON.parse(JSON.stringify(flowFor(co.id, k)));
@@ -3968,11 +3977,13 @@ ACT.flowEdit = (b) => {
       <label class="field">Step ${i + 1}<select class="inp" data-i="${i}" data-f="level">${Object.entries(LEVELS).map(([v, n]) => `<option value="${v}" ${v === l.level ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
       <label class="field" ${l.level === 'person' ? '' : 'style="visibility:hidden"'}>Person<select class="inp" data-i="${i}" data-f="personId"><option value="">Choose</option>${people.map((p) => `<option value="${p.id}" ${p.id === l.personId ? 'selected' : ''}>${esc(fullName(p))}</option>`).join('')}</select></label>
       ${k === 'expense' || FLOW_TYPES[k].unit ? `<label class="field">Only from (${FLOW_TYPES[k].unit || '₹'})<input class="inp" type="number" min="0" data-i="${i}" data-f="minAmount" value="${esc(l.minAmount || '')}"></label>` : ''}
-      <div class="tools"><button type="button" class="btn sm" data-mv="${i}" data-d="-1" ${i ? '' : 'disabled'}>↑</button><button type="button" class="btn sm" data-mv="${i}" data-d="1" ${i < ch.length - 1 ? '' : 'disabled'}>↓</button><button type="button" class="btn sm danger" data-rm="${i}">✕</button></div></div>`).join('')}</div>
+      <div class="tools"><button type="button" class="btn sm" data-mv="${i}" data-d="-1" ${i ? '' : 'disabled'}>↑</button><button type="button" class="btn sm" data-mv="${i}" data-d="1" ${i < ch.length - 1 ? '' : 'disabled'}>↓</button><button type="button" class="btn sm danger" data-rm="${i}">✕</button></div></div>${k === 'expense' ? stepCondHtml(l, i) : ''}`).join('')}</div>
       <button type="button" class="btn sm" id="flAdd">Add a step</button>
       <p class="err" id="flE"></p><div class="btns"><button type="button" class="btn ghost" id="flReset" style="margin-right:auto">Restore default</button><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
     const f = $('#flF');
     f.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('change', () => { ch[+el.dataset.i][el.dataset.f] = el.dataset.f === 'minAmount' ? +el.value || 0 : el.value; if (el.dataset.f === 'level') draw(); }));
+    f.querySelectorAll('[data-cond]').forEach((el) => el.addEventListener('change', () => { const i = +el.dataset.i, key = el.dataset.cond;
+      if (key === 'onIssues') ch[i].onIssues = el.checked; else ch[i][key] = $$(`[data-cond="${key}"][data-i="${i}"]:checked`, f).map((x) => x.value); }));
     f.querySelectorAll('[data-mv]').forEach((el) => { el.onclick = () => { const i = +el.dataset.mv, j = i + +el.dataset.d; [ch[i], ch[j]] = [ch[j], ch[i]]; draw(); }; });
     f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { ch.splice(+el.dataset.rm, 1); draw(); }; });
     $('#flAdd').onclick = () => { ch.push({ level: 'hr' }); draw(); };
@@ -4320,7 +4331,7 @@ ACT.yeCsv = (b) => {
 const EXP_UNITS = { amount: 'Amount', km: 'Kilometres × rate', day: 'Days × rate' };
 const catById = (id) => S.expenseCats.find((c) => c.id === id);
 function seedExpenseCats(coId) {
-  if (S.expenseCats.some((c) => c.companyId === coId)) return false;
+  if (S.expenseCats.some((c) => c.companyId === coId && c.kind !== 'purpose')) return false;
   [['Travel: air, rail, bus', 'amount', 0, 0, 0, 0], ['Local conveyance (own vehicle)', 'km', 9, 0, 3000, 0], ['Taxi and auto', 'amount', 0, 2000, 0, 0], ['Hotel stay', 'day', 4000, 0, 0, 0],
    ['Meals while travelling', 'day', 800, 0, 0, 0], ['Client entertainment', 'amount', 0, 5000, 0, 0], ['Mobile and internet', 'amount', 0, 0, 1000, 0], ['Other', 'amount', 0, 2000, 0, 0]]
     .forEach(([name, unit, rate, limitPerClaim, limitPerMonth], i) => S.expenseCats.push({ id: uid(), companyId: coId, name, code: String(5100 + i * 10), unit, rate, limitPerClaim, limitPerMonth, receiptAbove: unit === 'km' ? 0 : 500, active: true }));
@@ -4328,7 +4339,7 @@ function seedExpenseCats(coId) {
 }
 VIEWS.expcats = () => {
   if (isHR() && seedExpenseCats(CO)) setTimeout(saveNow, 0);
-  return { title: 'Expense categories', html: crudCard('expenseCats', { coll: 'expenseCats', title: 'Expense categories and limits', one: 'expense category', wide: true, filter: (x) => x.companyId === CO, base: () => ({ companyId: CO }),
+  return { title: 'Expense categories', html: crudCard('expenseCats', { coll: 'expenseCats', title: 'Expense categories and limits', one: 'expense category', wide: true, filter: (x) => x.companyId === CO && x.kind !== 'purpose', base: () => ({ companyId: CO }),
     sub: 'Master data for claims: the GL code each category posts to, how it is claimed and its limits. Claims over a limit can still be sent, with the excess shown to approvers.',
     sort: (a, b) => (a.code || '').localeCompare(b.code || ''), defaults: { unit: 'amount', active: true, receiptAbove: 500 },
     inUse: (r) => (S.expenseClaims.some((c) => (c.lines || []).some((l) => l.catId === r.id)) ? 'Claims use this category. Switch it off instead.' : ''),
@@ -4359,10 +4370,10 @@ VIEWS.expenses = () => {
   const st = R.q.get('s') || 'open';
   const shown = tab === 'team' ? team.filter((c) => (st === 'open' ? ['pending', 'approved'].includes(c.status) : st === 'all' || c.status === st)) : mine;
   const table = (cs, who) => (cs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Claim</th>${who ? '<th>Employee</th>' : ''}<th>Submitted</th><th class="r">Amount</th><th>Status</th><th>Waiting for</th></tr></thead><tbody>${cs.map((c) => `<tr class="click" data-act="claimOpen" data-id="${c.id}"><td><b>${esc(c.title || c.no)}</b><div class="fine">${esc(c.no || '')}, ${(c.lines || []).length} item${(c.lines || []).length === 1 ? '' : 's'}</div></td>${who ? `<td>${esc(nameOf(c.empId))}</td>` : ''}
-    <td class="fine">${c.submittedAt ? dShort(isoOf(new Date(c.submittedAt))) : '—'}</td><td class="r">${inr0(claimTotal(c))}</td><td>${pill(c.status)}</td><td class="fine">${c.status === 'pending' ? esc((stepNow(c) || {}).label || '') : c.status === 'approved' ? 'Finance to pay' : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No claims here.</div>');
+    <td class="fine">${c.submittedAt ? dShort(isoOf(new Date(c.submittedAt))) : '—'}</td><td class="r">${inr0(claimTotal(c))}</td><td>${pill(c.status)}</td><td class="fine">${c.status === 'pending' ? esc((stepNow(c) || {}).label || '') : c.status === 'approved' ? esc(claimPayNote(c)) : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No claims here.</div>');
   return { title: tab === 'team' ? 'Claims to approve and pay' : 'My expense claims', html: tab === 'team' ? `<div class="card"><div class="hd"><div><h2>Claims</h2><p class="sub">Claims where you are an approver${canPay() ? ', and every claim in the company' : ''}. Finance checks each claim and its receipts, then pays approved claims with salary as a reimbursement, or records a payment made outside payroll.</p></div>
       <div class="tabs" style="border:0;margin:0">${[['open', 'Open'], ['pending', 'Waiting'], ['approved', 'To pay'], ['paid', 'Paid'], ['rejected', 'Rejected'], ['all', 'All']].map(([k, n]) => `<a href="#/expenses?tab=team&s=${k}" class="${st === k ? 'on' : ''}">${n}</a>`).join('')}</div></div>${table(shown, true)}</div>`
-    : `<div class="card"><div class="hd"><div><h2>My expense claims</h2><p class="sub">Add each expense with its receipt, then send the claim. It goes through the approvers set by HR and is paid with your salary.</p></div><button class="btn pri" data-act="claimEdit">New claim</button></div>${table(mine)}</div>` };
+    : `<div class="card"><div class="hd"><div><h2>My expense claims</h2><p class="sub">Choose the purpose, add each expense with its receipt and attach any supporting documents, then send the claim. It goes through the approvers set by HR and is paid in the next reimbursement run.</p></div><button class="btn pri" data-act="claimEdit">New claim</button></div>${table(mine)}</div>` };
 };
 ACT.claimOpen = (b) => go('#/claim/' + b.dataset.id);
 ACT.claimEdit = (b) => {
@@ -4381,15 +4392,23 @@ ACT.claimEdit = (b) => {
         <td class="r"><input class="inp" type="number" min="0" data-i="${i}" data-f="amount" value="${esc(l.amount)}" style="width:110px" ${cat.unit && cat.unit !== 'amount' ? 'readonly' : ''}>${iss.length ? `<div class="fine" style="color:var(--warn)">${esc(iss.join('; '))}</div>` : ''}</td>
         <td>${l.fileId ? `<a href="/api/files/${l.fileId}" target="_blank" rel="noopener">${esc(l.fileName || 'Receipt')}</a>` : ''}<label class="btn sm" style="margin-left:4px">${l.fileId ? 'Replace' : 'Attach'}<input type="file" accept="image/*,application/pdf" hidden data-up="${i}"></label></td>
         <td><button type="button" class="btn sm danger" data-rm="${i}" aria-label="Remove line">✕</button></td></tr>`; }).join('')}</tbody>
-      <tfoot><tr><td colspan="4"><button type="button" class="btn sm" id="clAdd">Add an expense</button></td><td class="r"><b>${inr0(claimTotal(c))}</b></td><td colspan="2"></td></tr></tfoot></table></div>
+      <tfoot><tr><td colspan="4"><button type="button" class="btn sm" id="clAdd">Add an expense</button></td><td class="r"><b id="clTot">${inr0(claimTotal(c))}</b></td><td colspan="2"></td></tr></tfoot></table></div>
       <p class="err" id="clE"></p><div class="btns">${c0 ? '<button type="button" class="btn danger" id="clDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn" id="clDraft">Save draft</button><button class="btn pri">Send for approval</button></div></form>`, true);
     const f = $('#clF');
     f.elements.title.oninput = () => { c.title = f.elements.title.value; };
-    f.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('change', () => {
-      const l = c.lines[+el.dataset.i]; l[el.dataset.f] = el.value; const cat = catById(l.catId) || {};
-      if (cat.unit && cat.unit !== 'amount') l.amount = r2((+l.qty || 0) * (+cat.rate || 0));
-      c.title = f.elements.title.value; draw();
-    }));
+    // Typing a date, details or amount only updates the line and the total; the table is redrawn when the category
+    // or the km/days change. Redrawing on every field lost the box the user was clicking into next.
+    const tot = () => { const t = $('#clTot'); if (t) t.textContent = inr0(claimTotal(c)); };
+    f.querySelectorAll('[data-f]').forEach((el) => {
+      const keep = ['date', 'desc', 'amount'].includes(el.dataset.f);
+      if (keep) el.addEventListener('input', () => { c.lines[+el.dataset.i][el.dataset.f] = el.value; tot(); });
+      el.addEventListener('change', () => {
+        const l = c.lines[+el.dataset.i]; l[el.dataset.f] = el.value; const cat = catById(l.catId) || {};
+        if (cat.unit && cat.unit !== 'amount') l.amount = r2((+l.qty || 0) * (+cat.rate || 0));
+        c.title = f.elements.title.value;
+        if (keep) tot(); else draw();
+      });
+    });
     f.querySelectorAll('[data-up]').forEach((el) => el.addEventListener('change', async () => {
       const file = el.files[0]; if (!file) return; $('#clE').textContent = 'Uploading…';
       try { const up = await uploadFile(file); Object.assign(c.lines[+el.dataset.up], { fileId: up.id, fileName: file.name }); c.title = f.elements.title.value; draw(); }
@@ -7053,9 +7072,9 @@ const VERIFY = { verified: ['Checked: confirmed', 'ok'], pending: ['Check in pro
 const yearOpts = () => { const y = +todayISO().slice(0, 4); return Array.from({ length: 60 }, (_, i) => [String(y + 5 - i), String(y + 5 - i)]); };
 const BG = {
   prevJobs: { title: 'Previous employment', one: 'previous job', sub: 'Employers before this one, latest first. HR confirms them with each employer.',
-    fields: [{ k: 'employer', label: 'Employer', master: 'employer', pick: 'employer', req: true }, { k: 'designation', label: 'Designation', pick: 'desig', req: true }, { k: 'location', label: 'City' },
+    fields: [{ k: 'employer', label: 'Employer', master: 'employer', pick: 'employer', req: true }, { k: 'designation', label: 'Designation', pick: 'desig', req: true }, { k: 'location', label: 'City', pick: 'location' },
       { k: 'from', label: 'From', type: 'month', req: true }, { k: 'to', label: 'To', type: 'month', help: 'Leave empty for a job you still hold' }, { k: 'empCode', label: 'Employee number there' },
-      { k: 'lastCtc', label: 'Last annual CTC (₹)', type: 'number', min: 0, help: 'Seen only by you and HR' }, { k: 'reason', label: 'Reason for leaving', help: 'Seen only by you and HR' },
+      { k: 'lastCtc', label: 'Last annual CTC (₹)', type: 'number', min: 0, help: 'Seen only by you and HR' }, { k: 'reason', label: 'Reason for leaving', pick: 'leaveReason', help: 'Seen only by you and HR. Choose Others if it is not on the list' },
       { k: 'resp', label: 'Responsibilities', type: 'respMatrix', wide: true }, { k: 'duties', label: 'Other responsibilities, in your words', type: 'textarea', wide: true, help: 'Anything that is not on the list above' },
       { k: 'contact', label: 'HR contact there (name, e-mail or phone)', wide: true }, { k: 'doc', label: 'Relieving or experience letter', type: 'file', wide: true }],
     sort: (a, b) => String(b.from || '').localeCompare(String(a.from || '')),
@@ -7098,7 +7117,7 @@ function bgCard(e, k, { hr, mine }) {
   return `<div class="card"><div class="hd"><div><h2>${esc(def.title)}</h2><p class="sub">${esc(def.sub)}</p></div>${can ? `<button class="btn ${list.length ? '' : 'pri'}" data-act="bgEdit" data-emp="${e.id}" data-k="${k}">Add ${esc(def.one)}</button>` : ''}</div>
     ${list.length ? `<div class="scroll"><table class="t"><thead><tr>${def.head.map((h) => `<th>${h}</th>`).join('')}<th>Check by HR</th><th></th></tr></thead><tbody>${list.map((x) => { const c = def.row(x);
       return `<tr><td>${c[0]}${masterNote(x)}${x.docFileId ? `<div class="fine"><a href="/api/files/${x.docFileId}" target="_blank" rel="noopener">📎 ${esc(x.docName || 'Document')}</a></div>` : ''}</td><td>${c[1]}</td><td>${c[2]}</td>
-        <td>${verifyBadge(x)}${x.verify && x.verify.at ? `<div class="fine">${dmy(x.verify.at)}${hr && x.verify.by ? `, ${esc(nameOf(x.verify.by))}` : ''}</div>` : ''}${hr && x.verify && x.verify.note ? `<div class="fine">${esc(x.verify.note)}</div>` : ''}</td>
+        <td>${k === 'prevTrainings' && !(x.verify && x.verify.status) ? trainingUnvalidated(x) : verifyBadge(x)}${x.verify && x.verify.at ? `<div class="fine">${dmy(x.verify.at)}${hr && x.verify.by ? `, ${esc(nameOf(x.verify.by))}` : ''}</div>` : ''}${hr && x.verify && x.verify.note ? `<div class="fine">${esc(x.verify.note)}</div>` : ''}</td>
         <td class="r" style="white-space:nowrap">${can ? `<button class="btn sm" data-act="bgEdit" data-emp="${e.id}" data-k="${k}" data-id="${x.id}">Edit</button>` : ''} ${hr ? `<button class="btn sm ${x.verify && x.verify.status === 'verified' ? 'ghost' : 'pri'}" data-act="bgCheck" data-emp="${e.id}" data-k="${k}" data-id="${x.id}">Check</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>`
       : `<div class="empty">${can ? `Nothing added yet. Add each ${esc(def.one)} so HR can confirm it.` : 'Nothing added yet.'}</div>`}</div>`;
 }
@@ -7107,12 +7126,14 @@ PROFILE_TABS.background = (e, { hr, mine }) => {
   const all = BG_KEYS.filter((k) => !(noAwards && k === 'awards')).flatMap((k) => (hr || mine || k !== 'references' ? (e[k] || []) : []));
   const done = all.filter((x) => x.verify && x.verify.status === 'verified').length, bad = all.filter((x) => x.verify && x.verify.status === 'discrepancy').length;
   const exp = (e.prevJobs || []).reduce((s, x) => { if (!x.from) return s; const end = x.to || (e.doj || todayISO()).slice(0, 7); return s + Math.max(0, (+end.slice(0, 4) - +x.from.slice(0, 4)) * 12 + (+end.slice(5, 7) - +x.from.slice(5, 7)) + 1); }, 0);
-  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Experience before joining</span><b>${exp ? `${Math.floor(exp / 12)} yr${exp % 12 ? ` ${exp % 12} mo` : ''}` : '—'}</b><small>${(e.prevJobs || []).length} employer${(e.prevJobs || []).length === 1 ? '' : 's'}</small></div>
+  /* 2.16: total experience: before joining and here */
+  const here = monthsHere(e); const ym = (m) => (m ? `${Math.floor(m / 12)} yr${m % 12 ? ` ${m % 12} mo` : ''}` : '0');
+  return `<div class="grid g4" style="margin-bottom:16px"><div class="kpi"><span>Total experience</span><b>${exp + here ? ym(exp + here) : '—'}</b><small>${ym(exp)} before joining (${(e.prevJobs || []).length} employer${(e.prevJobs || []).length === 1 ? '' : 's'}), ${ym(here)} here</small></div>
       <div class="kpi"><span>Highest qualification</span><b style="font-size:18px">${esc(((e.education || []).slice().sort(BG.education.sort)[0] || {}).qualification || '—')}</b><small>${esc(((e.education || []).slice().sort(BG.education.sort)[0] || {}).institution || '')}</small></div>
       <div class="kpi"><span>Checked by HR</span><b>${done} of ${all.length}</b><small>${bad ? `${bad} do not match` : all.length ? 'entries confirmed' : 'nothing to check yet'}</small></div>
       ${noAwards ? '' : `<div class="kpi"><span>Awards</span><b>${(e.awards || []).length}</b><small>${esc(((e.awards || []).slice().sort(BG.awards.sort)[0] || {}).title || '')}</small></div>`}</div>
     ${bad && hr ? `<div class="note bad">${bad} ${bad === 1 ? 'entry does' : 'entries do'} not match what was checked. See the notes below.</div>` : ''}
-    ${bgCard(e, 'prevJobs', { hr, mine })}${bgCard(e, 'education', { hr, mine })}${noAwards ? '' : bgCard(e, 'awards', { hr, mine })}${hr || mine ? bgCard(e, 'references', { hr, mine }) : ''}`;
+    ${bgCard(e, 'prevJobs', { hr, mine })}${bgCard(e, 'education', { hr, mine })}${bgCard(e, 'prevTrainings', { hr, mine })}${noAwards ? '' : bgCard(e, 'awards', { hr, mine })}${hr || mine ? bgCard(e, 'references', { hr, mine }) : ''}`;
 };
 const BG_KEYS = ['prevJobs', 'education', 'awards', 'references'];
 const bgContent = (x) => JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'verify').sort()));
@@ -7126,6 +7147,10 @@ function masterInput(f, v, kind, coId) {
 const PICK_OTHER = '__other';
 function pickNames(kind, coId) {
   if (kind === 'desig') return [...new Set(S.desigs.filter((x) => x.companyId === coId).map((x) => x.name))].sort((a, b) => a.localeCompare(b));
+  if (kind === 'location') return [...new Set(S.locations.filter((x) => x.companyId === coId).map((x) => x.name))].sort((a, b) => a.localeCompare(b));
+  if (kind === 'leaveReason') return LEAVE_REASONS.slice();
+  if (kind === 'training') return [...new Set([...S.trainings.filter((t) => t.companyId === coId && t.status !== 'cancelled').map((t) => String(t.title || '').trim()),
+    ...S.masterItems.filter((x) => x.companyId === coId && x.kind === 'training' && (x.status === 'approved' || (x.status === 'proposed' && x.proposedBy === me.id))).map((x) => x.name)].filter(Boolean))].sort((a, b) => a.localeCompare(b));
   return S.masterItems.filter((x) => x.companyId === coId && x.kind === kind && (x.status === 'approved' || (x.status === 'proposed' && x.proposedBy === me.id))).map((x) => x.name).sort((a, b) => a.localeCompare(b));
 }
 /* 2.13: awards are given by an organisation the employee worked at (this company or a previous job) or, for an
@@ -7160,13 +7185,13 @@ function awardIssuerProblem(d, e) {
 }
 function pickInput(f, v, coId, e) {
   if (f.pick === 'worked') return workedPickInput(f, v, e);
-  const names = pickNames(f.pick, coId); const cur = String(v || '').trim();
+  const names = f.pick === 'jobsOf' ? workedAt(e || {}) : pickNames(f.pick, coId); const cur = String(v || '').trim();
   const hit = cur ? names.find((n) => normKey(n) === normKey(cur)) : '';
   const other = !!cur && !hit;
-  const src = f.pick === 'desig' ? 'the designation master' : 'the list of employers';
+  const src = { desig: 'the designation master', location: 'the locations and cities', leaveReason: 'the standard reasons', training: 'the training records and the list of professional trainings (a new name goes to HR)', jobsOf: 'this company and your previous employers' }[f.pick] || 'the list of employers';
   return `<label class="field ${f.wide ? 'wide' : ''}">${reqLabel(f)}<select class="inp" name="${f.k}" data-pick="${f.k}" ${f.req ? 'required' : ''}>
     <option value="">${names.length ? 'Choose' : 'Nothing on the list yet'}</option>${names.map((n) => `<option value="${esc(n)}" ${n === hit ? 'selected' : ''}>${esc(n)}</option>`).join('')}<option value="${PICK_OTHER}" ${other ? 'selected' : ''}>Others</option></select>
-    <input class="inp" name="${f.k}${PICK_OTHER}" value="${esc(other ? cur : '')}" placeholder="Type the ${f.pick === 'desig' ? 'designation' : 'name'} in full" autocomplete="off" ${f.maxLen ? `maxlength="${f.maxLen}"` : ''} ${other ? '' : 'hidden'}>
+    <input class="inp" name="${f.k}${PICK_OTHER}" value="${esc(other ? cur : '')}" placeholder="Type the ${f.pick === 'desig' ? 'designation' : f.pick === 'location' ? 'city or place' : f.pick === 'leaveReason' ? 'reason' : f.pick === 'training' ? 'training or certification' : 'name'} in full" autocomplete="off" ${f.maxLen ? `maxlength="${f.maxLen}"` : ''} ${other ? '' : 'hidden'}>
     <small>${esc(f.help || `From ${src}. Choose Others if it is not there.`)}</small></label>`;
 }
 function wirePicks(form) {
@@ -7206,6 +7231,7 @@ const masterById = (id) => S.masterItems.find((x) => x.id === id);
 /* A name typed against a standard list: the matching entry, a name already proposed, or a new proposal for HR. */
 function masterFor(kind, name, coId, extra = {}) {
   const n = String(name || '').replace(/\s+/g, ' ').trim(); if (!n) return { id: '', name: '' };
+  if (kind === 'training') { const t = S.trainings.find((x) => x.companyId === coId && normKey(x.title) === normKey(n)); if (t) return { id: '', name: t.title, recId: t.id }; }
   const key = normKey(n);
   let hit = S.masterItems.find((x) => x.companyId === coId && x.kind === kind && (normKey(x.name) === key || (x.aliases || []).some((a) => normKey(a) === key)));
   if (hit && hit.status === 'merged') hit = masterById(hit.mergedInto) || hit;
@@ -7220,7 +7246,7 @@ ACT.bgEdit = (b) => {
   const v = x0 || (k === 'references' ? { kind: 'reference' } : k === 'education' ? { level: 'Graduate', mode: 'full', scoreType: 'pct' } : k === 'awards' ? { category: 'Professional' } : {});
   const prev = CO; CO = e.companyId;
   const html = dfields.map((f) => (f.pick ? pickInput(f, v[f.k], e.companyId, e) : f.type === 'respMatrix' ? respMatrixHtml(v, e.companyId) : f.master ? masterInput(f, v[f.k], MASTER_KIND[f.k], e.companyId) : f.type === 'file'
-    ? `<label class="field wide">${esc(f.label)}<input type="file" class="inp" name="${f.k}" accept="image/*,application/pdf"><small>${v.docFileId ? `Attached: ${esc(v.docName || 'document')}. Choose a file to replace it.` : 'Optional. A photo or PDF, up to 10 MB.'}</small></label>` : fieldHtml(f, v[f.k]))).join('');
+    ? `<label class="field wide">${esc(f.label)}<input type="file" class="inp" name="${f.k}" accept="image/*,application/pdf"><small>${v.docFileId ? `Attached: ${esc(v.docName || 'document')}. Choose a file to replace it.` : esc(f.help || 'Optional. A photo or PDF, up to 10 MB.')}</small></label>` : fieldHtml(f, v[f.k]))).join('');
   CO = prev;
   openDlg(`<form class="dlg" id="bgF" novalidate><h2>${x0 ? 'Edit' : 'Add'} ${esc(def.one)}${e.id !== me.id ? `: ${esc(fullName(e))}` : ''}</h2>
     ${x0 && x0.verify && x0.verify.status && !isHR(e.companyId) ? '<p class="fine" style="margin:0">HR has checked this entry. If you change it, HR checks it again.</p>' : ''}
@@ -7245,6 +7271,7 @@ ACT.bgEdit = (b) => {
     const file = form.elements.doc && form.elements.doc.files[0];
     let added = 0, proposed = 0;
     Object.entries(MASTER_FIELD).forEach(([f, idk]) => { if (!fields.some((x) => x.k === f && x.master)) return; const m = masterFor(MASTER_KIND[f], d[f], e.companyId); d[f] = m.name; d[idk] = m.id; if (m.isNew) (m.approved ? added++ : proposed++); });
+    if (def.prep) { const bad = def.prep(d, e); if (bad) return err(bad); }
     if (file) { try { err(`Uploading ${file.name}…`); const up = await uploadFile(file); d.docFileId = up.id; d.docName = file.name; } catch (x) { return err(x.message); } }
     const list = e[k] = e[k] || [];
     if (x0) { const before = bgContent(x0); Object.assign(x0, d); if (bgContent(x0) !== before && !isHR(e.companyId)) delete x0.verify; }
@@ -7267,6 +7294,7 @@ ACT.bgCheck = (b) => {
   $('#bcF').onsubmit = (ev) => { ev.preventDefault(); const d = readForm(ev.target, fields);
     if (d.status && d.status !== 'pending' && !d.at) { $('#bcE').textContent = 'Enter when it was checked.'; return; }
     if (d.status === 'discrepancy' && d.note.length < 4) { $('#bcE').textContent = 'Say what does not match.'; return; }
+    if (k === 'prevTrainings' && d.status === 'verified' && !x.docFileId) { $('#bcE').textContent = 'A training is validated against its certificate: ask the employee to upload it first.'; return; }
     if (d.status) x.verify = { ...d, by: me.id }; else delete x.verify;
     audit('Background checked', `${fullName(e)}: ${BG[k].title}, ${d.status ? VERIFY[d.status][0] : 'not checked'}`, 'org', 'employee', e.id);
     saveNow(); closeDlg(); toast('Saved'); route(); };
@@ -7635,11 +7663,13 @@ function myNotices() {
   }
   S.masterItems.filter((x) => x.proposedBy === me.id && x.decidedBy && x.decidedBy !== me.id && x.decidedAt > Date.now() - 14 * 86400000).forEach((x) => out.push({ kind: 'info', icon: '📋', title: x.status === 'approved' ? `“${x.name}” is now on the standard list` : x.status === 'merged' ? `“${x.name}” was matched to ${(masterById(x.mergedInto) || {}).name || 'an existing entry'}` : `“${x.name}” stays on your profile only`,
     text: x.status === 'rejected' ? 'HR kept it off the standard list; your profile shows it as you typed it.' : 'Your profile shows the standard name.', link: '#/profile?tab=background' }));
+  unreadPosts().slice(0, 5).forEach((p) => out.push({ kind: 'news', icon: postIcon(p), title: p.title, text: `${POST_KINDS[postKind(p)][0]}${p.ack ? ', please confirm you have read it' : ''}`, link: `#/hub/${p.id}` }));
   return out;
 }
 /* At sign-in, once a day: a greeting on someone's birthday or anniversary, and shift changes made for them */
 function showLoginNotices() {
   if (!me) return;
+  if (showBroadcasts()) return;           // 2.16: news to read first; the greeting waits for the next sign-in
   const g = greetPol(me.companyId); if (g.popup === false) return;
   const list = myNotices().filter((x) => x.kind === 'celebrate' || x.kind === 'shift'); if (!list.length) return;
   const key = `pd.greet.${me.id}.${todayISO()}`; try { if (localStorage.getItem(key)) return; localStorage.setItem(key, '1'); } catch (e) { /* private mode: show it anyway */ }
@@ -7681,6 +7711,8 @@ function wfPending() {
     S.payRuns.filter((r) => runReg(r) === 'contract' && r.status === 'locked' && isHR(r.companyId)).forEach((r) => Object.keys(r.bills || {}).forEach((cid) => { const due = billDue(r, cid);
       if (due > 0.5) out.push({ kind: 'conbill', r: { cand: conName(cid) }, what: `Contractor bill for ${monthName(r.month)} to pay: ${inr0(due)}`, link: `#/payroll/${r.id}?tab=contract` }); }));
     const soon = addDays(todayISO(), 30);
+    S.employees.filter((e) => isHR(e.companyId) && active(e)).forEach((e) => { const n = (e.prevTrainings || []).filter((x) => x.docFileId && !(x.verify && x.verify.status)).length;
+      if (n) out.push({ kind: 'train', r: { empId: e.id }, what: `${n} training certificate${n === 1 ? '' : 's'} to validate`, link: `#/profile/${e.id}?tab=background` }); });
     S.contractors.filter((c) => isHR(c.companyId) && c.active !== false && c.licenceTo && c.licenceTo <= soon).forEach((c) => out.push({ kind: 'conlic', r: { cand: c.name }, what: `Contract labour licence ${c.licenceTo < todayISO() ? 'expired' : 'expires'} on ${dmy(c.licenceTo)}`, link: '#/contractors' }));
   }
   return out;
@@ -9387,11 +9419,11 @@ const CF_SECTIONS = [
   ['Current job', [['currentCompany', 'Employer'], ['currentTitle', 'Role'], ['expYears', 'Experience (years)'], ['currentCtc', 'Current CTC', inr0], ['expectedCtc', 'Expected CTC', inr0], ['noticeDays', 'Notice (days)'], ['skills', 'Skills'], ['about', 'About themselves']]],
 ];
 const CF_LISTS = [['education', 'Education', ['qualification', 'specialisation', 'institution', 'university', 'toYear', 'score']], ['prevJobs', 'Previous jobs', ['employer', 'designation', 'from', 'to', 'lastCtc', 'reason', 'mainResp', 'secResp']],
-  ['references', 'References', ['name', 'organisation', 'designation', 'relation', 'phone', 'email']], ['family', 'Family', ['relation', 'name', 'dob', 'occupation', 'phone', 'dependant']]];
+  ['awards', 'Awards', ['title', 'issuer', 'category', 'date']], ['references', 'References', ['name', 'organisation', 'designation', 'relation', 'phone', 'email']], ['family', 'Family', ['relation', 'name', 'dob', 'occupation', 'phone', 'dependant']]];
 function candFormHtml(c) {
   const d = cfData(c) || {};
   return `${CF_SECTIONS.map(([t, fs]) => `<h3>${esc(t)}</h3><table class="t"><tbody>${fs.filter(([k]) => d[k] !== '' && d[k] != null).map(([k, l, fmt]) => `<tr><td class="fine" style="width:34%">${esc(l)}</td><td style="white-space:pre-wrap">${esc(fmt ? fmt(d[k]) : d[k])}</td></tr>`).join('') || '<tr><td class="fine">Nothing entered.</td></tr>'}</tbody></table>`).join('')}
-    ${CF_LISTS.map(([k, t, cols]) => `<h3>${esc(t)}</h3>${(d[k] || []).length ? `<div class="scroll"><table class="t"><tbody>${d[k].map((r) => `<tr>${cols.map((x) => `<td>${Array.isArray(r[x]) ? (r[x].length ? `<span class="fine">${x === 'mainResp' ? 'Main' : 'Secondary'}:</span> ${esc(r[x].map(respName).join(', '))}` : '') : esc(typeof r[x] === 'boolean' ? (r[x] ? 'Dependant' : '') : ['from', 'to'].includes(x) ? monthLbl(r[x]) : x === 'dob' ? dmy(r[x]) : x === 'lastCtc' && r[x] ? inr0(r[x]) : r[x] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="fine">None.</p>'}`).join('')}
+    ${CF_LISTS.map(([k, t, cols]) => `<h3>${esc(t)}</h3>${(d[k] || []).length ? `<div class="scroll"><table class="t"><tbody>${d[k].map((r) => `<tr>${cols.map((x) => `<td>${Array.isArray(r[x]) ? (r[x].length ? `<span class="fine">${x === 'mainResp' ? 'Main' : 'Secondary'}:</span> ${esc(r[x].map(respName).join(', '))}` : '') : esc(typeof r[x] === 'boolean' ? (r[x] ? 'Dependant' : '') : ['from', 'to'].includes(x) ? monthLbl(r[x]) : x === 'dob' || x === 'date' ? dmy(r[x]) : x === 'lastCtc' && r[x] ? inr0(r[x]) : r[x] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="fine">None.</p>'}`).join('')}
     ${Object.keys(d.skillLevels || {}).length ? `<h3>Skills (their own rating)</h3><table class="t"><tbody>${Object.entries(d.skillLevels).map(([id, l]) => `<tr><td>${esc(skillName(id))}</td><td>${+l ? esc(levelTxt(+l)) : 'None'}</td></tr>`).join('')}</tbody></table>` : ''}
     <p class="fine">${d.declaration ? 'The candidate declared that these details are true.' : ''}${c.cv ? ` CV: ${esc(c.cv.name)}${c.cv.byCandidate ? ', attached by the candidate' : ''}.` : ''}</p>`;
 }
@@ -9470,36 +9502,43 @@ VIEWS.shortlist = () => {
   const r = reqById(R.arg); if (!r || !canSeeReq(r)) return { title: 'Shortlisting', html: '<div class="card empty">This requisition is not available.</div>' };
   const q = R.q; const min = q.get('min') !== null ? Math.max(0, Math.min(100, +q.get('min') || 0)) : matchMin(r);
   const pm = q.get('pm') !== null ? q.get('pm') === '1' : r.primaryMust !== false; const onlyIn = q.get('in') !== '0';
+  /* 2.14: the profile fit (skills, experience, budget, notice, location, designation, qualification) can be a rule too */
+  const fmin = q.get('fit') !== null ? Math.max(0, Math.min(100, +q.get('fit') || 0)) : (+r.fitMin || 0);
   const rule = { ...r, autoShortlist: true, matchMin: min, primaryMust: pm };
   const apps = S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced');
-  const rows = apps.map((a) => { const c = candById(a.candId); const m = skillMatch(c, rule); const ready = !onlyIn || cvIn(c); return { a, c, m, ready, ok: ready && meetsShortlist(m, rule) }; })
-    .sort((x, y) => (y.ok - x.ok) || ((y.m || {}).pct ?? -1) - ((x.m || {}).pct ?? -1) || x.c.name.localeCompare(y.c.name));
-  const noCv = rows.filter((x) => !cvIn(x.c)); const needSkills = reqSkills(r).length;
-  const why = (x) => { if (!needSkills) return 'No skills on the requisition'; if (!x.ready) return 'CV not received yet'; if (!x.m || x.m.unrated) return `${x.m ? x.m.unrated : ''} skill${x.m && x.m.unrated === 1 ? '' : 's'} not rated`;
-    if (x.m.pct < min) return `Below ${min}%`; if (pm && !x.m.primaryOk) return 'A primary skill is below the level'; return 'Meets the rules'; };
+  const needSkills = reqSkills(r).length;
+  const rows = apps.map((a) => { const c = candById(a.candId); const m = skillMatch(c, rule); const fit = profileFit(c, r); const ready = !onlyIn || cvIn(c);
+    const ok = ready && (needSkills || fmin > 0) && (!needSkills || meetsShortlist(m, rule)) && (!fmin || (fit.pct !== null && fit.pct >= fmin)); return { a, c, m, fit, ready, ok }; })
+    .sort((x, y) => (y.ok - x.ok) || ((y.fit.pct ?? -1) - (x.fit.pct ?? -1)) || ((y.m || {}).pct ?? -1) - ((x.m || {}).pct ?? -1) || x.c.name.localeCompare(y.c.name));
+  const noCv = rows.filter((x) => !cvIn(x.c));
+  const why = (x) => { if (!needSkills && !fmin) return 'No skills or minimum fit on the requisition'; if (!x.ready) return 'CV not received yet';
+    if (needSkills) { if (!x.m || x.m.unrated) return `${x.m ? x.m.unrated : ''} skill${x.m && x.m.unrated === 1 ? '' : 's'} not rated`;
+      if (x.m.pct < min) return `Skills below ${min}%`; if (pm && !x.m.primaryOk) return 'A primary skill is below the level'; }
+    if (fmin && (x.fit.pct === null || x.fit.pct < fmin)) return `Profile fit below ${fmin}%`; return 'Meets the rules'; };
   const runs = (r.shortlistRuns || []).slice(-3).reverse();
   return { title: `Shortlisting: ${r.title}`, html: `
-    <div class="card"><div class="hd"><div><h2>${esc(r.no)} ${esc(r.title)}</h2><p class="sub">Candidates in Sourced, ranked by skills match. Review the proposal, untick or tick anyone, then shortlist. Shortlisted candidates move to Screening.</p></div>
+    <div class="card"><div class="hd"><div><h2>${esc(r.no)} ${esc(r.title)}</h2><p class="sub">Candidates in Sourced, ranked by profile fit and skills match against the requisition. Review the proposal, untick or tick anyone, compare them side by side, then shortlist. Shortlisted candidates move to Screening.</p></div>
       <div class="tools"><a class="btn" href="#/req/${r.id}">Back to the requisition</a></div></div>
       ${needSkills ? skillsNeededHtml({ ...r, autoShortlist: false }) : '<div class="note warn">This requisition lists no skills. Edit it and add the primary and secondary skills needed, so candidates can be matched.</div>'}
       <div class="form" style="margin-top:12px">
         <label class="field">Minimum skills match (%)<input class="inp" type="number" min="0" max="100" value="${min}" data-ch="slSet" data-k="min"></label>
         <label class="chk" style="align-self:end"><input type="checkbox" ${pm ? 'checked' : ''} data-ch="slSet" data-k="pm"> Every primary skill at the level needed</label>
+        <label class="field">Minimum profile fit (%)<input class="inp" type="number" min="0" max="100" value="${fmin || ''}" placeholder="Not used" data-ch="slSet" data-k="fit"></label>
         <label class="chk" style="align-self:end"><input type="checkbox" ${onlyIn ? 'checked' : ''} data-ch="slSet" data-k="in"> Only candidates who sent their CV</label>
         <label class="chk" style="align-self:end"><input type="checkbox" id="slRej"> Move the others with a CV to Rejected</label></div></div>
     <div class="grid g4" style="margin:12px 0">
       <div class="kpi"><span>In Sourced</span><b>${rows.length}</b></div><div class="kpi"><span>CV received</span><b>${rows.length - noCv.length}</b></div>
       <div class="kpi"><span>Waiting for their CV</span><b>${noCv.length}</b><small>${noCv.length ? '<button class="btn sm" data-act="slLinks">Send them the link</button>' : ''}</small></div>
       <div class="kpi"><span>Proposed for shortlist</span><b>${rows.filter((x) => x.ok).length}</b></div></div>
-    <div class="card">${rows.length ? `<div class="scroll"><table class="t" id="slT"><thead><tr><th style="width:34px"><input type="checkbox" aria-label="Tick all" data-ch="slAll"></th><th>Candidate</th><th>CV</th><th>Skills match</th><th>Below the level needed</th><th>Proposal</th></tr></thead><tbody>
+    <div class="card">${rows.length ? `<div class="scroll"><table class="t" id="slT"><thead><tr><th style="width:34px"><input type="checkbox" aria-label="Tick all" data-ch="slAll"></th><th>Candidate</th><th>CV</th><th>Profile fit</th><th>Skills match</th><th>Below the level needed</th><th>Proposal</th></tr></thead><tbody>
       ${rows.map((x) => { const st = cvStatus(x.c); return `<tr><td><input type="checkbox" value="${x.a.id}" ${x.ok ? 'checked' : ''} aria-label="Shortlist ${esc(x.c.name)}"></td>
         <td><a href="#/app/${x.a.id}"><b>${esc(x.c.name)}</b></a><div class="fine">${esc([x.c.expYears ? `${num(x.c.expYears, 1)} yrs` : '', [x.c.currentTitle, x.c.currentCompany].filter(Boolean).join(' at ')].filter(Boolean).join(', ') || x.c.email || '')}</div></td>
-        <td><span class="badge ${st[1]}">${st[0]}</span></td><td>${matchBadge(x.m) || '<span class="fine">—</span>'}</td>
+        <td><span class="badge ${st[1]}">${st[0]}</span></td><td>${fitBadge(x.fit) || '<span class="fine">—</span>'}${fitWeak(x.fit)}</td><td>${matchBadge(x.m) || '<span class="fine">—</span>'}</td>
         <td class="fine">${x.m && x.m.gaps.length ? esc(x.m.gaps.map((g) => `${skillName(g.skillId)}${g.need === 'primary' ? ' (primary)' : ''}`).join(', ')) : '—'}</td>
         <td>${x.ok ? '<span class="badge ok">Shortlist</span>' : `<span class="fine">${esc(why(x))}</span>`}</td></tr>`; }).join('')}</tbody></table></div>
-      <div class="btns"><button class="btn pri" data-act="slGo">Shortlist the ticked candidates</button></div>`
+      <div class="btns"><button class="btn" data-act="slCompare">Compare the ticked</button><button class="btn pri" data-act="slGo">Shortlist the ticked candidates</button></div>`
       : `<div class="empty">Nobody is in Sourced for this requisition. <a href="#/req/${r.id}">Assign CVs</a> first.</div>`}</div>
-    ${runs.length ? `<div class="card"><h2>Earlier runs</h2><table class="t"><tbody>${runs.map((x) => `<tr><td>${dt(x.at)}</td><td>${esc(nameOf(x.by))}</td><td>${x.shortlisted.length} shortlisted${x.rejected.length ? `, ${x.rejected.length} rejected` : ''}</td><td class="fine">At ${x.min}%${x.primaryMust ? ', primary skills at level' : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}` };
+    ${runs.length ? `<div class="card"><h2>Earlier runs</h2><table class="t"><tbody>${runs.map((x) => `<tr><td>${dt(x.at)}</td><td>${esc(nameOf(x.by))}</td><td>${x.shortlisted.length} shortlisted${x.rejected.length ? `, ${x.rejected.length} rejected` : ''}</td><td class="fine">At ${x.min}%${x.primaryMust ? ', primary skills at level' : ''}${x.fitMin ? `, profile fit ${x.fitMin}%` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}` };
 };
 ACT.slSet = (el) => { const q = new URLSearchParams(R.q); q.set(el.dataset.k, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value); go(`#/shortlist/${R.arg}?${q}`); };
 ACT.slAll = (el) => { $$('#slT tbody input[type=checkbox]').forEach((x) => { x.checked = el.checked; }); };
@@ -9510,9 +9549,10 @@ ACT.slGo = async () => {
   const others = rej ? S.apps.filter((a) => a.reqId === r.id && a.stage === 'sourced' && !ids.includes(a.id) && cvIn(candById(a.candId))) : [];
   if (!ids.length && !others.length) { toast('Tick at least one candidate.'); return; }
   if (!(await confirmBox('Run the shortlisting?', `${ids.length} move to Screening${others.length ? ` and ${others.length} to Rejected` : ''}.`, 'Shortlist'))) return;
-  ids.forEach((id) => { const a = appById(id); const m = skillMatch(candById(a.candId), r); setStage(a, 'screening', `Shortlisted${m ? `: skills match ${m.pct}%` : ''}`); });
+  ids.forEach((id) => { const a = appById(id); const c = candById(a.candId); const m = skillMatch(c, r); const f = profileFit(c, r); setStage(a, 'screening', `Shortlisted${[m ? `skills match ${m.pct}%` : '', f.pct !== null ? `profile fit ${f.pct}%` : ''].filter(Boolean).map((x, i) => (i ? ', ' : ': ') + x).join('')}`); });
   others.forEach((a) => { const m = skillMatch(candById(a.candId), r); setStage(a, 'rejected', `Not shortlisted${m ? `: skills match ${m.pct}%` : ''}`); });
-  (r.shortlistRuns = r.shortlistRuns || []).push({ at: Date.now(), by: me.id, min, primaryMust: pm, shortlisted: ids, rejected: others.map((a) => a.id) });
+  const fitMin = R.q.get('fit') !== null ? +R.q.get('fit') || 0 : +r.fitMin || 0;
+  (r.shortlistRuns = r.shortlistRuns || []).push({ at: Date.now(), by: me.id, min, primaryMust: pm, fitMin, shortlisted: ids, rejected: others.map((a) => a.id) });
   audit('Shortlisting run', `${r.no}: ${ids.length} shortlisted, ${others.length} rejected`, 'recruitment');
   saveNow(); toast(`${ids.length} shortlisted${others.length ? `, ${others.length} rejected` : ''}`); go(`#/req/${r.id}`);
 };
@@ -9530,6 +9570,7 @@ function formRegistry() {
     { id: 'bg.prevJobs', group: 'Employee profile, Background tab', title: 'Previous job', fields: BG.prevJobs.fields },
     { id: 'bg.education', group: 'Employee profile, Background tab', title: 'Qualification', fields: BG.education.fields },
     { id: 'bg.awards', group: 'Employee profile, Background tab', title: 'Award', fields: BG.awards.fields },
+    { id: 'bg.prevTrainings', group: 'Employee profile, Background tab', title: 'Professional training attended', fields: BG.prevTrainings.fields },
     { id: 'bg.references', group: 'Employee profile, Background tab', title: 'Reference', fields: BG.references.fields },
     { id: 'req', group: 'Recruitment', title: 'Job requisition', fields: REQ_FIELDS() },
     { id: 'cand', group: 'Recruitment', title: 'Candidate, added by HR', fields: CAND_FIELDS },
@@ -9582,7 +9623,9 @@ ACT.numSet = (el) => {
 
 /* what the candidate entered, onto their new employee record */
 function applyCandForm(e, c, coId) {
-  const d = cfData(c); if (!d) return 0;
+  const d0 = cfData(c); const hist = HIST_KEYS.some((k) => (c[k] || []).length); if (!d0 && !hist) return 0;
+  /* 2.14: what HR recorded on the candidate (employment, education, awards) when the candidate's form has none */
+  const d = { ...(d0 || {}) }; HIST_KEYS.forEach((k) => { if (!(d[k] || []).length && (c[k] || []).length) d[k] = c[k].map((x) => ({ ...x })); });
   const set = (k, v) => { if (v !== '' && v != null) e[k] = v; };
   ['gender', 'dob', 'marital', 'blood', 'phone', 'address', 'addrCity', 'addrState', 'addrPin', 'addrCountry', 'emergencyName', 'emergencyRelation', 'emergencyPhone', 'pan', 'aadhaar', 'uan', 'bankName', 'bankAcc', 'ifsc', 'fatherName', 'permAddress', 'languages', 'nationality']
     .forEach((k) => set(k, d[k]));
@@ -9599,6 +9642,7 @@ function applyCandForm(e, c, coId) {
   /* skills: the assessed level where HR recorded one, otherwise the candidate's own rating */
   const lv = { ...candSelfLevels(c), ...(c.skillLevels || {}) };
   Object.entries(lv).forEach(([id, l]) => { if (!(+l) || !skillById(id)) return; e.selfSkills = (e.selfSkills || []).filter((x) => x.skillId !== id); e.selfSkills.push({ skillId: id, level: +l, at: Date.now(), fromCandidate: true }); });
+  e.awards = (d.awards || []).map((x) => ({ ...x, ...stamp() }));
   e.family = (d.family || []).map((x) => ({ ...x, id: uid() }));
   return 1;
 }
@@ -9622,11 +9666,11 @@ ACT.offerJoin = () => {
     { k: 'managerId', label: 'Reports to', type: 'select', opts: empOpts(r.companyId) }, { k: 'ctc', label: 'Annual CTC (₹)', type: 'number', req: true }, { k: 'probationMonths', label: 'Probation (months)', type: 'number', min: 0 }];
   const base = [{ k: 'email', label: 'Work e-mail (Google)', type: 'email' }, { k: 'doj', label: 'Date of joining', type: 'date' }, { k: 'empNo', label: 'Employee number' }];
   const v = { email: work, doj: (o && o.doj) || todayISO(), empNo: nextEmpNo(co).no, desigId: r.desigId, gradeId: r.gradeId, locationId: r.locationId, managerId: r.hiringMgr, ctc: Math.min(Math.max(+c.expectedCtc || r.ctcMin, r.ctcMin), r.ctcMax), probationMonths: 6 };
-  const f = cfOf(c); const sum = d.firstName ? `personal details and address, emergency contact${d.pan || d.aadhaar ? ', PAN and Aadhaar' : ''}${d.bankAcc ? ', bank account' : ''}, ${(d.education || []).length} qualifications, ${(d.prevJobs || []).length} previous jobs, ${(d.references || []).length} references, ${(d.family || []).length} family members${c.cv && c.cv.type === 'application/pdf' ? ' and the CV' : ''}` : '';
+  const f = cfOf(c); const hc = (k) => ((d[k] || []).length || (c[k] || []).length); const sum = !d.firstName && HIST_KEYS.some(hc) ? `${hc('prevJobs')} previous jobs, ${hc('education')} qualifications and ${hc('awards')} awards recorded by HR` : d.firstName ? `personal details and address, emergency contact${d.pan || d.aadhaar ? ', PAN and Aadhaar' : ''}${d.bankAcc ? ', bank account' : ''}, ${(d.education || []).length} qualifications, ${hc('prevJobs')} previous jobs, ${hc('awards')} awards, ${(d.references || []).length} references, ${(d.family || []).length} family members${c.cv && c.cv.type === 'application/pdf' ? ' and the CV' : ''}` : '';
   openDlg(`<form class="dlg" id="jnf" novalidate><h2>Convert ${esc(c.name)} to an employee</h2><p class="fine" style="margin:0">Creates the employee record in ${esc(co.name)}${o ? ' with the accepted offer' : ''}. Create the Google Workspace account with the same work e-mail so they can sign in.</p>
     ${!o ? `<div class="note warn">${a.offer ? 'The offer in PeopleDesk is not accepted yet.' : 'There is no offer in PeopleDesk.'} Enter the joining terms agreed with the candidate.</div>` : ''}
     <div class="form">${[...base, ...terms].map((x) => fieldHtml(x, v[x.k])).join('')}</div>
-    ${sum ? `<label class="chk"><input type="checkbox" name="bring" checked> Bring over what the candidate filled in${f && f.status !== 'submitted' ? ' (not sent by them yet)' : ''}: ${esc(sum)}</label>` : '<p class="fine">The candidate has not filled in their details; they can add them on their profile after joining.</p>'}
+    ${sum ? `<label class="chk"><input type="checkbox" name="bring" checked> Bring over what the candidate filled in or HR recorded${f && f.status !== 'submitted' ? ' (not sent by them yet)' : ''}: ${esc(sum)}</label>` : '<p class="fine">The candidate has not filled in their details; they can add them on their profile after joining.</p>'}
     <p class="err" id="jne"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Create employee</button></div></form>`, true);
   CO = prev;
   $('#jnf').onsubmit = (ev) => { ev.preventDefault(); const g = readForm(ev.target, [...base, ...terms]); const bring = ev.target.elements.bring && ev.target.elements.bring.checked; const err = (m) => { $('#jne').textContent = m; };
@@ -9682,6 +9726,1181 @@ function p11Pending() {
 }
 function p11EnsureSchema() { ['goalLib', 'perfMeetings', 'succession'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; }); }
 
+/* =====================================================================
+   PeopleDesk 2.14: the candidate's profile from the masters, history and skill ratings, invitations without a CV,
+   profile fit and side-by-side comparison against the requisition, Outlook meeting requests for interviews,
+   offer negotiation and closure of the hire.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------- the candidate's history: jobs, education, awards
+   Kept on the candidate (c.prevJobs, c.education, c.awards) in the same shape as an employee's Background tab, so they
+   go onto the employee record at joining. The candidate's own form starts from them and, when sent, replaces them. */
+const HIST_KEYS = ['prevJobs', 'education', 'awards'];
+const CAND_HIST = { prevJobs: { title: 'Employment history', one: 'employer', keys: ['employer', 'designation', 'location', 'from', 'to', 'lastCtc', 'reason', 'duties'], must: ['employer', 'designation', 'from'] },
+  education: { title: 'Education', one: 'qualification', keys: ['level', 'qualification', 'specialisation', 'institution', 'university', 'toYear', 'score', 'scoreType'], must: ['level', 'qualification', 'institution'] },
+  awards: { title: 'Awards', one: 'award', keys: ['title', 'issuer', 'date', 'category', 'description'], must: ['title'] } };
+function histFields(k, coId) {
+  const by = Object.fromEntries(ruled('bg.' + k, BG[k].fields, coId).map((f) => [f.k, f]));
+  return CAND_HIST[k].keys.map((n) => { const f = { ...by[n] }; if (CAND_HIST[k].must.includes(n)) f.req = true;
+    if (k === 'prevJobs' && n === 'duties') { f.label = 'What they did there'; f.help = ''; }
+    if (k === 'prevJobs' && ['lastCtc', 'reason'].includes(n)) f.help = '';
+    if (k === 'awards' && n === 'issuer') { delete f.pick; f.orgList = true; }
+    return f; });
+}
+let HROW = 0;
+function histRowHtml(k, x = {}, coId = CO) {
+  const rk = 'h' + (++HROW); const blank = { education: { level: 'Graduate', scoreType: 'pct', mode: 'full' }, awards: { category: 'Professional' }, prevJobs: {} }[k];
+  const v = x.id ? x : { ...blank, ...x };
+  const html = histFields(k, coId).map((f) => { const g = { ...f, k: `${rk}__${f.k}` }; const val = v[f.k];
+    if (f.pick) return pickInput(g, val, coId);
+    if (f.master) return masterInput(g, val, MASTER_KIND[f.k], coId);
+    if (f.orgList) return `<label class="field">${reqLabel(f)}<input class="inp" name="${g.k}" list="dl_${g.k}" value="${esc(val || '')}" data-orglist autocomplete="off" ${f.maxLen ? `maxlength="${f.maxLen}"` : ''}><datalist id="dl_${g.k}"></datalist><small>Where they worked or studied, or the body that gave it</small></label>`;
+    return fieldHtml(g, val); }).join('');
+  return `<div class="apply-row" data-hist="${k}" data-rk="${rk}" data-id="${esc(x.id || '')}"><div class="form">${html}</div>
+    <div class="btns" style="margin-top:6px;justify-content:flex-end"><button type="button" class="btn sm ghost" data-hdel>Remove this ${esc(CAND_HIST[k].one)}</button></div></div>`;
+}
+/* reads the rows of one kind: { list } or { error } */
+function readHist(form, k, coId, old = []) {
+  const fields = histFields(k, coId); const out = []; const today = todayISO();
+  for (const row of $$(`.apply-row[data-hist="${k}"]`, form)) {
+    const rk = row.dataset.rk; const d = {};
+    fields.forEach((f) => { const el = form.elements[`${rk}__${f.k}`]; if (!el) return; let val = el.value;
+      if (f.pick && val === PICK_OTHER) val = (form.elements[`${rk}__${f.k}${PICK_OTHER}`] || {}).value || '';
+      if (f.type === 'number') d[f.k] = val === '' ? '' : parseNum(val);
+      else { val = f.type === 'textarea' ? String(val).trim() : String(val).replace(/\s+/g, ' ').trim(); d[f.k] = f.maxLen ? val.slice(0, f.maxLen) : val; } });
+    const typed = fields.filter((f) => f.type !== 'select').some((f) => d[f.k] !== '' && d[f.k] != null); if (!typed) continue;
+    const label = d.employer || d.qualification || d.title || CAND_HIST[k].one;
+    const miss = fields.find((f) => f.req && (d[f.k] === '' || d[f.k] == null)); if (miss) return { error: `${CAND_HIST[k].title}: enter ${miss.label.toLowerCase()} for ${label}.` };
+    if (k === 'prevJobs') { if (d.to && d.to < d.from) return { error: `The job at ${label} ends before it starts.` }; if (d.from > today.slice(0, 7)) return { error: `The job at ${label} starts in the future.` }; }
+    if (k === 'education' && d.fromYear && d.toYear && d.toYear < d.fromYear) return { error: `${label} is passed before it starts.` };
+    if (k === 'awards' && d.date && d.date > today) return { error: `The date of ${label} is in the future.` };
+    const prev = old.find((x) => x.id && x.id === row.dataset.id) || {};
+    out.push({ ...prev, ...d, id: row.dataset.id || uid() });
+  }
+  /* the standard lists: employers, qualifications and institutions are linked (new names are added or proposed) */
+  out.forEach((x) => { Object.entries(MASTER_FIELD).forEach(([f, idk]) => { if (!(f in x) || ['organisation'].includes(f)) return; if (!x[f]) { x[idk] = ''; return; } const m = masterFor(MASTER_KIND[f], x[f], coId); x[f] = m.name; x[idk] = m.id; });
+    if (k === 'prevJobs') x.desigId = (S.desigs.find((d) => d.companyId === coId && normKey(d.name) === normKey(x.designation)) || {}).id || ''; });
+  return { list: k === 'prevJobs' ? out.sort(BG.prevJobs.sort) : k === 'education' ? out.sort(BG.education.sort) : out.sort(BG.awards.sort) };
+}
+/* what the candidate has: HR's record, or what they sent on their form */
+function candHist(c, k) { if (!c) return []; if ((c[k] || []).length) return c[k]; const d = cfData(c); return (d && d[k]) || []; }
+function candExpYears(c) {
+  if (c.expYears !== '' && c.expYears != null && Number.isFinite(+c.expYears)) return +c.expYears;
+  const months = candHist(c, 'prevJobs').reduce((s, x) => { if (!x.from) return s; const end = x.to || todayISO().slice(0, 7); return s + Math.max(0, (+end.slice(0, 4) - +x.from.slice(0, 4)) * 12 + (+end.slice(5, 7) - +x.from.slice(5, 7)) + 1); }, 0);
+  return months ? Math.round(months / 12 * 10) / 10 : null;
+}
+const candTopEdu = (c) => candHist(c, 'education').slice().sort(BG.education.sort)[0] || null;
+
+/* ---------------------------------------------------------------- profile fit: the candidate against the requisition
+   Each criterion the requisition sets scores 0 to 100; the fit is their weighted average over the criteria known for the
+   candidate. Weights are set per company under Recruitment settings. */
+const FIT_PARTS = { skills: 'Skills', exp: 'Experience', budget: 'Expected CTC', notice: 'Can join by', location: 'Location', role: 'Current designation', qual: 'Qualification' };
+const FIT_W0 = { skills: 40, exp: 15, budget: 15, notice: 10, location: 10, role: 5, qual: 5 };
+const fitWeights = (coId) => ({ ...FIT_W0, ...((coById(coId || CO) || {}).fitWeights || {}) });
+const dayDiff = (a, b) => Math.round((D(a) - D(b)) / 864e5);
+function candDesigId(c, coId) { if (c.currentTitleId && desig(c.currentTitleId)) return c.currentTitleId; return (S.desigs.find((x) => x.companyId === coId && normKey(x.name) === normKey(c.currentTitle)) || {}).id || ''; }
+function profileFit(c, r) {
+  const parts = []; if (!c || !r) return { pct: null, parts, known: 0, of: 0 };
+  const w = fitWeights(r.companyId); const add = (k, score, have, want) => parts.push({ k, score: score === null ? null : Math.max(0, Math.min(100, Math.round(score))), have, want });
+  const m = skillMatch(c, r);
+  if (m) add('skills', m.unrated === m.n ? null : m.pct, m.unrated === m.n ? 'Not rated yet' : `${m.pct}%${m.unrated ? `, ${m.unrated} not rated` : ''}`, `${matchMin(r)}% or more`);
+  if (r.expMin !== '' && r.expMin != null || (r.expMax !== '' && r.expMax != null)) {
+    const lo = +r.expMin || 0, hi = r.expMax === '' || r.expMax == null ? Infinity : +r.expMax; const y = candExpYears(c);
+    add('exp', y === null ? null : y < lo ? 100 - (lo - y) / Math.max(lo, 1) * 100 : y > hi ? Math.max(50, 100 - (y - hi) * 10) : 100, y === null ? 'Not known' : `${num(y, 1)} years`, `${num(lo)}${hi === Infinity ? '+' : `–${num(hi)}`} years`);
+  }
+  if (+r.ctcMax) { const e = +c.expectedCtc; add('budget', e ? (e <= +r.ctcMax ? 100 : 100 - (e / +r.ctcMax - 1) * 200) : null, e ? inr0(e) : 'Not given', `Up to ${inr0(r.ctcMax)}`); }
+  if (r.targetDate) { const n = c.noticeDays === '' || c.noticeDays == null ? null : +c.noticeDays; const free = n === null ? '' : addDays(todayISO(), n); const late = free ? dayDiff(free, r.targetDate) : 0;
+    add('notice', n === null ? null : late <= 0 ? 100 : 100 - late * 2, n === null ? 'Notice not known' : `${dmy(free)} (${n} days' notice)`, `By ${dmy(r.targetDate)}`); }
+  if (r.locationId) { const want = loc(r.locationId) || {}; const have = c.locationId ? loc(c.locationId) : S.locations.find((x) => x.companyId === r.companyId && normKey(x.name) === normKey(c.location));
+    const same = (have && have.id === want.id) || (!!c.location && normKey(c.location) === normKey(want.name));
+    add('location', !c.location && !have ? null : same ? 100 : have && have.state && have.state === want.state ? 70 : c.relocate ? 70 : 30, `${c.location || (have || {}).name || 'Not known'}${c.relocate ? ', will relocate' : ''}`, want.name || ''); }
+  if (r.desigId) { const want = desig(r.desigId) || {}; const cur = candDesigId(c, r.companyId); let s = null;
+    if (cur === r.desigId) s = 100; else if (candHist(c, 'prevJobs').some((j) => j.desigId === r.desigId || normKey(j.designation) === normKey(want.name))) s = 85;
+    else if (cur) { const g1 = (grade((desig(cur) || {}).gradeId) || {}).level, g2 = (grade(r.gradeId || want.gradeId) || {}).level; s = g1 && g2 ? ({ 0: 90, 1: 75, '-1': 70 }[g2 - g1] ?? 40) : 50; }
+    else if (c.currentTitle) s = 50;
+    add('role', s, c.currentTitle || 'Not known', want.name || ''); }
+  if (r.minEdu) { const top = candTopEdu(c); add('qual', top ? ((EDU_RANK[top.level] ?? 0) >= (EDU_RANK[r.minEdu] ?? 0) ? 100 : 30) : null, top ? `${top.qualification}${top.level ? ` (${top.level})` : ''}` : 'Not given', `${r.minEdu} or above`); }
+  const counted = parts.filter((p) => +w[p.k] > 0); const known = counted.filter((p) => p.score !== null); const tw = known.reduce((s, p) => s + +w[p.k], 0);
+  return { pct: tw ? Math.round(known.reduce((s, p) => s + p.score * +w[p.k], 0) / tw) : null, parts, known: known.length, of: counted.length };
+}
+const scoreCls = (s) => (s === null || s === undefined ? '' : s >= 80 ? 'ok' : s >= 50 ? 'warn' : 'bad');
+const fitBadge = (f) => (!f || f.pct === null ? '' : `<span class="badge ${scoreCls(f.pct)}" title="Profile fit on ${f.known} of ${f.of} criteria">Fit ${f.pct}%${f.known < f.of ? '*' : ''}</span>`);
+const fitWeak = (f) => { const weak = (f.parts || []).filter((p) => p.score !== null && p.score < 50 && p.k !== 'skills'); return weak.length ? `<div class="fine">Weak: ${esc(weak.map((p) => FIT_PARTS[p.k].toLowerCase()).join(', '))}</div>` : ''; };
+const partOf = (f, k) => (f.parts || []).find((p) => p.k === k);
+
+/* ---------------------------------------------------------------- Add or edit a candidate */
+const CD_TABS = [['main', 'Details'], ['skills', 'Skills for the job'], ['prevJobs', 'Employment history'], ['education', 'Education'], ['awards', 'Awards']];
+ACT.candEdit = (b) => {
+  const c = b.dataset.id ? candById(b.dataset.id) : null; const coId = (c && c.companyId) || CO;
+  const v = c || { source: 'Job portal', noticeDays: 30 }; let cv = c ? c.cv : null;
+  const apps = c ? S.apps.filter((a) => a.candId === c.id) : [];
+  const CF = ruled('cand', CAND_FIELDS, coId); const skF = CF.find((f) => f.k === 'skills');
+  const openReqs = S.reqs.filter((r) => r.companyId === coId && r.status === 'open' && canSeeReq(r) && !apps.some((a) => a.reqId === r.id));
+  const prev = CO; CO = coId;
+  const mainHtml = CF.filter((f) => f.k !== 'skills').map((f) => (f.pick ? pickInput(f, v[f.k], coId) : fieldHtml(f, v[f.k]))).join('');
+  const histHtml = (k) => `<p class="fine" style="margin:0 0 8px">${{ prevJobs: 'Employers before the current one too, latest first. Each goes onto the employee record at joining, for HR to check.', education: 'Schooling, degrees, diplomas and certifications, highest first.', awards: 'Academic, professional, sports or community recognition.' }[k]}</p>
+    <div data-hrows="${k}">${candHist(c, k).map((x) => histRowHtml(k, x, coId)).join('')}</div><button type="button" class="btn sm" data-hadd="${k}">Add ${CAND_HIST[k].one}</button>`;
+  const f0 = c && cfOf(c);
+  CO = prev;
+  openDlg(`<form class="dlg" id="cdf" novalidate><h2>${c ? esc(c.name) : 'Add a candidate'}</h2>${c && c.exEmpId ? `<div class="note">Former employee: ${esc(fullName(empById(c.exEmpId)))} (${esc(empById(c.exEmpId).empNo)}). If hired, the old record is rehired.</div>` : ''}
+    <nav class="tabs" style="margin:0" role="tablist">${CD_TABS.map(([id, l]) => `<a href="#" role="tab" data-cdtab="${id}" class="${id === 'main' ? 'on' : ''}">${l} <span class="fine" data-cdn="${id}"></span></a>`).join('')}</nav>
+    <section data-cdsec="main"><div class="form">${mainHtml}
+      <label class="field wide">CV (PDF or Word, up to 2 MB)<input type="file" class="inp" id="cvFile" accept=".pdf,.doc,.docx,.rtf,.txt"><small id="cvName">${cv ? `${esc(cv.name)}, ${Math.round(cv.size / 1024)} KB` : 'No CV attached. Not needed: the candidate can attach it through the link.'}</small></label></div></section>
+    <section data-cdsec="skills" hidden><div class="form">
+      ${openReqs.length ? `<label class="field wide">${c ? 'Also assign to requisition' : 'Assign to requisition'}<select class="inp" name="assignReq"><option value="">${c ? 'No other requisition' : 'Not now'}</option>${openReqs.map((r) => `<option value="${r.id}" ${r.id === b.dataset.req ? 'selected' : ''}>${esc(r.no)} ${esc(r.title)}</option>`).join('')}</select><small>The skills the requisition needs are listed below to rate.</small></label>` : ''}
+      </div><div id="cdSk"></div><div class="form">${skF ? fieldHtml(skF, v.skills) : ''}</div></section>
+    ${HIST_KEYS.map((k) => `<section data-cdsec="${k}" hidden>${histHtml(k)}</section>`).join('')}
+    ${apps.length ? `<p class="fine">Applications: ${apps.map((a) => `<a href="#/app/${a.id}">${esc((reqById(a.reqId) || {}).title || '')}</a> (${RSTAGES[a.stage]})`).join(', ')}</p>` : ''}
+    ${c && isHR(coId) ? `<div class="note">Candidate’s details: ${f0 ? trBadge(CF_STATUS, f0.status) : 'not asked yet'} ${f0 && f0.data ? `<button type="button" class="btn sm" data-act="candFormView" data-id="${c.id}">View</button>` : ''}${!f0 || f0.status !== 'closed' ? ` <button type="button" class="btn sm" data-act="candFormSend" data-id="${c.id}">${f0 ? 'Send the link again' : 'Ask them to fill in their details'}</button>` : ''}</div>` : ''}
+    ${!c ? '<label class="chk"><input type="checkbox" name="sendLink" checked> Send them the link to fill in their details, CV and skill levels against the requisition (no CV needed now)</label>' : ''}
+    <p class="err" id="cde"></p>
+    <div class="btns">${cv ? '<button type="button" class="btn" id="cvOpen">Open CV</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${b.dataset.req ? 'Save and assign' : 'Save'}</button></div></form>`, true);
+  const form = $('#cdf');
+  const showTab = (id) => { $$('[data-cdtab]', form).forEach((t) => t.classList.toggle('on', t.dataset.cdtab === id)); $$('[data-cdsec]', form).forEach((s) => { s.hidden = s.dataset.cdsec !== id; }); };
+  const counts = () => { HIST_KEYS.forEach((k) => { const n = $$(`.apply-row[data-hist="${k}"]`, form).length; form.querySelector(`[data-cdn="${k}"]`).textContent = n ? `(${n})` : ''; });
+    const sk = $$('[data-cdsk]', form); form.querySelector('[data-cdn="skills"]').textContent = sk.length ? `(${sk.filter((s) => s.value !== '').length}/${sk.length})` : ''; };
+  /* the skills the candidate's requisitions need, with the rating HR gives */
+  const drawSk = () => {
+    const keep = {}; $$('[data-cdsk]', form).forEach((s) => { keep[s.dataset.cdsk] = s.value; });
+    const rid = form.elements.assignReq ? form.elements.assignReq.value : '';
+    const reqs = [...apps.filter((a) => !['rejected', 'withdrawn', 'joined'].includes(a.stage)).map((a) => reqById(a.reqId)), rid ? reqById(rid) : null].filter(Boolean);
+    const need = new Map();
+    reqs.forEach((r) => reqSkills(r).forEach((n) => { const o = need.get(n.skillId); const lv = Math.max(1, +n.level || 1);
+      if (!o) need.set(n.skillId, { skillId: n.skillId, need: n.need, level: lv, reqs: [r.no] }); else { if (n.need === 'primary') o.need = 'primary'; o.level = Math.max(o.level, lv); if (!o.reqs.includes(r.no)) o.reqs.push(r.no); } }));
+    const list = [...need.values()].sort((x, y) => (x.need === 'primary' ? 0 : 1) - (y.need === 'primary' ? 0 : 1) || skillName(x.skillId).localeCompare(skillName(y.skillId)));
+    const own = c ? candSelfLevels(c) : {}; const as = (c && c.skillLevels) || {};
+    const meets = (val, lv) => (val === '' ? '<span class="fine">Not rated</span>' : +val >= lv ? '<span class="badge ok">Meets</span>' : '<span class="badge warn">Below</span>');
+    $('#cdSk').innerHTML = list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Skill</th><th>Needed</th><th>Their own rating</th><th>Rating</th><th></th></tr></thead><tbody>${list.map((n) => {
+      const cur = keep[n.skillId] !== undefined ? keep[n.skillId] : as[n.skillId] === undefined || as[n.skillId] === null ? '' : String(as[n.skillId]); const ow = own[n.skillId];
+      return `<tr><td><b>${esc(skillName(n.skillId))}</b><div class="fine">${SKILL_NEED[n.need]}, ${esc(n.reqs.join(', '))}</div></td><td>${esc(levelTxt(n.level))}</td><td>${ow === undefined || ow === '' ? '<span class="fine">—</span>' : +ow ? esc(levelTxt(+ow)) : 'None'}</td>
+        <td><select class="inp" style="padding:3px 6px" data-cdsk="${n.skillId}" data-lv="${n.level}" aria-label="Rating of ${esc(skillName(n.skillId))}"><option value="">Not rated</option><option value="0" ${cur === '0' ? 'selected' : ''}>None</option>${Object.entries(SKILL_LEVELS).map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}</select></td><td data-cdm>${meets(cur, n.level)}</td></tr>`; }).join('')}</tbody></table></div>
+      <p class="fine">Primary skills count twice in the skills match. Your rating counts instead of the candidate’s own; leave it as Not rated to let them rate themselves on their form.</p>`
+      : `<div class="note">${reqs.length ? 'The requisition lists no skills yet. Edit it to add the primary and secondary skills needed.' : 'Assign the candidate to a requisition to rate them on the skills it needs.'}</div>`;
+    counts();
+  };
+  drawSk();
+  form.addEventListener('click', (ev) => {
+    const t = ev.target.closest('[data-cdtab]'); if (t) { ev.preventDefault(); showTab(t.dataset.cdtab); return; }
+    const add = ev.target.closest('[data-hadd]'); if (add) { const box = form.querySelector(`[data-hrows="${add.dataset.hadd}"]`); box.insertAdjacentHTML('beforeend', histRowHtml(add.dataset.hadd, {}, coId)); const f = box.lastElementChild.querySelector('.inp'); if (f) f.focus(); counts(); return; }
+    const del = ev.target.closest('[data-hdel]'); if (del) { del.closest('.apply-row').remove(); counts(); }
+  });
+  form.addEventListener('change', (ev) => {
+    const t = ev.target;
+    if (t.matches('select[data-pick]')) { const box = form.elements[t.name + PICK_OTHER]; if (box && box.tagName) { box.hidden = t.value !== PICK_OTHER; if (!box.hidden) box.focus(); } }
+    if (t.name === 'assignReq') drawSk();
+    if (t.matches('[data-cdsk]')) { const cell = t.closest('tr').querySelector('[data-cdm]'); cell.innerHTML = t.value === '' ? '<span class="fine">Not rated</span>' : +t.value >= +t.dataset.lv ? '<span class="badge ok">Meets</span>' : '<span class="badge warn">Below</span>'; counts(); }
+  });
+  /* award "given by": the employers and institutions entered so far */
+  form.addEventListener('focusin', (ev) => { const t = ev.target; if (!t.matches('[data-orglist]')) return;
+    const val = (sel) => { const el = form.elements[sel]; if (!el || !el.value) return ''; return el.value === PICK_OTHER ? (form.elements[sel + PICK_OTHER] || {}).value || '' : el.value; };
+    const names = new Set([val('currentCompany'), coById(coId).legalName || coById(coId).name]);
+    $$('.apply-row', form).forEach((row) => { const rk = row.dataset.rk; ['employer', 'institution', 'university'].forEach((k) => names.add(val(`${rk}__${k}`))); });
+    t.list.innerHTML = [...names].filter(Boolean).map((n) => `<option value="${esc(n)}">`).join(''); });
+  $('#cvFile').onchange = (ev) => { const f = ev.target.files[0]; if (!f) return; if (f.size > 2 * 1024 * 1024) { $('#cde').textContent = 'The CV is larger than 2 MB.'; ev.target.value = ''; return; }
+    const fr = new FileReader(); fr.onload = () => { cv = { name: f.name, type: f.type, size: f.size, data: fr.result, at: Date.now() }; $('#cvName').textContent = `${f.name}, ${Math.round(f.size / 1024)} KB, ready to save`; }; fr.readAsDataURL(f); };
+  if ($('#cvOpen')) $('#cvOpen').onclick = () => openCv(c);
+  form.onsubmit = async (e) => {
+    e.preventDefault(); const err = (m, tab) => { $('#cde').textContent = m; if (tab) showTab(tab); };
+    const d = readForm(form, CF);
+    CF.filter((f) => f.pick).forEach((f) => { if (d[f.k] === PICK_OTHER) d[f.k] = String((form.elements[f.k + PICK_OTHER] || {}).value || '').replace(/\s+/g, ' ').trim().slice(0, f.maxLen || 200); });
+    const miss = CF.find((f) => f.req && f.type !== 'check' && (d[f.k] === '' || d[f.k] == null)); if (miss) return err(`Enter ${miss.label.toLowerCase()}.`, miss.k === 'skills' ? 'skills' : 'main');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.email)) return err('Enter a valid e-mail.', 'main');
+    if (d.phone && !/^\+?[\d\s-]{8,16}$/.test(d.phone)) return err('Enter the mobile with digits only.', 'main');
+    const p10 = phone10(d.phone);
+    const dup = S.cands.find((x) => x !== c && ((x.email && x.email.toLowerCase() === d.email.toLowerCase()) || (p10 && phone10(x.phone) === p10)));
+    if (dup) return err(`${dup.name} already has this e-mail or phone. Open that candidate instead.`, 'main');
+    const H = {}; for (const k of HIST_KEYS) { const res = readHist(form, k, coId, (c && c[k]) || []); if (res.error) return err(res.error, k); H[k] = res.list; }
+    const rid = form.elements.assignReq ? form.elements.assignReq.value : '';
+    /* the masters: location, employer and designation are linked by id as well as by name */
+    const lc = S.locations.find((x) => x.companyId === coId && normKey(x.name) === normKey(d.location));
+    const em = d.currentCompany ? masterFor('employer', d.currentCompany, coId) : { id: '', name: '' }; if (d.currentCompany) d.currentCompany = em.name;
+    const ds = S.desigs.find((x) => x.companyId === coId && normKey(x.name) === normKey(d.currentTitle));
+    let rec = c; if (!rec) { rec = { id: uid(), companyId: coId, createdAt: Date.now(), createdBy: me.id }; S.cands.push(rec); }
+    Object.assign(rec, d, H, { cv, locationId: lc ? lc.id : '', currentEmployerId: em.id || '', currentTitleId: ds ? ds.id : '' });
+    const lv = { ...(rec.skillLevels || {}) }; $$('[data-cdsk]', form).forEach((s) => { if (s.value === '') delete lv[s.dataset.cdsk]; else lv[s.dataset.cdsk] = +s.value; }); rec.skillLevels = lv;
+    const ex = exEmployeeFor(rec); rec.exEmpId = ex ? ex.id : ''; if (ex && !c) rec.source = 'Former employee';
+    if (rid && !S.apps.some((a) => a.reqId === rid && a.candId === rec.id)) { const a = { id: uid(), reqId: rid, candId: rec.id, stage: 'sourced', stageAt: Date.now(), history: [], followups: [], notes: [], createdAt: Date.now() }; setStage(a, 'sourced', `Assigned to ${reqById(rid).no}`); S.apps.push(a); }
+    const sl = autoShortlistCand(rec);
+    const send = form.elements.sendLink && form.elements.sendLink.checked;
+    saveNow(); closeDlg(); toast(`${ex && !c ? `Saved. ${rec.name} is a former employee.` : 'Candidate saved'}${sl ? '. Shortlisted by skills match' : ''}`); route();
+    if (send && isHR(coId)) { try { await sync.flush(); await sync.flush(); } catch (x) { /* the link call reports it */ } candFormLink(rec); }
+  };
+  counts();
+};
+
+/* ---------------------------------------------------------------- invite people to a requisition by e-mail, without a CV */
+ACT.reqInvite = () => {
+  const r = curReq(); const n = reqSkills(r).length;
+  openDlg(`<form class="dlg" id="invF" novalidate><h2>Invite candidates to ${esc(r.title)}</h2>
+    <p class="fine" style="margin:0">No CV needed now. Each person is added to the candidate pool, assigned to ${esc(r.no)} and e-mailed a link to fill in their details and CV${n ? ` and rate themselves on the ${n} skill${n === 1 ? '' : 's'} this requisition needs` : ''}. Someone already in the pool (same e-mail or mobile) is assigned, not added twice.</p>
+    <label class="field">People to invite<textarea class="inp" name="list" rows="7" placeholder="One per line: name, e-mail, mobile&#10;Priya Sharma, priya.sharma@example.com, 98450 12345"></textarea><small>Type or paste from Excel, one person per line. The mobile is optional.</small></label>
+    <div class="form">${fieldHtml({ k: 'source', label: 'Source', type: 'select', opts: SOURCES.map((s) => [s, s]) }, 'Job portal')}</div>
+    <p class="err" id="invE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Invite and send the links</button></div></form>`, true);
+  $('#invF').onsubmit = async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const err = (m) => { $('#invE').textContent = m; };
+    const lines = String(f.list || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean); if (!lines.length) return err('Add at least one person.');
+    const people = []; const bad = [];
+    lines.forEach((ln) => { const parts = ln.split(/[,;\t|]+/).map((x) => x.trim()).filter(Boolean); const email = parts.find((x) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x));
+      const phone = parts.find((x) => x !== email && /^\+?[\d\s-]{8,16}$/.test(x)) || ''; const name = parts.find((x) => x !== email && x !== phone) || (email ? email.split('@')[0].replace(/[._]+/g, ' ') : '');
+      if (!email) bad.push(ln); else if (!people.some((p) => p.email.toLowerCase() === email.toLowerCase())) people.push({ name, email, phone }); });
+    if (bad.length) return err(`No e-mail on: ${bad.slice(0, 3).join('; ')}${bad.length > 3 ? ` and ${bad.length - 3} more` : ''}.`);
+    if (people.length > 100) return err('Invite up to 100 people at a time.');
+    const out = []; let added = 0, assigned = 0;
+    people.forEach((p) => { const p10 = phone10(p.phone);
+      let c = S.cands.find((x) => (x.email || '').toLowerCase() === p.email.toLowerCase() || (p10 && phone10(x.phone) === p10));
+      if (!c) { c = { id: uid(), companyId: r.companyId, name: p.name.replace(/\b\w/g, (m) => m.toUpperCase()), email: p.email.toLowerCase(), phone: p.phone, source: f.source, noticeDays: '', createdAt: Date.now(), createdBy: me.id, invitedFor: r.id };
+        const ex = exEmployeeFor(c); c.exEmpId = ex ? ex.id : ''; if (ex) c.source = 'Former employee'; S.cands.push(c); added++; }
+      if (!S.apps.some((a) => a.reqId === r.id && a.candId === c.id)) { const a = { id: uid(), reqId: r.id, candId: c.id, stage: 'sourced', stageAt: Date.now(), history: [], followups: [], notes: [], createdAt: Date.now() }; setStage(a, 'sourced', `Invited by e-mail to ${r.no}`); S.apps.push(a); assigned++; }
+      out.push(c); });
+    audit('Candidates invited by e-mail', `${r.no}: ${people.length} invited, ${added} new`, 'recruitment');
+    saveNow(); err(`Saving ${people.length} candidate${people.length === 1 ? '' : 's'}…`);
+    try { await sync.flush(); await sync.flush(); } catch (x) { /* reported per link */ }
+    toast(`${added} added to the pool, ${assigned} assigned`);
+    sendCvLinks(out.filter((c) => !cvIn(c) && (cfOf(c) || {}).status !== 'closed'), `Invitations for ${r.title}`);
+  };
+};
+
+/* ---------------------------------------------------------------- compare candidates side by side against the requisition */
+const ivAvgOf = (a) => { const fb = S.interviews.filter((i) => i.appId === a.id).flatMap((i) => Object.values(i.feedback || {})); return fb.length ? { avg: Math.round(fb.reduce((s, x) => s + +x.rating, 0) / fb.length * 10) / 10, n: fb.length, recs: fb.map((x) => x.rec) } : null; };
+VIEWS.compare = () => {
+  const r = reqById(R.arg); if (!r || !canSeeReq(r)) return { title: 'Compare candidates', html: '<div class="card empty">This requisition is not available.</div>' };
+  const ids = (R.q.get('ids') || '').split(',').filter(Boolean);
+  const all = S.apps.filter((a) => a.reqId === r.id && !['rejected', 'withdrawn'].includes(a.stage)).map((a) => ({ a, c: candById(a.candId) })).filter((x) => x.c)
+    .map((x) => ({ ...x, fit: profileFit(x.c, r), m: skillMatch(x.c, r) })).sort((x, y) => ((y.fit.pct ?? -1) - (x.fit.pct ?? -1)) || ((y.m || {}).pct ?? -1) - ((x.m || {}).pct ?? -1));
+  const pick = ids.length ? all.filter((x) => ids.includes(x.a.id)) : all.slice(0, 5);
+  const can = isHR(r.companyId) || r.hiringMgr === me.id;
+  const pb = (x, k) => { const p = partOf(x.fit, k); return p && p.score !== null ? ` <span class="badge ${scoreCls(p.score)}">${p.score}</span>` : ''; };
+  const rows = [
+    ['Stage', '', (x) => stageBadge(x.a.stage)],
+    ['Profile fit', r.fitMin ? `${r.fitMin}% or more` : '', (x) => `${fitBadge(x.fit) || '—'}<div class="fine">${x.fit.known} of ${x.fit.of} criteria known</div>`],
+    ['Skills match', reqSkills(r).length ? `${matchMin(r)}% or more${r.primaryMust === false ? '' : ', primary at level'}` : 'No skills listed', (x) => matchBadge(x.m) || '—'],
+    ...reqSkills(r).map((n) => [`${skillName(n.skillId)} <span class="fine">${SKILL_NEED[n.need]}</span>`, levelTxt(+n.level), (x) => { const h = candLevel(x.c, n.skillId); return h === null ? '<span class="fine">Not rated</span>' : `${esc(h ? levelTxt(h) : 'None')} ${h >= (+n.level || 1) ? '<span class="badge ok">✓</span>' : '<span class="badge warn">Below</span>'}`; }]),
+    ['Experience', (partOf(all[0] ? all[0].fit : {}, 'exp') || {}).want || `${num(r.expMin)}–${num(r.expMax)} years`, (x) => { const y = candExpYears(x.c); return `${y === null ? '—' : `${num(y, 1)} years`}${pb(x, 'exp')}`; }],
+    ['Current designation', esc((desig(r.desigId) || {}).name || ''), (x) => `${esc(x.c.currentTitle || '—')}${x.c.currentCompany ? `<div class="fine">at ${esc(x.c.currentCompany)}</div>` : ''}${pb(x, 'role')}`],
+    ['Employment history', '', (x) => candHist(x.c, 'prevJobs').slice(0, 4).map((j) => `<div>${esc(j.employer)}<span class="fine">, ${esc(j.designation || '')}${j.from ? `, ${tenure(j.from, j.to)}` : ''}</span></div>`).join('') || '<span class="fine">None given</span>'],
+    ['Location', esc((loc(r.locationId) || {}).name || ''), (x) => `${esc(x.c.location || '—')}${x.c.relocate ? '<div class="fine">Will relocate</div>' : ''}${pb(x, 'location')}`],
+    ['Current CTC', '', (x) => inr0(x.c.currentCtc)],
+    ['Expected CTC', `${inr0(r.ctcMin)} to ${inr0(r.ctcMax)}`, (x) => `${x.c.expectedCtc ? inr0(x.c.expectedCtc) : '—'}${x.c.expectedCtc ? (+x.c.expectedCtc <= +r.ctcMax ? ' <span class="badge ok">Within</span>' : ' <span class="badge bad">Above</span>') : ''}${x.c.currentCtc && x.c.expectedCtc ? `<div class="fine">+${Math.round((x.c.expectedCtc / x.c.currentCtc - 1) * 100)}% on now</div>` : ''}`],
+    ['Notice period', r.targetDate ? `Fill by ${dmy(r.targetDate)}` : '', (x) => `${x.c.noticeDays === '' || x.c.noticeDays == null ? '—' : `${x.c.noticeDays} days`}${pb(x, 'notice')}`],
+    ['Highest qualification', esc(r.minEdu || 'Any'), (x) => { const t = candTopEdu(x.c); return t ? `${esc(t.qualification)}<div class="fine">${esc([t.institution, t.toYear].filter(Boolean).join(', '))}</div>${pb(x, 'qual')}` : '<span class="fine">None given</span>'; }],
+    ['Awards', '', (x) => candHist(x.c, 'awards').slice(0, 3).map((w) => `<div>${esc(w.title)}${w.issuer ? `<span class="fine">, ${esc(w.issuer)}</span>` : ''}</div>`).join('') || '<span class="fine">—</span>'],
+    ['CV and details', '', (x) => { const st = cvStatus(x.c); return `<span class="badge ${st[1]}">${st[0]}</span>`; }],
+    ['Interviews', '', (x) => { const v = ivAvgOf(x.a); return v ? `${v.avg}/5 from ${v.n}<div class="fine">${esc(v.recs.map((k) => RECS[k]).join(', '))}</div>` : '<span class="fine">None yet</span>'; }],
+  ];
+  return { title: `Compare: ${r.title}`, html: `<div class="card"><div class="hd"><div><h2>${esc(r.no)} ${esc(r.title)}: compare candidates</h2><p class="sub">The requisition’s needs in the first column; each candidate’s profile against them. Small numbers are the score out of 100 that goes into the profile fit (weights under Recruitment settings).</p></div>
+      <div class="tools"><a class="btn" href="#/req/${r.id}">Back to the requisition</a><button class="btn" data-act="cmpXls">Download Excel</button><button class="btn" data-act="cmpPrint">Print</button></div></div>
+      ${all.length ? `<div class="tools" style="flex-wrap:wrap;gap:4px 12px"><span class="fine">Compare:</span>${all.map((x) => `<label class="chk"><input type="checkbox" data-ch="cmpPick" value="${x.a.id}" ${pick.includes(x) ? 'checked' : ''}> ${esc(x.c.name)} ${fitBadge(x.fit)}</label>`).join('')}</div>` : ''}</div>
+    ${pick.length ? `<div class="card"><div class="scroll"><table class="t" id="cmpT"><thead><tr><th style="min-width:150px"></th><th style="min-width:140px">Requisition needs</th>${pick.map((x) => `<th style="min-width:170px"><a href="#/app/${x.a.id}">${esc(x.c.name)}</a></th>`).join('')}</tr></thead>
+      <tbody>${rows.map(([l, w, fn]) => `<tr><td><b>${l}</b></td><td class="fine">${w}</td>${pick.map((x) => `<td>${fn(x)}</td>`).join('')}</tr>`).join('')}
+      ${can ? `<tr><td></td><td></td>${pick.map((x) => `<td>${x.a.stage === 'sourced' ? `<button class="btn sm pri" data-act="cmpShort" data-id="${x.a.id}">Shortlist</button>` : ''} <a class="btn sm" href="#/app/${x.a.id}">Open</a></td>`).join('')}</tr>` : ''}</tbody></table></div></div>`
+      : '<div class="card empty">Nobody to compare yet. Assign or invite candidates first.</div>'}` };
+};
+ACT.cmpPick = () => { const ids = $$('[data-ch="cmpPick"]:checked').map((x) => x.value); go(`#/compare/${R.arg}${ids.length ? `?ids=${ids.join(',')}` : ''}`); };
+ACT.cmpShort = (b) => { const a = appById(b.dataset.id); const c = candById(a.candId); const f = profileFit(c, reqById(a.reqId)); setStage(a, 'screening', `Shortlisted after comparison${f.pct !== null ? `: profile fit ${f.pct}%` : ''}`); saveNow(); toast(`${c.name} shortlisted`); route(); };
+ACT.cmpPrint = () => { const t = $('#cmpT'); if (!t) return; const r = reqById(R.arg); printHtml(`Compare ${r.title}`, `<h2>${esc(r.no)} ${esc(r.title)}: candidates compared</h2><p class="fine">${dmy(todayISO())}</p>${t.outerHTML.replace(/<button[^>]*>.*?<\/button>|<a class="btn[^>]*>.*?<\/a>/g, '')}`); };
+ACT.cmpXls = () => { const t = $('#cmpT'); if (!t) return; const r = reqById(R.arg); const head = $$('thead th', t).map((x) => x.textContent.trim() || 'Criterion');
+  const rows = $$('tbody tr', t).filter((tr) => tr.cells[0].textContent.trim()).map((tr) => Object.fromEntries([...tr.cells].map((td, i) => [head[i], td.innerText.replace(/\s*\n\s*/g, '; ').trim()])));
+  writeBook(`Compare ${r.no}.xlsx`, { Compare: rows }); };
+ACT.slCompare = () => { const ids = $$('#slT tbody input:checked').map((x) => x.value); if (!ids.length) { toast('Tick the candidates to compare.'); return; } go(`#/compare/${R.arg}?ids=${ids.join(',')}`); };
+
+/* ---------------------------------------------------------------- the profile against the requisition, on the application */
+function fitCard(c, a) {
+  const r = reqById(a.reqId); if (!r) return ''; const f = profileFit(c, r); const jobs = candHist(c, 'prevJobs'), edu = candHist(c, 'education'), aw = candHist(c, 'awards');
+  if (!f.parts.length && !jobs.length && !edu.length && !aw.length) return '';
+  return `<div class="card"><div class="hd"><div><h2>Profile against the requisition ${fitBadge(f)}</h2><p class="sub">${f.parts.length ? `Fit on ${f.known} of ${f.of} criteria the requisition sets${f.known < f.of ? '; the others are not known yet' : ''}.` : 'The requisition sets no experience, budget, location or qualification to compare against.'}</p></div>
+      <div class="tools"><a class="btn sm" href="#/compare/${r.id}?ids=${[a.id, ...S.apps.filter((x) => x.reqId === r.id && x.id !== a.id && !['rejected', 'withdrawn'].includes(x.stage)).map((x) => ({ x, p: profileFit(candById(x.candId), r).pct ?? -1 })).sort((p, q) => q.p - p.p).slice(0, 3).map((y) => y.x.id)].join(',')}">Compare with others</a></div></div>
+    <div class="grid g2" style="gap:16px"><div>${f.parts.length ? `<table class="t"><thead><tr><th>Criterion</th><th>Needed</th><th>Candidate</th><th class="r">Score</th></tr></thead><tbody>${f.parts.map((p) => `<tr><td>${FIT_PARTS[p.k]}</td><td class="fine">${esc(p.want)}</td><td>${esc(p.have)}</td><td class="r">${p.score === null ? '<span class="fine">—</span>' : `<span class="badge ${scoreCls(p.score)}">${p.score}</span>`}</td></tr>`).join('')}</tbody></table>` : ''}</div>
+    <div><h3 style="margin-top:0">Employment</h3>${jobs.length ? jobs.map((j) => `<div>${esc(j.employer)} <span class="fine">${esc(j.designation || '')}, ${esc(monthLbl(j.from))} to ${j.to ? esc(monthLbl(j.to)) : 'now'}</span></div>`).join('') : '<p class="fine">None given.</p>'}
+      <h3>Education</h3>${edu.length ? edu.map((x) => `<div>${esc(x.qualification)} <span class="fine">${esc([x.institution, x.toYear].filter(Boolean).join(', '))}</span></div>`).join('') : '<p class="fine">None given.</p>'}
+      ${aw.length ? `<h3>Awards</h3>${aw.map((x) => `<div>${esc(x.title)} <span class="fine">${esc([x.issuer, x.date ? dmy(x.date) : ''].filter(Boolean).join(', '))}</span></div>`).join('')}` : ''}</div></div></div>`;
+}
+
+/* ---------------------------------------------------------------- Microsoft 365: Outlook meeting requests for interviews
+   Uses the Microsoft sign-in already set up (Users from Google and Microsoft): the app registration needs the delegated
+   Microsoft Graph permission Calendars.ReadWrite. The meeting is created in the calendar of the person scheduling it;
+   Outlook sends the requests to the panel (and the candidate), and their replies show on the interview. */
+const MS_CAL = ['Calendars.ReadWrite'];
+const msReady = () => !!(S.settings && S.settings.msClientId && S.settings.msTenantId);
+const msTz = () => { const z = (Intl.DateTimeFormat().resolvedOptions().timeZone || ''); return !z || /^Asia\/(Kolkata|Calcutta)$/.test(z) ? 'India Standard Time' : z; };
+const ivDefaults = (coId) => ({ outlook: true, candidate: true, teams: true, ...((coById(coId || CO) || {}).ivInvite || {}) });
+async function msToken(scopes = MS_CAL) {
+  const app = await msal(S.settings.msClientId, S.settings.msTenantId);
+  const mine = (me.email || '').toLowerCase(); const accts = app.getAllAccounts();
+  const acct = accts.find((x) => (x.username || '').toLowerCase() === mine) || accts[0];
+  if (acct) { try { return (await app.acquireTokenSilent({ scopes, account: acct })).accessToken; } catch (e) { /* the pop-up asks */ } }
+  try { return (await app.acquireTokenPopup({ scopes, loginHint: me.email || undefined })).accessToken; } catch (e) { throw msError(e); }
+}
+async function graphCall(method, path, body) {
+  const tok = await msToken();
+  const r = await fetch('https://graph.microsoft.com/v1.0' + path, { method, headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json', Prefer: `outlook.timezone="${msTz()}"` }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 202 || r.status === 204) return {};
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(r.status === 403 ? 'Microsoft refused: add the delegated permission Calendars.ReadWrite to the app registration and grant consent.' : r.status === 404 ? 'The meeting is not in your Outlook calendar. Only the person who sent the request can change it.' : (j.error && j.error.message) || `Microsoft returned ${r.status}`);
+  return j;
+}
+const ivLocal = (date, hhmm, plus = 0) => { const [y, m, d] = date.split('-').map(Number); const [h, mi] = String(hhmm || '0:0').split(':').map(Number); const t = new Date(y, m - 1, d, h, mi || 0); t.setMinutes(t.getMinutes() + plus);
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}:00`; };
+function ivEventBody(i, opt) {
+  const a = appById(i.appId), c = candById(a.candId), r = reqById(a.reqId), co = coById(r.companyId);
+  const panel = (i.panel || []).map(empById).filter((e) => e && e.email);
+  const lines = [`${i.round} for ${r.title} (${r.no}), ${co.name}.`, `Candidate: ${c.name}`, `Panel: ${panel.map(fullName).join(', ')}`,
+    i.mode === 'f2f' ? `Venue: ${i.venue || ''}` : i.mode === 'phone' ? `${fullName(me)} or the panel will call ${c.name}.` : !opt.teams && i.link ? `Join: ${i.link}` : '', i.instructions ? `\n${i.instructions}` : ''].filter(Boolean);
+  const att = panel.map((e) => ({ emailAddress: { address: e.email, name: fullName(e) }, type: 'required' }));
+  if (opt.candidate && c.email) att.push({ emailAddress: { address: c.email, name: c.name }, type: 'required' });
+  const body = { subject: `Interview: ${c.name}, ${r.title} (${i.round})`, body: { contentType: 'HTML', content: lines.map(esc).join('<br>').replace(/\n/g, '<br>') },
+    start: { dateTime: ivLocal(i.date, i.start), timeZone: msTz() }, end: { dateTime: ivLocal(i.date, i.start, +i.duration || 45), timeZone: msTz() },
+    location: { displayName: i.mode === 'f2f' ? i.venue || '' : i.mode === 'phone' ? 'Phone call' : opt.teams ? 'Microsoft Teams meeting' : i.link || 'Video call' },
+    attendees: att, allowNewTimeProposals: true, responseRequested: true, isReminderOn: true, reminderMinutesBeforeStart: 30 };
+  if (opt.teams && i.mode === 'video') { body.isOnlineMeeting = true; body.onlineMeetingProvider = 'teamsForBusiness'; }
+  return body;
+}
+async function ivMsCreate(i, opt) {
+  const n = ((i.ms && i.ms.n) || 0) + 1;
+  const ev = await graphCall('POST', '/me/events', { ...ivEventBody(i, opt), transactionId: `pd-${i.id}-${n}` });
+  i.ms = { id: ev.id, webLink: ev.webLink || '', joinUrl: (ev.onlineMeeting && ev.onlineMeeting.joinUrl) || '', organizer: (me.email || '').toLowerCase(), by: me.id, at: Date.now(), candidate: !!opt.candidate, teams: !!(opt.teams && i.mode === 'video'), n, responses: {} };
+  if (i.ms.joinUrl) i.link = i.ms.joinUrl;
+  const a = appById(i.appId); (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `${i.round}: Outlook meeting request sent to the panel${opt.candidate ? ' and the candidate' : ''}${i.ms.teams ? ', with a Teams meeting' : ''}` });
+}
+const RESP = { accepted: ['Accepted', 'ok'], tentativelyAccepted: ['Tentative', 'warn'], declined: ['Declined', 'bad'], none: ['No reply', ''], notResponded: ['No reply', ''], organizer: ['Organiser', 'info'] };
+function ivMsHtml(i) {
+  if (!i.ms || !i.ms.id) return '';
+  const a = appById(i.appId), c = candById(a.candId);
+  const who = [...(i.panel || []).map((p) => [(empById(p) || {}).email, nameOf(p)]), ...(i.ms.candidate ? [[c.email, c.name]] : [])].filter(([e]) => e);
+  const rs = i.ms.responses || {};
+  return `<div class="fine" style="margin-top:4px">Outlook meeting request sent ${dt(i.ms.at)}${i.ms.by !== me.id ? ` by ${esc(nameOf(i.ms.by))}` : ''}${i.ms.cancelled ? ', <b>cancelled</b>' : ''}.
+    ${who.map(([e, n]) => { const s = RESP[rs[String(e).toLowerCase()]] || RESP.none; return `${esc(n)} <span class="badge ${s[1]}">${s[0]}</span>`; }).join(' ')}
+    ${i.ms.webLink ? ` <a href="${esc(i.ms.webLink)}" target="_blank" rel="noopener">Open in Outlook</a>` : ''}${i.ms.joinUrl ? ` · <a href="${esc(i.ms.joinUrl)}" target="_blank" rel="noopener">Join the Teams meeting</a>` : ''}</div>`;
+}
+function ivMsButtons(i) {
+  return `${msReady() ? (i.ms && i.ms.id && !i.ms.cancelled ? `<button class="btn sm" data-act="ivMsRefresh" data-id="${i.id}">Replies</button>` : `<button class="btn sm" data-act="ivMsSend" data-id="${i.id}">Send Outlook invite</button>`) : ''}<button class="btn sm ghost" data-act="ivIcs" data-id="${i.id}" title="A calendar file (.ics) to open in Outlook or any calendar">Calendar file</button>`;
+}
+const ivById = (id) => S.interviews.find((x) => x.id === id);
+ACT.ivMsSend = (b) => {
+  const i = ivById(b.dataset.id), a = appById(i.appId), c = candById(a.candId), r = reqById(a.reqId); const def = ivDefaults(r.companyId);
+  msal(S.settings.msClientId, S.settings.msTenantId).catch(() => {});
+  openDlg(`<form class="dlg" id="msF"><h2>Send an Outlook meeting request</h2><p class="fine" style="margin:0">${esc(i.round)} on ${dmy(i.date)} at ${esc(i.start)}, from your Outlook calendar to the panel: ${(i.panel || []).map(nameOf).map(esc).join(', ')}.</p>
+    <label class="chk"><input type="checkbox" name="cand" ${def.candidate ? 'checked' : ''}> Invite the candidate too${c.email ? ` (${esc(c.email)})` : ''}</label>
+    ${i.mode === 'video' ? `<label class="chk"><input type="checkbox" name="teams" ${def.teams && !i.link ? 'checked' : ''}> Create a Teams meeting${i.link ? ' (instead of the link entered)' : ''}</label>` : ''}
+    <p class="err" id="msE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send</button></div></form>`);
+  $('#msF').onsubmit = async (e) => { e.preventDefault(); const el = e.target.elements; const opt = { candidate: el.cand.checked, teams: !!(el.teams && el.teams.checked) };
+    const tok = msToken().catch((x) => x); $('#msE').textContent = 'Sending…';
+    try { const t = await tok; if (t instanceof Error) throw t; await ivMsCreate(i, opt); saveNow(); closeDlg(); toast('Meeting request sent from Outlook'); route(); } catch (x) { $('#msE').textContent = x.message; } };
+};
+ACT.ivMsRefresh = async (b) => {
+  const i = ivById(b.dataset.id); if (!i || !i.ms) return;
+  try { const ev = await graphCall('GET', `/me/events/${encodeURIComponent(i.ms.id)}?$select=attendees,webLink,onlineMeeting,isCancelled`);
+    i.ms.responses = Object.fromEntries((ev.attendees || []).map((x) => [String((x.emailAddress || {}).address || '').toLowerCase(), (x.status || {}).response || 'none']));
+    if (ev.webLink) i.ms.webLink = ev.webLink; if (ev.onlineMeeting && ev.onlineMeeting.joinUrl) { i.ms.joinUrl = ev.onlineMeeting.joinUrl; i.link = i.ms.joinUrl; } if (ev.isCancelled) i.ms.cancelled = true;
+    i.ms.checkedAt = Date.now(); saveNow(); toast('Replies brought in from Outlook'); route();
+  } catch (x) { toast(x.message); }
+};
+/* a calendar file for any calendar, when Microsoft 365 is not set up or for anyone outside it */
+ACT.ivIcs = (b) => {
+  const i = ivById(b.dataset.id), a = appById(i.appId), c = candById(a.candId), r = reqById(a.reqId), co = coById(r.companyId);
+  const utc = (local) => new Date(local).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const tx = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  const fold = (ln) => { const out = []; let s = ln; while (s.length > 74) { out.push(s.slice(0, 74)); s = ' ' + s.slice(74); } out.push(s); return out.join('\r\n'); };
+  const panel = (i.panel || []).map(empById).filter((e) => e && e.email);
+  const desc = [`${i.round} for ${r.title} (${r.no}), ${co.name}.`, `Candidate: ${c.name}, ${c.phone || ''}`, `Panel: ${panel.map(fullName).join(', ')}`, i.mode === 'video' && i.link ? `Join: ${i.link}` : '', i.instructions || ''].filter(Boolean).join('\n');
+  i.icsSeq = (i.icsSeq || 0) + 1;
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Aequm PeopleDesk//Interviews//EN', 'METHOD:REQUEST', 'BEGIN:VEVENT', `UID:${i.id}@peopledesk`, `SEQUENCE:${i.icsSeq}`, `DTSTAMP:${utc(new Date())}`,
+    `DTSTART:${utc(ivLocal(i.date, i.start))}`, `DTEND:${utc(ivLocal(i.date, i.start, +i.duration || 45))}`, `SUMMARY:${tx(`Interview: ${c.name}, ${r.title} (${i.round})`)}`,
+    `LOCATION:${tx(i.mode === 'f2f' ? i.venue : i.mode === 'video' ? i.link || 'Video call' : 'Phone call')}`, `DESCRIPTION:${tx(desc)}`, `ORGANIZER;CN=${tx(fullName(me))}:mailto:${me.email || ''}`,
+    ...panel.map((e) => `ATTENDEE;CN=${tx(fullName(e))};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${e.email}`), ...(c.email ? [`ATTENDEE;CN=${tx(c.name)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${c.email}`] : []),
+    i.status === 'cancelled' ? 'STATUS:CANCELLED' : 'STATUS:CONFIRMED', 'BEGIN:VALARM', 'TRIGGER:-PT30M', 'ACTION:DISPLAY', 'DESCRIPTION:Interview', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'];
+  downloadText(`Interview ${c.name} ${i.date}.ics`, lines.map(fold).join('\r\n') + '\r\n', 'text/calendar;method=REQUEST'); saveNow();
+};
+/* the panel's free and busy time on the day, from their Outlook calendars */
+async function ivAvailability(form) {
+  const box = $('#ivAvail', form); const date = form.elements.date.value; const panel = $$('input[name=panel]:checked', form).map((x) => empById(x.value)).filter(Boolean);
+  if (!date || !panel.length) { box.innerHTML = '<p class="fine">Choose the date and the panel first.</p>'; return; }
+  const withMail = panel.filter((e) => e.email); box.innerHTML = '<p class="fine">Reading the calendars…</p>';
+  try {
+    const res = await graphCall('POST', '/me/calendar/getSchedule', { schedules: withMail.map((e) => e.email), startTime: { dateTime: `${date}T08:00:00`, timeZone: msTz() }, endTime: { dateTime: `${date}T20:00:00`, timeZone: msTz() }, availabilityViewInterval: 30 });
+    const views = withMail.map((e) => { const v = (res.value || []).find((x) => String(x.scheduleId || '').toLowerCase() === e.email.toLowerCase()) || {}; return { e, view: v.availabilityView || '', error: v.error && v.error.message }; });
+    const slots = 24; const hhmm = (k) => `${pad(8 + Math.floor(k / 2))}:${k % 2 ? '30' : '00'}`;
+    const cls = { 0: 'var(--ok-soft)', 1: 'var(--mari-soft)', 2: 'var(--bad-soft)', 3: 'var(--bad-soft)', 4: 'var(--info-soft)' };
+    const need = Math.max(1, Math.ceil((+form.elements.duration.value || 45) / 30));
+    const free = []; for (let k = 0; k + need <= slots; k++) { if (views.every((v) => !v.error && v.view.length >= k + need && [...v.view.slice(k, k + need)].every((ch) => ch === '0'))) free.push(hhmm(k)); }
+    box.innerHTML = `<div class="scroll"><table class="t" style="font-size:12px"><thead><tr><th></th>${Array.from({ length: slots }, (_, k) => `<th style="padding:2px;text-align:center">${k % 2 ? '' : 8 + k / 2}</th>`).join('')}</tr></thead><tbody>
+      ${views.map((v) => `<tr><td style="white-space:nowrap">${esc(fullName(v.e))}</td>${v.error ? `<td colspan="${slots}" class="fine">${esc(v.error)}</td>` : Array.from({ length: slots }, (_, k) => { const ch = v.view[k] || '0'; return `<td data-ivslot="${hhmm(k)}" title="${hhmm(k)} ${{ 0: 'free', 1: 'tentative', 2: 'busy', 3: 'out of office', 4: 'working elsewhere' }[ch] || ''}" style="padding:0;cursor:pointer;background:${cls[ch] || cls[0]};border-left:1px solid var(--surface);height:22px"></td>`; }).join('')}</tr>`).join('')}</tbody></table></div>
+      ${panel.length > withMail.length ? `<p class="fine">No work e-mail for ${esc(panel.filter((e) => !e.email).map(fullName).join(', '))}.</p>` : ''}
+      <p class="fine">${free.length ? `Everyone is free for ${need * 30} minutes at: ${free.slice(0, 10).map((t) => `<button type="button" class="btn sm ghost" data-ivslot="${t}">${t}</button>`).join(' ')}` : 'No common free time between 8:00 and 20:00 on this day.'} Green is free, yellow tentative, red busy. Click a time to use it.</p>`;
+  } catch (x) { box.innerHTML = `<p class="err">${esc(x.message)}</p>`; }
+}
+/* schedule an interview: as before, with the Outlook meeting request and the panel's free time */
+ACT.ivNew = () => {
+  const a = curApp(), r = reqById(a.reqId), co = coById(r.companyId), c = candById(a.candId); const def = ivDefaults(r.companyId);
+  const n = S.interviews.filter((i) => i.appId === a.id).length + 1;
+  const fields = [{ k: 'round', label: 'Round', req: true }, { k: 'mode', label: 'Type', type: 'select', opts: Object.entries(MODES) }, { k: 'date', label: 'Date', type: 'date', req: true, min: todayISO() }, { k: 'start', label: 'Start time', type: 'time', req: true },
+    { k: 'duration', label: 'Duration (minutes)', type: 'number', min: 15 }, { k: 'venue', label: 'Venue (for face to face)', wide: true }, { k: 'link', label: 'Meeting link (for video)', wide: true, help: msReady() ? 'Leave empty to create a Teams meeting with the Outlook request' : '' }, { k: 'instructions', label: 'Instructions for the candidate', type: 'textarea', wide: true }];
+  const panelOpts = S.employees.filter((e) => active(e) && e.companyId === r.companyId);
+  if (msReady()) msal(S.settings.msClientId, S.settings.msTenantId).catch(() => {});
+  openDlg(`<form class="dlg" id="ivf2" novalidate><h2>Schedule an interview with ${esc(c.name)}</h2><div class="form">${fields.map((f) => fieldHtml(f, { round: n === 1 ? 'First round' : n === 2 ? 'Second round' : 'HR round', mode: 'f2f', date: addDays(todayISO(), 2), start: '11:00', duration: 45, venue: co.address,
+      instructions: 'Please bring a printed copy of your CV, a government photo ID, and your latest payslips. Report to reception 10 minutes early.' }[f.k])).join('')}</div>
+    <fieldset style="border:1px solid var(--rule);border-radius:9px;max-height:180px;overflow:auto"><legend class="fine">Interview panel</legend>${panelOpts.map((e) => `<label class="chk"><input type="checkbox" name="panel" value="${e.id}" ${e.id === r.hiringMgr ? 'checked' : ''}> ${esc(fullName(e))} <span class="fine">${esc((desig(e.desigId) || {}).name || '')}</span></label>`).join('')}</fieldset>
+    ${msReady() ? `<fieldset style="border:1px solid var(--rule);border-radius:9px"><legend class="fine">Outlook calendar (Microsoft 365)</legend>
+      <label class="chk"><input type="checkbox" name="msInvite" ${def.outlook ? 'checked' : ''}> Send a meeting request from my Outlook calendar to the panel</label>
+      <label class="chk"><input type="checkbox" name="msCand" ${def.candidate ? 'checked' : ''}> Invite the candidate too${c.email ? ` (${esc(c.email)})` : ''}</label>
+      <label class="chk"><input type="checkbox" name="msTeams" ${def.teams ? 'checked' : ''}> Create a Teams meeting for a video interview without a link</label>
+      <div><button type="button" class="btn sm" id="ivAvailB">Check the panel’s calendars</button></div><div id="ivAvail"></div></fieldset>`
+      : '<p class="fine">To send Outlook meeting requests and see the panel’s free time, set up Microsoft sign-in (Users from Google and Microsoft) with the Calendars.ReadWrite permission. Until then, each interview has a calendar file to open in Outlook.</p>'}
+    <p class="err" id="ive"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Schedule</button></div></form>`, true);
+  const form = $('#ivf2');
+  if ($('#ivAvailB')) $('#ivAvailB').onclick = () => ivAvailability(form);
+  form.addEventListener('click', (ev) => { const s = ev.target.closest('[data-ivslot]'); if (!s) return; form.elements.start.value = s.dataset.ivslot; toast(`Start time set to ${s.dataset.ivslot}`); });
+  form.onsubmit = async (e) => { e.preventDefault(); const d = readForm(e.target, fields); const panel = new FormData(e.target).getAll('panel'); const el = e.target.elements;
+    const ms = el.msInvite && el.msInvite.checked ? { candidate: el.msCand.checked, teams: el.msTeams.checked && d.mode === 'video' && !d.link } : null;
+    const tok = ms ? msToken().catch((x) => x) : null;          // the Microsoft pop-up, if needed, opens on the click
+    if (!d.round || !d.date || !d.start) { $('#ive').textContent = 'Enter the round, date and time.'; return; } if (d.date < todayISO()) { $('#ive').textContent = 'Choose a date from today.'; return; }
+    if (!panel.length) { $('#ive').textContent = 'Choose at least one panel member.'; return; } if (d.mode === 'f2f' && !d.venue) { $('#ive').textContent = 'Enter the venue for a face-to-face interview.'; return; }
+    const s0 = toMin(d.start), e0 = s0 + (+d.duration || 45);
+    const clash = S.interviews.find((i) => i.status === 'scheduled' && i.date === d.date && (i.panel || []).some((p) => panel.includes(p)) && toMin(i.start) < e0 && toMin(i.start) + i.duration > s0);
+    const lv = panel.map(empById).find((p) => leaveOn(p, d.date));
+    if ((clash || lv) && !(await confirmBox('Schedule anyway?', clash ? `${nameOf((clash.panel || []).find((p) => panel.includes(p)))} has another interview then (${candById(appById(clash.appId).candId).name}).` : `${fullName(lv)} is on leave that day.`, 'Schedule anyway'))) return;
+    const iv = { id: uid(), appId: a.id, ...d, duration: +d.duration || 45, panel, status: 'scheduled', feedback: {}, createdBy: me.id, createdAt: Date.now() }; S.interviews.push(iv);
+    if (['sourced', 'screening'].includes(a.stage)) setStage(a, 'interview', `${d.round} scheduled`);
+    (a.followups = a.followups || []).push({ id: uid(), due: addDays(d.date, -1) < todayISO() ? todayISO() : addDays(d.date, -1), note: `Confirm ${d.round.toLowerCase()} with the candidate`, done: false, by: me.id });
+    saveNow(); closeDlg();
+    if (!ms) { toast('Interview scheduled. Send the call letter next.'); route(); return; }
+    toast('Interview scheduled. Sending the Outlook meeting request…');
+    try { const t = await tok; if (t instanceof Error) throw t; await ivMsCreate(iv, ms); saveNow(); toast(`Meeting request sent from Outlook${ms.teams ? ' with a Teams meeting' : ''}`); }
+    catch (x) { (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `${d.round}: Outlook meeting request not sent (${x.message})` }); saveNow(); toast(`Scheduled, but the Outlook request was not sent: ${x.message}`); }
+    route(); };
+};
+/* update an interview: a reschedule or cancellation goes to the Outlook meeting too */
+ACT.ivStatus = (b) => {
+  const i = ivById(b.dataset.id);
+  openDlg(`<form class="dlg" id="isf"><h2>Update ${esc(i.round)}</h2><div class="form">${fieldHtml({ k: 'status', label: 'Status', type: 'select', opts: [['scheduled', 'Scheduled'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['noshow', 'Candidate did not attend']] }, i.status)}
+    ${fieldHtml({ k: 'date', label: 'Date (to reschedule)', type: 'date' }, i.date)}${fieldHtml({ k: 'start', label: 'Start time', type: 'time' }, i.start)}${fieldHtml({ k: 'note', label: 'Note', wide: true })}</div>
+    ${i.ms && i.ms.id && !i.ms.cancelled ? `<p class="fine">A new time or a cancellation is sent to everyone on the Outlook meeting${i.ms.organizer !== (me.email || '').toLowerCase() ? `; only ${esc(nameOf(i.ms.by))}, who sent it, can change it in Outlook` : ''}.</p>` : ''}
+    <p class="err" id="ise"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+  $('#isf').onsubmit = async (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const a = appById(i.appId); const moved = f.date !== i.date || f.start !== i.start;
+    const mine = i.ms && i.ms.id && !i.ms.cancelled && i.ms.organizer === (me.email || '').toLowerCase() && msReady();
+    const tok = mine && (moved || f.status === 'cancelled') ? msToken().catch((x) => x) : null;
+    Object.assign(i, { status: f.status, date: f.date, start: f.start }); if (moved) i.callSent = null;
+    (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `${i.round}: ${moved ? `rescheduled to ${dmy(f.date)} ${f.start}` : { completed: 'completed', cancelled: 'cancelled', noshow: 'candidate did not attend', scheduled: 'scheduled' }[f.status]}${f.note ? `. ${f.note}` : ''}` });
+    saveNow(); closeDlg();
+    if (tok) { try { const t = await tok; if (t instanceof Error) throw t;
+        if (f.status === 'cancelled') { await graphCall('POST', `/me/events/${encodeURIComponent(i.ms.id)}/cancel`, { comment: f.note || 'This interview has been cancelled.' }); i.ms.cancelled = true; }
+        else await graphCall('PATCH', `/me/events/${encodeURIComponent(i.ms.id)}`, { start: { dateTime: ivLocal(i.date, i.start), timeZone: msTz() }, end: { dateTime: ivLocal(i.date, i.start, +i.duration || 45), timeZone: msTz() } });
+        saveNow(); toast(f.status === 'cancelled' ? 'Cancelled, and the Outlook meeting too' : 'Rescheduled; Outlook sent the new time'); }
+      catch (x) { toast(`Saved here, but Outlook was not updated: ${x.message}`); } }
+    else if (i.ms && i.ms.id && !i.ms.cancelled && (moved || f.status === 'cancelled')) toast(`Saved. Ask ${nameOf(i.ms.by)} to ${f.status === 'cancelled' ? 'cancel' : 'move'} the Outlook meeting they sent.`);
+    route(); };
+};
+
+/* ---------------------------------------------------------------- negotiation on the offer */
+const NEGO_OUT = { open: ['Still talking', 'info'], agreed: ['Agreed', 'ok'], held: ['We held our offer', 'warn'], walked: ['Candidate walked away', 'bad'] };
+const lastAgreed = (a) => [...(a.nego || [])].reverse().find((x) => x.outcome === 'agreed') || null;
+function negoCard(a, c, r) {
+  const list = a.nego || []; const o = a.offer;
+  if (!list.length && !(o && !['accepted', 'declined'].includes(o.status)) && !['selected', 'offer', 'offered'].includes(a.stage)) return '';
+  const g = list.length && list[list.length - 1].outcome === 'agreed' ? list[list.length - 1] : null;
+  const differs = g && o && !['accepted', 'declined'].includes(o.status) && ((+g.ourCtc && +g.ourCtc !== +o.ctc) || (g.ourDoj && g.ourDoj !== o.doj) || (g.ourBonus !== '' && g.ourBonus != null && +g.ourBonus !== +(o.joiningBonus || 0)));
+  const terms = (ctc, doj, bonus, other) => [ctc ? inr0(ctc) : '', doj ? `joining ${dmy(doj)}` : '', +bonus ? `bonus ${inr0(bonus)}` : '', other || ''].filter(Boolean).map(esc).join(', ') || '—';
+  return `<div class="card"><div class="hd"><div><h2>Negotiation</h2><p class="sub">Each round of the candidate’s asks and our answer. Agreed terms become the offer when you revise it; an offer above the budget needs group approval.</p></div>
+      <div class="tools">${differs ? '<button class="btn pri" data-act="negoRevise">Revise the offer to the agreed terms</button>' : ''}${!['joined', 'rejected', 'withdrawn'].includes(a.stage) ? '<button class="btn" data-act="negoNew">Record a round</button>' : ''}</div></div>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Round</th><th>Candidate asked</th><th>We offered</th><th>Outcome</th></tr></thead><tbody>${list.map((x, k) => `<tr><td><b>${k + 1}</b> <span class="fine">${dmy(x.date)}, ${esc(nameOf(x.by))}</span></td>
+      <td>${terms(x.askCtc, x.askDoj, x.askBonus, x.askOther)}${+x.askCtc > +r.ctcMax ? ' <span class="badge bad">Above budget</span>' : ''}</td><td>${terms(x.ourCtc, x.ourDoj, x.ourBonus)}</td>
+      <td>${trBadge(NEGO_OUT, x.outcome)}${x.note ? `<div class="fine">${esc(x.note)}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">No negotiation recorded.</p>'}
+    ${(o && o.versions || []).length ? `<p class="fine">Earlier versions of the offer: ${o.versions.map((v) => `${inr0(v.ctc)}, joining ${dmy(v.doj)}${v.letterNo ? ` (${esc(v.letterNo)})` : ''}`).join('; ')}.</p>` : ''}</div>`;
+}
+ACT.negoNew = () => {
+  const a = curApp(), r = reqById(a.reqId), c = candById(a.candId), o = a.offer || {};
+  const fields = [{ k: 'date', label: 'Date', type: 'date' }, { k: 'raised', label: 'Raised by', type: 'select', opts: [['candidate', 'The candidate'], ['us', 'Us']] },
+    { k: 'askCtc', label: 'Candidate asks: CTC (₹ a year)', type: 'number', min: 0 }, { k: 'askDoj', label: 'Candidate asks: joining date', type: 'date' }, { k: 'askBonus', label: 'Candidate asks: joining bonus (₹)', type: 'number', min: 0 },
+    { k: 'askOther', label: 'Other asks', wide: true, help: 'For example notice buyout, relocation, hybrid work, designation' },
+    { k: 'ourCtc', label: 'We offer: CTC (₹ a year)', type: 'number', min: 0 }, { k: 'ourDoj', label: 'We offer: joining date', type: 'date' }, { k: 'ourBonus', label: 'We offer: joining bonus (₹)', type: 'number', min: 0 },
+    { k: 'outcome', label: 'Outcome', type: 'select', opts: Object.entries(NEGO_OUT).map(([k, [l]]) => [k, l]) }, { k: 'note', label: 'Note', type: 'textarea', wide: true }];
+  const lastN = (a.nego || []).slice(-1)[0] || {};
+  const v = { date: todayISO(), raised: 'candidate', askCtc: lastN.askCtc || c.expectedCtc || '', askDoj: lastN.askDoj || '', askBonus: lastN.askBonus || '', ourCtc: lastN.ourCtc || o.ctc || '', ourDoj: lastN.ourDoj || o.doj || '', ourBonus: lastN.ourBonus ?? (o.joiningBonus || ''), outcome: 'open' };
+  openDlg(`<form class="dlg" id="ngF" novalidate><h2>Negotiation with ${esc(c.name)}</h2><p class="fine" style="margin:0">Budget ${inr0(r.ctcMin)} to ${inr0(r.ctcMax)}. ${o.ctc ? `Offer now ${inr0(o.ctc)}, joining ${dmy(o.doj)}${+o.joiningBonus ? `, bonus ${inr0(o.joiningBonus)}` : ''}.` : 'No offer prepared yet: agreed terms are used when you prepare it.'} With Agreed, “We offer” are the agreed terms.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="ngE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  $('#ngF').onsubmit = (e) => { e.preventDefault(); const d = readForm(e.target, fields); const err = (m) => { $('#ngE').textContent = m; };
+    if (!d.askCtc && !d.askDoj && !d.askBonus && !d.askOther && !d.note) return err('Record what was asked, or write a note.');
+    if (d.outcome === 'agreed' && !d.ourCtc && !o.ctc) return err('Enter the agreed CTC under “We offer”.');
+    if (d.ourDoj && d.ourDoj < todayISO()) return err('The joining date offered is in the past.');
+    (a.nego = a.nego || []).push({ id: uid(), ...d, by: me.id, at: Date.now() });
+    (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Negotiation round ${a.nego.length}: ${NEGO_OUT[d.outcome][0].toLowerCase()}${d.askCtc ? `, candidate asked ${inr0(d.askCtc)}` : ''}${d.ourCtc ? `, we offered ${inr0(d.ourCtc)}` : ''}` });
+    if (d.outcome === 'walked') { if (o.status === 'issued') { o.status = 'declined'; o.respondedAt = Date.now(); o.declineReason = d.note || 'Walked away in negotiation'; } setStage(a, 'withdrawn', `Walked away in negotiation${d.note ? `: ${d.note}` : ''}`); }
+    saveNow(); closeDlg(); toast(d.outcome === 'agreed' && o.ctc ? 'Agreed. Revise the offer to the agreed terms next.' : 'Saved'); route(); };
+};
+ACT.negoRevise = async () => {
+  const a = curApp(), o = a.offer, g = lastAgreed(a); if (!o || !g) return;
+  if (!(await confirmBox('Revise the offer?', `The offer becomes ${inr0(g.ourCtc || o.ctc)}${g.ourDoj ? `, joining ${dmy(g.ourDoj)}` : ''}${g.ourBonus !== '' && g.ourBonus != null ? `, joining bonus ${inr0(g.ourBonus)}` : ''}, and goes for approval again before a new letter is issued.`, 'Revise'))) return;
+  (o.versions = o.versions || []).push({ at: Date.now(), ctc: o.ctc, doj: o.doj, joiningBonus: o.joiningBonus, status: o.status, letterNo: o.letterNo || '' });
+  if (+g.ourCtc) o.ctc = +g.ourCtc; if (g.ourDoj) o.doj = g.ourDoj; if (g.ourBonus !== '' && g.ourBonus != null) o.joiningBonus = +g.ourBonus;
+  o.status = 'draft'; o.approvals = []; setStage(a, 'offer', 'Offer revised after negotiation');
+  audit('Offer revised after negotiation', `${candById(a.candId).name}: ${inr0(o.ctc)}`, 'recruitment'); saveNow(); toast('Revised. Send it for approval again.'); route();
+};
+{
+  const offerEdit0 = ACT.offerEdit;
+  ACT.offerEdit = (b) => { const a = curApp(); const had = !!a.offer; offerEdit0(b); const g = lastAgreed(a); const f = $('#off'); if (had || !g || !f) return;
+    if (+g.ourCtc) f.elements.ctc.value = g.ourCtc; if (g.ourDoj && g.ourDoj >= todayISO()) f.elements.doj.value = g.ourDoj; if (g.ourBonus !== '' && g.ourBonus != null) f.elements.joiningBonus.value = g.ourBonus;
+    const p = document.createElement('p'); p.className = 'note ok'; p.textContent = 'Filled in with the terms agreed in negotiation.'; f.querySelector('.form').before(p); };
+}
+
+/* ---------------------------------------------------------------- closure: from the accepted offer to joining (or not) */
+const CLOSE_OUT = { joined: ['Joined', 'ok'], noshow: ['Did not turn up on the joining date', 'bad'], backedout: ['Backed out after accepting', 'bad'], revoked: ['Offer withdrawn by us', 'bad'] };
+const BGV = { '': 'Not started', pending: 'In progress', clear: 'Clear', issue: 'Concerns found' };
+function closureCard(a, c, r) {
+  const o = a.offer; const k = a.closure || {};
+  if (!(o && o.status === 'accepted') && !a.closure && a.stage !== 'joined') return '';
+  const t = todayISO(); const doj = (o && o.doj) || k.joinedOn || '';
+  const open = !k.outcome && a.stage === 'accepted';
+  const lastDay = k.lastDay || (k.resignDate && c.noticeDays !== '' && c.noticeDays != null ? addDays(k.resignDate, +c.noticeDays) : '');
+  const steps = [k.resignDate, k.docs, k.bgv === 'clear', k.confirmed]; const done = steps.filter(Boolean).length;
+  const inp = (key, type, val) => `<input class="inp" type="${type}" style="padding:3px 6px;max-width:170px" data-ch="closeSet" data-k="${key}" value="${esc(val || '')}" ${open ? '' : 'disabled'}>`;
+  const chk = (key) => `<input type="checkbox" data-ch="closeSet" data-k="${key}" ${k[key] ? 'checked' : ''} ${open ? '' : 'disabled'}>`;
+  return `<div class="card"><div class="hd"><div><h2>Joining and closure ${k.outcome ? trBadge(CLOSE_OUT, k.outcome) : `<span class="badge info">${done} of 4 done</span>`}</h2>
+      <p class="sub">${k.outcome ? `${CLOSE_OUT[k.outcome][0]}${k.outcome === 'joined' && k.joinedOn ? ` on ${dmy(k.joinedOn)}` : `: recorded ${dt(k.outcomeAt)} by ${esc(nameOf(k.outcomeBy))}`}.${k.reason ? ` ${esc(k.reason)}` : ''}` : `Joining on ${dmy(doj)}${doj ? ` (${dayDiff(doj, t) >= 0 ? `in ${dayDiff(doj, t)} days` : `${-dayDiff(doj, t)} days ago`})` : ''}. Track the steps to the first day, then convert the candidate to an employee, or record that they did not join.`}</p></div>
+      ${open ? '<div class="tools"><button class="btn danger" data-act="closeNoJoin">Did not join</button></div>' : ''}</div>
+    <table class="t"><tbody>
+      <tr><td>Resigned at ${esc(c.currentCompany || 'their current employer')}</td><td>${inp('resignDate', 'date', k.resignDate)}</td><td>${k.resignDate ? '<span class="badge ok">Done</span>' : '<span class="fine">Ask for the resignation acknowledgement</span>'}</td></tr>
+      <tr><td>Last working day there</td><td>${inp('lastDay', 'date', lastDay)}</td><td>${lastDay && doj && lastDay >= doj ? '<span class="badge bad">On or after the joining date</span>' : lastDay ? '<span class="badge ok">Before joining</span>' : ''}</td></tr>
+      <tr><td>Joining documents received</td><td>${chk('docs')}</td><td class="fine">ID, PAN, certificates, relieving letter and payslips</td></tr>
+      <tr><td>Background and reference check</td><td><select class="inp" style="padding:3px 6px" data-ch="closeSet" data-k="bgv" ${open ? '' : 'disabled'}>${Object.entries(BGV).map(([v, l]) => `<option value="${v}" ${(k.bgv || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td><td>${k.bgv === 'issue' ? '<span class="badge bad">Review before joining</span>' : k.bgv === 'clear' ? '<span class="badge ok">Clear</span>' : ''}</td></tr>
+      <tr><td>Joining date confirmed with the candidate</td><td>${chk('confirmed')}</td><td class="fine">${k.confirmedAt ? `Confirmed ${dt(k.confirmedAt)}` : ''}</td></tr>
+    </tbody></table></div>`;
+}
+ACT.closeSet = (el) => {
+  const a = curApp(); if (!a || !canSeeReq(reqById(a.reqId))) return; const k = a.closure = { ...(a.closure || {}) }; const key = el.dataset.k;
+  k[key] = el.type === 'checkbox' ? el.checked : el.value; if (key === 'confirmed') k.confirmedAt = el.checked ? Date.now() : null;
+  if (key === 'resignDate' && el.value) (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Resigned at the current employer on ${dmy(el.value)}` });
+  if (key === 'bgv' && el.value === 'issue') toast('Concerns found: review them before the joining date.');
+  saveNow(); route();
+};
+ACT.closeNoJoin = () => {
+  const a = curApp(), c = candById(a.candId), r = reqById(a.reqId);
+  openDlg(`<form class="dlg" id="njF"><h2>${esc(c.name)} did not join</h2><div class="form">${fieldHtml({ k: 'outcome', label: 'What happened', type: 'select', opts: Object.entries(CLOSE_OUT).filter(([x]) => x !== 'joined').map(([x, [l]]) => [x, l]) }, 'backedout')}
+    ${fieldHtml({ k: 'reason', label: 'Reason', type: 'textarea', wide: true, help: 'For example a counter-offer from the current employer' })}</div>
+    <p class="fine">The candidate moves to Withdrawn and the position stays open on ${esc(r.no)}.</p><p class="err" id="njE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn danger">Record</button></div></form>`);
+  $('#njF').onsubmit = (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); if (f.reason.trim().length < 3) { $('#njE').textContent = 'Give the reason.'; return; }
+    a.closure = { ...(a.closure || {}), outcome: f.outcome, reason: f.reason.trim(), outcomeAt: Date.now(), outcomeBy: me.id }; if (a.offer) a.offer.closedAs = f.outcome;
+    setStage(a, 'withdrawn', `${CLOSE_OUT[f.outcome][0]}: ${f.reason.trim()}`); (a.followups || []).forEach((x) => { if (!x.done) { x.done = true; x.doneAt = Date.now(); } });
+    audit('Hire not completed', `${c.name}, ${r.no}: ${CLOSE_OUT[f.outcome][0]}`, 'recruitment'); saveNow(); closeDlg(); toast('Recorded'); route(); };
+};
+
+/* ---------------------------------------------------------------- the screens put together */
+{
+  const appView3 = VIEWS.app;
+  VIEWS.app = () => {
+    const v = appView3(); const a = appById(R.arg); if (!a || !canSeeApp(a)) return v; const c = candById(a.candId), r = reqById(a.reqId);
+    const fc = fitCard(c, a); const i = v.html.indexOf('<div class="grid g21">'); if (fc) v.html = i > 0 ? v.html.slice(0, i) + fc + v.html.slice(i) : v.html + fc;
+    if (canSeeReq(r)) { const extra = negoCard(a, c, r) + closureCard(a, c, r); const fu = v.html.indexOf('<div class="card"><div class="hd"><h2>Follow-ups</h2>'); const at = fu > 0 ? v.html.lastIndexOf('</div><div>', fu) : -1;
+      if (extra) v.html = at > 0 ? v.html.slice(0, at) + extra + v.html.slice(at) : v.html + extra; }
+    return v;
+  };
+  const reqView = VIEWS.req;
+  VIEWS.req = () => { const v = reqView(); const r = reqById(R.arg); if (!r || !canSeeReq(r)) return v;
+    const live = S.apps.filter((a) => a.reqId === r.id && !['rejected', 'withdrawn'].includes(a.stage)).length;
+    const btn = '<button class="btn" data-act="reqLinks">Send CV links</button>';
+    if (v.html.includes(btn)) v.html = v.html.replace(btn, `<button class="btn" data-act="reqInvite">Invite by e-mail</button>${btn}`);
+    if (live > 1) v.html = v.html.replace('<div class="card"><h2>Pipeline</h2>', `<div class="card"><div class="hd"><h2>Pipeline</h2><a class="btn sm" href="#/compare/${r.id}">Compare candidates</a></div>`);
+    return v; };
+  const offersView = VIEWS.offers;
+  VIEWS.offers = () => { const v = offersView(); const t = todayISO();
+    const mine = S.apps.filter((a) => { const r = reqById(a.reqId); return r && r.companyId === CO && canSeeReq(r); });
+    const talking = mine.filter((a) => { const l = (a.nego || []).slice(-1)[0]; return l && l.outcome === 'open' && !['joined', 'rejected', 'withdrawn'].includes(a.stage); });
+    const joining = mine.filter((a) => a.offer && a.offer.status === 'accepted' && a.stage === 'accepted').sort((x, y) => (x.offer.doj < y.offer.doj ? -1 : 1));
+    const closed = mine.filter((a) => a.closure && a.closure.outcome && a.closure.outcomeAt > Date.now() - 180 * 864e5);
+    v.html += `${talking.length ? `<div class="card"><h2>In negotiation</h2><table class="t"><tbody>${talking.map((a) => { const l = a.nego.slice(-1)[0]; return `<tr class="click" data-act="openApp" data-id="${a.id}"><td><b>${esc(candById(a.candId).name)}</b><div class="fine">${esc(reqById(a.reqId).title)}</div></td><td>Asked ${l.askCtc ? inr0(l.askCtc) : '—'}; we offered ${l.ourCtc ? inr0(l.ourCtc) : '—'}</td><td>${dmy(l.date)}, round ${a.nego.length}</td></tr>`; }).join('')}</tbody></table></div>` : ''}
+      <div class="card"><h2>Joining tracker</h2><p class="sub">Accepted offers up to the first day. Open a candidate to record resignation, documents, checks and confirmation.</p>
+      ${joining.length ? `<div class="scroll"><table class="t"><thead><tr><th>Candidate</th><th>Joining</th><th>Resigned</th><th>Documents</th><th>Check</th><th>Confirmed</th></tr></thead><tbody>${joining.map((a) => { const k = a.closure || {}; const dd = dayDiff(a.offer.doj, t);
+        return `<tr class="click" data-act="openApp" data-id="${a.id}"><td><b>${esc(candById(a.candId).name)}</b><div class="fine">${esc(reqById(a.reqId).title)}</div></td><td>${dmy(a.offer.doj)}<div class="fine" style="color:${dd < 0 ? 'var(--bad)' : 'var(--muted)'}">${dd >= 0 ? `in ${dd} days` : `${-dd} days ago: convert or record`}</div></td>
+          <td>${k.resignDate ? dmy(k.resignDate) : '<span class="badge warn">Not yet</span>'}</td><td>${k.docs ? '<span class="badge ok">Received</span>' : '—'}</td><td>${k.bgv ? `<span class="badge ${k.bgv === 'clear' ? 'ok' : k.bgv === 'issue' ? 'bad' : 'info'}">${BGV[k.bgv]}</span>` : '—'}</td><td>${k.confirmed ? '<span class="badge ok">Yes</span>' : '—'}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No accepted offers waiting for joining.</div>'}</div>
+      ${closed.length ? `<div class="card"><h2>Closed in the last six months</h2><table class="t"><tbody>${closed.sort((x, y) => y.closure.outcomeAt - x.closure.outcomeAt).map((a) => `<tr class="click" data-act="openApp" data-id="${a.id}"><td><b>${esc(candById(a.candId).name)}</b><div class="fine">${esc(reqById(a.reqId).title)}</div></td><td>${trBadge(CLOSE_OUT, a.closure.outcome)}</td><td class="fine">${esc(a.closure.reason || '')}</td><td>${dmy(isoOf(new Date(a.closure.outcomeAt)))}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+    return v; };
+  const rsView = VIEWS.recruitsetup;
+  VIEWS.recruitsetup = () => { const v = rsView(); const co = company(); const w = fitWeights(co.id); const inv = ivDefaults(co.id);
+    v.html += `<form class="card" id="fitF"><h2>Profile fit</h2><p class="sub">How much each criterion counts when a candidate is compared with a requisition. Set a weight to 0 to leave it out. Only the criteria a requisition sets, and that are known for the candidate, count.</p>
+      <div class="form">${Object.entries(FIT_PARTS).map(([k, l]) => fieldHtml({ k: 'w_' + k, label: l, type: 'number', min: 0, max: 100 }, w[k])).join('')}</div>
+      <h2 style="margin-top:16px">Interview invitations</h2><p class="sub">${msReady() ? 'Defaults when scheduling an interview. Meeting requests go from the Outlook calendar of the person scheduling it.' : 'Outlook meeting requests need Microsoft sign-in (Users from Google and Microsoft) with the Calendars.ReadWrite permission.'}</p>
+      <div class="form">${fieldHtml({ k: 'outlook', label: 'Send an Outlook meeting request to the panel', type: 'check', wide: true }, inv.outlook)}${fieldHtml({ k: 'candidate', label: 'Invite the candidate to the meeting too', type: 'check', wide: true }, inv.candidate)}${fieldHtml({ k: 'teams', label: 'Create a Teams meeting for video interviews', type: 'check', wide: true }, inv.teams)}</div>
+      <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save</button><button type="button" class="btn ghost" id="fitReset">Standard weights</button></div></form>`;
+    const after0 = v.after; v.after = () => { if (after0) after0();
+      $('#fitF').onsubmit = (e) => { e.preventDefault(); const el = e.target.elements; const fw = {}; Object.keys(FIT_PARTS).forEach((k) => { fw[k] = Math.max(0, Math.min(100, parseNum(el['w_' + k].value))); });
+        if (!Object.values(fw).some((x) => x > 0)) { toast('Give at least one criterion a weight.'); return; }
+        co.fitWeights = fw; co.ivInvite = { outlook: el.outlook.checked, candidate: el.candidate.checked, teams: el.teams.checked }; audit('Recruitment settings changed', 'Profile fit weights and interview invitations', 'recruitment'); saveNow(); toast('Saved'); };
+      $('#fitReset').onclick = () => { Object.entries(FIT_W0).forEach(([k, x]) => { $('#fitF').elements['w_' + k].value = x; }); }; };
+    return v; };
+}
+
+/* =====================================================================
+   PeopleDesk 2.15: standard reasons for leaving and cities on previous jobs, the cities of India in the location
+   list, profile photos on the organisation chart, expense claim purposes and supporting documents, approval
+   steps that depend on the claim, and reimbursement runs on a cycle, made automatically by the server (reimb.py).
+   ===================================================================== */
+const LEAVE_REASONS = ['Better role or career growth', 'Higher pay', 'Relocation', 'Contract or project ended', 'Company closed, downsized or layoff',
+  'Higher studies', 'Family or personal reasons', 'Health reasons', 'Better work-life balance', 'Retirement', 'Asked to leave by the employer', 'Still working there'];
+
+/* ---------------------------------------------------------------- profile photos */
+const photoUrl = (e) => (e && e.photoId ? `/api/files/${e.photoId}` : '');
+function avatar(e, tag = 'span', cls = '') { const u = photoUrl(e); return `<${tag} class="av ${cls}">${u ? `<img src="${u}" alt="" loading="lazy">` : esc(initials(fullName(e)))}</${tag}>`; }
+function photoBox(e, can) {
+  return `<div class="photobox">${avatar(e, 'div', 'lg')}${can ? `<label class="btn sm ghost">${e.photoId ? 'Change photo' : 'Add photo'}<input type="file" accept="image/jpeg,image/png,image/webp" hidden data-ch="photoPick" data-id="${e.id}"></label>${e.photoId ? `<button class="btn sm ghost" data-act="photoRemove" data-id="${e.id}">Remove</button>` : ''}` : ''}</div>`;
+}
+/* a square crop, at most 320 pixels, as JPEG: small enough for the organisation chart */
+async function squarePhoto(file, size = 320) {
+  try {
+    const bmp = await createImageBitmap(file); const s = Math.min(bmp.width, bmp.height); const cv = document.createElement('canvas'); cv.width = cv.height = Math.min(size, s);
+    cv.getContext('2d').drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, cv.width, cv.height);
+    const blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.86)); if (blob) return new File([blob], 'photo.jpg', { type: 'image/jpeg' });
+  } catch (x) { /* the browser cannot resize it: the photo goes as it is */ }
+  return file;
+}
+ACT.photoPick = async (el) => {
+  const e = empById(el.dataset.id); const file = el.files[0]; el.value = ''; if (!e || !file) return;
+  if (!(e.id === me.id || isHR(e.companyId))) return;
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { toast('Choose a JPEG, PNG or WebP photo.'); return; }
+  if (file.size > 8 * 1024 * 1024) { toast('The photo is larger than 8 MB.'); return; }
+  toast('Uploading the photo…');
+  try { const up = await uploadFile(await squarePhoto(file)); e.photoId = up.id; e.photoAt = Date.now();
+    audit('Profile photo changed', fullName(e), 'org', 'employee', e.id); saveNow(); toast('Photo saved. It shows on the organisation chart.'); route(); } catch (x) { toast(x.message); }
+};
+ACT.photoRemove = async (b) => { const e = empById(b.dataset.id); if (!e || !(await confirmBox('Remove the photo?', 'Initials show instead.', 'Remove'))) return; delete e.photoId; e.photoAt = Date.now(); saveNow(); route(); };
+
+/* ---------------------------------------------------------------- the cities of India in the location list
+   Kept with the company's locations as kind "city": they are offered for an employee's or candidate's city and
+   previous jobs, not as places people work. HR adds the starter list below, or imports any list from Excel. */
+const INDIA_CITIES = {
+  '01': 'Srinagar|Jammu|Anantnag|Baramulla|Udhampur|Kathua|Sopore', '38': 'Leh|Kargil',
+  '02': 'Shimla|Dharamshala|Mandi|Solan|Kullu|Hamirpur|Una|Bilaspur (Himachal Pradesh)|Chamba|Nahan|Baddi',
+  '03': 'Ludhiana|Amritsar|Jalandhar|Patiala|Bathinda|Mohali|Hoshiarpur|Pathankot|Moga|Firozpur|Kapurthala|Phagwara|Sangrur|Barnala|Rajpura|Khanna',
+  '04': 'Chandigarh', '05': 'Dehradun|Haridwar|Roorkee|Haldwani|Rudrapur|Kashipur|Rishikesh|Nainital|Almora|Pithoragarh',
+  '06': 'Gurugram|Faridabad|Panipat|Ambala|Yamunanagar|Rohtak|Hisar|Karnal|Sonipat|Panchkula|Bhiwani|Sirsa|Bahadurgarh|Jind|Kurukshetra|Kaithal|Rewari|Palwal|Manesar',
+  '07': 'New Delhi|Delhi',
+  '08': 'Jaipur|Jodhpur|Kota|Bikaner|Ajmer|Udaipur|Bhilwara|Alwar|Bharatpur|Sikar|Pali|Sri Ganganagar|Tonk|Kishangarh|Beawar|Hanumangarh|Dholpur|Churu|Jhunjhunu|Barmer|Jaisalmer|Chittorgarh|Neemrana|Bhiwadi',
+  '09': 'Lucknow|Kanpur|Ghaziabad|Agra|Varanasi|Meerut|Prayagraj|Bareilly|Aligarh|Moradabad|Saharanpur|Gorakhpur|Noida|Greater Noida|Firozabad|Jhansi|Muzaffarnagar|Mathura|Ayodhya|Rampur|Shahjahanpur|Farrukhabad|Mau|Hapur|Etawah|Mirzapur|Bulandshahr|Sambhal|Amroha|Hardoi|Fatehpur|Raebareli|Orai|Sitapur|Bahraich|Unnao|Jaunpur|Lakhimpur|Hathras|Banda|Pilibhit|Barabanki|Basti|Gonda|Azamgarh|Sultanpur|Ballia|Deoria|Etah|Mainpuri|Budaun|Lalitpur',
+  '10': 'Patna|Gaya|Bhagalpur|Muzaffarpur|Darbhanga|Purnia|Bihar Sharif|Arrah|Begusarai|Katihar|Munger|Chhapra|Danapur|Saharsa|Hajipur|Sasaram|Dehri|Siwan|Motihari|Nawada|Bettiah|Kishanganj|Buxar|Sitamarhi|Jehanabad|Aurangabad (Bihar)',
+  '11': 'Gangtok|Namchi', '12': 'Itanagar|Naharlagun|Pasighat|Tawang', '13': 'Kohima|Dimapur|Mokokchung', '14': 'Imphal|Thoubal|Churachandpur', '15': 'Aizawl|Lunglei',
+  '16': 'Agartala|Udaipur (Tripura)|Dharmanagar', '17': 'Shillong|Tura',
+  '18': 'Guwahati|Dispur|Silchar|Dibrugarh|Jorhat|Nagaon|Tinsukia|Tezpur|Bongaigaon|Dhubri|Diphu|North Lakhimpur|Karimganj|Sivasagar|Goalpara',
+  '19': 'Kolkata|Howrah|Bidhannagar (Salt Lake)|New Town|Asansol|Siliguri|Durgapur|Bardhaman|English Bazar (Malda)|Baharampur|Habra|Kharagpur|Haldia|Krishnanagar|Medinipur|Jalpaiguri|Bally|Barasat|Serampore|Bankura|Purulia|Cooch Behar|Raiganj|Balurghat|Darjeeling|Kalyani',
+  '20': 'Ranchi|Jamshedpur|Dhanbad|Bokaro Steel City|Deoghar|Hazaribagh|Giridih|Ramgarh|Phusro|Medininagar|Chaibasa|Dumka',
+  '21': 'Bhubaneswar|Cuttack|Rourkela|Berhampur|Sambalpur|Puri|Balasore|Bhadrak|Baripada|Jharsuguda|Jeypore|Angul|Dhenkanal|Paradip|Rayagada|Kendujhar',
+  '22': 'Raipur|Nava Raipur|Bhilai|Durg|Bilaspur (Chhattisgarh)|Korba|Rajnandgaon|Raigarh|Jagdalpur|Ambikapur|Dhamtari',
+  '23': 'Indore|Bhopal|Jabalpur|Gwalior|Ujjain|Sagar|Dewas|Satna|Ratlam|Rewa|Katni|Singrauli|Burhanpur|Khandwa|Bhind|Chhindwara|Guna|Shivpuri|Vidisha|Chhatarpur|Damoh|Mandsaur|Khargone|Neemuch|Pithampur|Narmadapuram|Itarsi|Sehore|Betul|Seoni|Datia|Morena|Balaghat|Mandla',
+  '24': 'Ahmedabad|Surat|Vadodara|Rajkot|Bhavnagar|Jamnagar|Junagadh|Gandhinagar|Gandhidham|Anand|Navsari|Morbi|Nadiad|Surendranagar|Bharuch|Ankleshwar|Mehsana|Bhuj|Porbandar|Palanpur|Valsad|Vapi|Godhra|Patan|Dahod|Botad|Amreli|Veraval|Kalol|Mundra',
+  '26': 'Silvassa|Daman|Diu',
+  '27': 'Mumbai|Navi Mumbai|Thane|Mira-Bhayandar|Kalyan-Dombivli|Vasai-Virar|Bhiwandi|Ulhasnagar|Ambernath|Panvel|Palghar|Pune|Pimpri-Chinchwad|Chakan|Lonavala|Baramati|Nagpur|Nashik|Chhatrapati Sambhajinagar (Aurangabad)|Solapur|Amravati|Kolhapur|Sangli|Malegaon|Jalgaon|Akola|Latur|Dhule|Ahilyanagar (Ahmednagar)|Chandrapur|Parbhani|Ichalkaranji|Jalna|Bhusawal|Satara|Beed|Yavatmal|Gondia|Wardha|Nanded|Ratnagiri|Dharashiv (Osmanabad)|Alibag',
+  '29': 'Bengaluru|Mysuru|Hubballi|Dharwad|Mangaluru|Belagavi|Kalaburagi|Davanagere|Ballari|Vijayapura|Shivamogga|Tumakuru|Raichur|Bidar|Hosapete|Udupi|Manipal|Hassan|Chitradurga|Mandya|Kolar|Kolar Gold Fields|Chikkamagaluru|Bagalkot|Gadag|Karwar|Chikkaballapur|Ramanagara',
+  '30': 'Panaji|Margao|Vasco da Gama|Mapusa|Ponda',
+  '32': 'Thiruvananthapuram|Kochi|Kozhikode|Thrissur|Kollam|Kannur|Alappuzha|Palakkad|Kottayam|Malappuram|Manjeri|Thalassery|Kasaragod|Pathanamthitta|Kalpetta|Thodupuzha',
+  '33': 'Chennai|Tambaram|Avadi|Sriperumbudur|Chengalpattu|Coimbatore|Madurai|Tiruchirappalli|Salem|Tiruppur|Erode|Vellore|Ranipet|Tirunelveli|Thoothukudi|Thanjavur|Dindigul|Hosur|Nagercoil|Kanchipuram|Karur|Kumbakonam|Cuddalore|Sivakasi|Tiruvannamalai|Pollachi|Rajapalayam|Pudukkottai|Nagapattinam|Namakkal|Krishnagiri|Dharmapuri|Viluppuram|Udhagamandalam (Ooty)|Karaikudi',
+  '34': 'Puducherry|Karaikal|Mahe|Yanam',
+  '36': 'Hyderabad|Secunderabad|Warangal|Nizamabad|Karimnagar|Khammam|Ramagundam|Mahbubnagar|Nalgonda|Adilabad|Siddipet|Suryapet|Miryalaguda|Sangareddy|Mancherial',
+  '37': 'Visakhapatnam|Vijayawada|Guntur|Nellore|Kurnool|Rajamahendravaram (Rajahmundry)|Kakinada|Tirupati|Kadapa|Anantapuramu|Eluru|Ongole|Vizianagaram|Machilipatnam|Srikakulam|Chittoor|Nandyal|Tenali|Proddatur|Hindupur|Bhimavaram|Amaravati|Sri City',
+  '31': 'Kavaratti', '35': 'Sri Vijaya Puram (Port Blair)',
+};
+/* metro cities for the 50% HRA exemption; check them against the income-tax rules in force */
+const METRO_CITIES = ['Delhi', 'New Delhi', 'Mumbai', 'Kolkata', 'Chennai'];
+const cityStarter = () => Object.entries(INDIA_CITIES).flatMap(([st, list]) => list.split('|').map((name) => ({ name, state: st, metro: METRO_CITIES.includes(name) })));
+const stKey = (s) => normKey(s).replace(/\band\b/g, ' ').replace(/\s+/g, ' ').trim();
+const STATE_ALIAS = { orissa: '21', pondicherry: '34', 'nct of delhi': '07', 'delhi ncr': '07', 'national capital territory of delhi': '07', 'j k': '01', uttaranchal: '05',
+  'andaman nicobar': '35', 'dadra nagar haveli': '26', 'daman diu': '26', telengana: '36' };
+function stateCodeOf(v) {
+  const t = String(v || '').trim(); if (!t) return ''; if (STATES[t.padStart(2, '0')] && /^\d{1,2}$/.test(t)) return t.padStart(2, '0');
+  const k = stKey(t); const hit = Object.entries(STATES).find(([, n]) => stKey(n) === k); return hit ? hit[0] : STATE_ALIAS[k] || '';
+}
+const coCities = (coId = CO) => S.locations.filter((x) => x.companyId === coId && x.kind === 'city');
+/* adds cities not already among the locations (offices or cities); returns how many */
+function addCities(rows, coId = CO) {
+  const have = new Set(S.locations.filter((x) => x.companyId === coId).map((x) => normKey(x.name))); let n = 0;
+  rows.forEach((r) => { const k = normKey(r.name); if (!k || have.has(k)) return; have.add(k);
+    S.locations.push({ id: uid(), companyId: coId, kind: 'city', name: String(r.name).trim().slice(0, 120), code: '', state: r.state || '', metro: !!r.metro, addedBy: me.id, addedAt: Date.now() }); n++; });
+  return n;
+}
+function citiesCard() {
+  if (!isHR()) return '';
+  const q = (R.q.get('cq') || '').toLowerCase(); const all = coCities().sort((a, b) => a.name.localeCompare(b.name));
+  const list = all.filter((x) => !q || `${x.name} ${STATES[x.state] || ''}`.toLowerCase().includes(q)); const shown = list.slice(0, 200);
+  const used = (x) => S.employees.some((e) => e.locationId === x.id || (e.prevJobs || []).some((j) => normKey(j.location) === normKey(x.name))) || S.cands.some((c) => c.locationId === x.id);
+  return `<div class="card"><div class="hd"><div><h2>Cities <span class="badge">${all.length}</span></h2><p class="sub">The cities of India, offered for a candidate’s or employee’s city and for previous jobs. They are not offered as places people work. Add the starter list of ${cityStarter().length} cities, or import your own list from Excel (City, State, Metro); cities already on the list are left as they are.</p></div>
+      <div class="tools"><button class="btn" data-act="cityStarter">Add the starter list</button><label class="btn">Import from Excel<input type="file" accept=".xlsx,.xls,.csv" hidden data-ch="cityImport"></label><button class="btn ghost" data-act="cityTemplate">Download template</button>${all.length ? '<button class="btn ghost" data-act="cityExport">Download the list</button>' : ''}<button class="btn pri" data-act="cityAdd">Add a city</button></div></div>
+    ${all.length ? `<div class="tools" style="margin-bottom:8px"><input class="inp" placeholder="Search city or state" value="${esc(R.q.get('cq') || '')}" data-ch="cityQ" style="max-width:280px">${list.length > shown.length ? `<span class="fine">Showing ${shown.length} of ${list.length}: search to find the rest.</span>` : ''}</div>
+      <div class="scroll" style="max-height:420px"><table class="t"><thead><tr><th>City</th><th>State or union territory</th><th>Metro</th><th></th></tr></thead><tbody>${shown.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(STATES[x.state] || '—')}</td><td>${x.metro ? 'Metro' : ''}</td><td class="r">${used(x) ? '<span class="fine">In use</span>' : `<button class="btn sm ghost" data-act="cityDel" data-id="${x.id}">Delete</button>`}</td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">No cities yet.</div>'}</div>`;
+}
+ACT.cityQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('cq', el.value) : p.delete('cq'); go('#/masters?' + p); };
+ACT.cityStarter = () => { const n = addCities(cityStarter()); audit('Cities added', `${n} from the starter list`, 'org'); saveNow(); toast(n ? `${n} cities added` : 'Every city on the starter list is already there'); route(); };
+ACT.cityTemplate = () => writeBook('Cities template.xlsx', { Cities: [{ City: 'Bengaluru', State: 'Karnataka', Metro: 'No' }, { City: 'Mumbai', State: 'Maharashtra', Metro: 'Yes' }] });
+ACT.cityExport = () => writeBook(`Cities ${company().code}.xlsx`, { Cities: coCities().sort((a, b) => a.name.localeCompare(b.name)).map((x) => ({ City: x.name, State: STATES[x.state] || '', Metro: x.metro ? 'Yes' : 'No' })) });
+ACT.cityImport = async (el) => {
+  const f = el.files[0]; el.value = ''; if (!f) return; let rows;
+  try { rows = await readSheet(f); } catch (x) { toast(x.message); return; }
+  const pick = (r, keys) => { const k = Object.keys(r).find((h) => keys.includes(normKey(h))); return k ? String(r[k] ?? '').trim() : ''; };
+  const out = []; const noState = [];
+  rows.forEach((r) => { const name = pick(r, ['city', 'name', 'city name', 'town', 'location']); if (!name) return; const stTxt = pick(r, ['state', 'state ut', 'state or union territory', 'state name', 'state code']);
+    const st = stateCodeOf(stTxt); if (stTxt && !st) noState.push(stTxt); out.push({ name, state: st, metro: /^(y|yes|true|1|metro)$/i.test(pick(r, ['metro', 'metro city'])) }); });
+  if (!out.length) { toast('No cities found: the first row should have the headings City and State.'); return; }
+  const n = addCities(out); audit('Cities imported', `${n} of ${out.length} from ${f.name}`, 'org'); saveNow();
+  toast(`${n} cities added${out.length - n ? `, ${out.length - n} already there` : ''}${noState.length ? `. State not recognised for ${[...new Set(noState)].slice(0, 3).join(', ')}: those cities have no state` : ''}`); route();
+};
+ACT.cityAdd = () => {
+  const fields = [{ k: 'name', label: 'City', req: true }, { k: 'state', label: 'State or union territory', type: 'select', opts: Object.entries(STATES).sort((a, b) => a[1].localeCompare(b[1])), blank: 'Choose' }, { k: 'metro', label: 'Metro city (50% HRA exemption)', type: 'check' }];
+  openDlg(`<form class="dlg" id="ctF" novalidate><h2>Add a city</h2><div class="form">${fields.map((f) => fieldHtml(f, '')).join('')}</div><p class="err" id="ctE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Add</button></div></form>`);
+  $('#ctF').onsubmit = (e) => { e.preventDefault(); const d = readForm(e.target, fields); if (!d.name) { $('#ctE').textContent = 'Enter the city.'; return; }
+    if (!addCities([d])) { $('#ctE').textContent = 'That city or location is already on the list.'; return; } saveNow(); closeDlg(); toast('City added'); route(); };
+};
+ACT.cityDel = (b) => { S.locations = S.locations.filter((x) => x.id !== b.dataset.id); saveNow(); route(); };
+{
+  const mastersView = VIEWS.masters;
+  VIEWS.masters = () => { const v = mastersView(); v.html += citiesCard(); return v; };
+}
+
+/* ---------------------------------------------------------------- expense claims: purposes and supporting documents
+   Purposes are kept with the expense categories (kind "purpose"), so they are set up on the same page. Each can ask
+   for a reference (a customer or project), say which supporting documents to attach and whether they must be, and
+   carry a limit for the whole claim. */
+const purposesOf = (coId = CO, all) => S.expenseCats.filter((x) => x.companyId === coId && x.kind === 'purpose' && (all || x.active !== false)).sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
+const expCatsOf = (coId) => S.expenseCats.filter((x) => x.companyId === coId && x.kind !== 'purpose' && x.active !== false);
+function seedPurposes(coId) {
+  if (S.expenseCats.some((c) => c.companyId === coId && c.kind === 'purpose')) return false;
+  [['Customer visit', 'Customer', 'Visit report or meeting notes', false, 0], ['Sales and business development', 'Customer or prospect', '', false, 0], ['Project or site work', 'Project', '', false, 0],
+   ['Training or conference', 'Training or event', 'Invitation or registration, and the certificate of attendance', true, 0], ['Internal meeting or review', '', '', false, 0], ['Recruitment', 'Position', '', false, 0],
+   ['Relocation', '', 'Relocation approval', true, 0], ['Office purchase', '', 'Purchase approval and the invoice', true, 25000], ['Other', '', '', false, 0]]
+    .forEach(([name, refLabel, docsNeeded, docsRequired, limit], i) => S.expenseCats.push({ id: uid(), companyId: coId, kind: 'purpose', name, code: '', refLabel, docsNeeded, docsRequired, limit, order: i, active: true }));
+  return true;
+}
+{
+  const expcatsView = VIEWS.expcats;
+  VIEWS.expcats = () => { const v = expcatsView(); if (isHR() && seedPurposes(CO)) setTimeout(saveNow, 0);
+    v.title = 'Expense categories and purposes';
+    v.html += crudCard('expensePurposes', { coll: 'expenseCats', title: 'Purposes of claims', one: 'purpose', wide: true, filter: (x) => x.companyId === CO && x.kind === 'purpose', base: () => ({ companyId: CO, kind: 'purpose' }),
+      sub: 'The drop-down an employee chooses the purpose of a claim from. A purpose can ask for a reference, list the supporting documents to attach (and require them), and set a limit for the whole claim. Approval steps can depend on the purpose (Approval workflows › Expense claims).',
+      sort: (a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name), defaults: { active: true },
+      inUse: (r) => (S.expenseClaims.some((c) => c.purposeId === r.id) ? 'Claims use this purpose. Switch it off instead.' : ''),
+      fields: [{ k: 'name', label: 'Purpose', req: true }, { k: 'code', label: 'Cost centre or GL code' }, { k: 'order', label: 'Order in the list', type: 'number', min: 0 },
+        { k: 'refLabel', label: 'Ask for a reference', help: 'For example Customer or Project. Empty: not asked' }, { k: 'limit', label: 'Limit for the whole claim (₹, 0 = none)', type: 'number', min: 0 },
+        { k: 'docsNeeded', label: 'Supporting documents to attach', wide: true, help: 'Shown to the employee, for example Visit report or meeting notes' },
+        { k: 'docsRequired', label: 'The claim cannot be sent without a supporting document', type: 'check', wide: true }, { k: 'active', label: 'In use', type: 'check' }],
+      cols: [{ k: 'name', label: 'Purpose' }, { k: 'code', label: 'Code' }, { label: 'Asks for', fmt: (r) => esc(r.refLabel || '—') }, { label: 'Documents', fmt: (r) => `${esc(r.docsNeeded || '—')}${r.docsRequired ? ' <span class="badge warn">Required</span>' : ''}` },
+        { label: 'Limit', cls: 'r', fmt: (r) => (+r.limit ? inr0(r.limit) : '—') }, { label: '', fmt: (r) => (r.active === false ? '<span class="badge">Off</span>' : '') }] });
+    return v; };
+}
+/* problems an approver should see: lines over their limits or without receipts, the purpose's limit, missing documents */
+function claimIssues(c) {
+  const out = (c.lines || []).flatMap((l) => (l.catId ? lineIssues(c, l).map((x) => `${(catById(l.catId) || {}).name || 'Line'}: ${x}`) : []));
+  const p = catById(c.purposeId);
+  if (p && +p.limit && claimTotal(c) > +p.limit) out.push(`over the ${inr0(p.limit)} limit for ${p.name.toLowerCase()}`);
+  if (p && p.docsNeeded && !(c.docs || []).length) out.push(`no supporting documents (${p.docsNeeded})`);
+  return out;
+}
+/* ---------------------------------------------------------------- approval steps that depend on the claim */
+function stepApplies(l, data) {
+  if (!data) return true;
+  if ((l.purposes || []).length && !l.purposes.includes(data.purposeId)) return false;
+  if ((l.cats || []).length && !(data.catIds || []).some((x) => l.cats.includes(x))) return false;
+  if (l.onIssues && !data.issues) return false;
+  return true;
+}
+function stepCondTxt(l) {
+  const bits = [(l.purposes || []).length ? `purpose ${l.purposes.map((id) => (catById(id) || {}).name || '?').join(' or ')}` : '', (l.cats || []).length ? `with ${l.cats.map((id) => (catById(id) || {}).name || '?').join(' or ')}` : '',
+    l.onIssues ? 'when over a limit or a receipt or document is missing' : ''].filter(Boolean);
+  return bits.length ? ` <span class="fine">only for claims: ${esc(bits.join('; '))}</span>` : '';
+}
+function stepCondHtml(l, i) {
+  const ps = purposesOf(CO, true), cs = expCatsOf(CO); const n = (l.purposes || []).length + (l.cats || []).length + (l.onIssues ? 1 : 0);
+  const box = (key, list) => `<div class="picklist" style="max-height:120px">${list.map((x) => `<label><input type="checkbox" data-cond="${key}" data-i="${i}" value="${x.id}" ${(l[key] || []).includes(x.id) ? 'checked' : ''}> ${esc(x.name)}</label>`).join('') || '<span class="fine">None set up.</span>'}</div>`;
+  return `<details style="margin:-2px 0 12px" ${n ? 'open' : ''}><summary class="fine" style="cursor:pointer">Only for some claims${n ? ` (${n} condition${n === 1 ? '' : 's'})` : ''}</summary>
+    <div class="form" style="margin-top:6px"><div class="field">Purposes<small>Empty: any purpose</small>${box('purposes', ps)}</div><div class="field">With an expense of the category<small>Empty: any category</small>${box('cats', cs)}</div>
+    <label class="chk" style="align-self:start"><input type="checkbox" data-cond="onIssues" data-i="${i}" ${l.onIssues ? 'checked' : ''}> Only when a line is over its limit, the claim is over the purpose’s limit, or a receipt or supporting document is missing</label></div></details>`;
+}
+
+/* ---------------------------------------------------------------- the claim: purpose, details, lines, documents */
+const blankLine = () => ({ id: uid(), date: todayISO(), catId: '', desc: '', qty: '', amount: '' });
+ACT.claimEdit = (b) => {
+  if (isHR() && seedExpenseCats(me.companyId)) saveNow();
+  if (isHR() && seedPurposes(me.companyId)) saveNow();
+  const c0 = b.dataset.id ? S.expenseClaims.find((x) => x.id === b.dataset.id) : null;
+  const c = c0 ? JSON.parse(JSON.stringify(c0)) : { title: '', purposeId: '', ref: '', docs: [], empId: me.id, lines: [blankLine()] };
+  c.docs = c.docs || []; c.details = c.details ?? (c0 && !c0.purposeId ? c0.title : c.details || '');
+  const cats = expCatsOf(me.companyId); const purposes = purposesOf(me.companyId);
+  if (!cats.length) { toast('HR has not set up expense categories yet.'); return; }
+  const keep = (f) => { c.purposeId = f.elements.purposeId ? f.elements.purposeId.value : ''; c.details = f.elements.details.value; c.ref = f.elements.ref ? f.elements.ref.value : c.ref; };
+  const draw = () => {
+    const p = catById(c.purposeId); const iss = claimIssues({ ...c, empId: me.id });
+    openDlg(`<form class="dlg" id="clF" novalidate><h2>${c0 ? 'Edit claim' : 'New expense claim'}</h2>
+      <div class="form">${purposes.length ? `<label class="field">${reqLabel({ label: 'Purpose', req: true })}<select class="inp" name="purposeId"><option value="">Choose the purpose</option>${purposes.map((x) => `<option value="${x.id}" ${x.id === c.purposeId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>${p && p.docsNeeded ? `<small>Attach: ${esc(p.docsNeeded)}${p.docsRequired ? ' (required)' : ''}</small>` : ''}</label>` : ''}
+        ${p && p.refLabel ? `<label class="field">${reqLabel({ label: p.refLabel, req: true })}<input class="inp" name="ref" value="${esc(c.ref || '')}" maxlength="120"></label>` : ''}
+        <label class="field wide">Details<input class="inp" name="details" value="${esc(c.details || '')}" placeholder="e.g. Customer visit to Pune, 12–14 Oct" maxlength="200"></label></div>
+      <div class="scroll"><table class="t"><thead><tr><th>Date</th><th>Category</th><th>Details</th><th class="r">Km / days</th><th class="r">Amount ₹</th><th>Receipt</th><th></th></tr></thead><tbody>
+      ${c.lines.map((l, i) => { const cat = catById(l.catId) || {}; const li = l.catId ? lineIssues({ ...c, empId: me.id }, l) : []; return `<tr><td><input class="inp" type="date" data-i="${i}" data-f="date" value="${esc(l.date)}" max="${todayISO()}" style="min-width:130px"></td>
+        <td><select class="inp" data-i="${i}" data-f="catId"><option value="">Choose</option>${cats.map((x) => `<option value="${x.id}" ${x.id === l.catId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
+        <td><input class="inp" data-i="${i}" data-f="desc" value="${esc(l.desc)}" placeholder="From–to, bill no."></td>
+        <td class="r">${cat.unit && cat.unit !== 'amount' ? `<input class="inp" type="number" min="0" step="0.5" data-i="${i}" data-f="qty" value="${esc(l.qty)}" style="width:80px">` : ''}</td>
+        <td class="r"><input class="inp" type="number" min="0" data-i="${i}" data-f="amount" value="${esc(l.amount)}" style="width:110px" ${cat.unit && cat.unit !== 'amount' ? 'readonly' : ''}>${li.length ? `<div class="fine" style="color:var(--warn)">${esc(li.join('; '))}</div>` : ''}</td>
+        <td style="white-space:nowrap">${l.fileId ? `<a href="/api/files/${l.fileId}" target="_blank" rel="noopener">${esc(l.fileName || 'Receipt')}</a>` : ''}<label class="btn sm" style="margin-left:4px">${l.fileId ? 'Replace' : 'Attach'}<input type="file" accept="image/*,application/pdf" hidden data-up="${i}"></label></td>
+        <td><button type="button" class="btn sm danger" data-rm="${i}" aria-label="Remove line">✕</button></td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td colspan="4"><button type="button" class="btn sm" id="clAdd">Add an expense</button></td><td class="r"><b id="clTot">${inr0(claimTotal(c))}</b></td><td colspan="2"></td></tr></tfoot></table></div>
+      <div class="field">Supporting documents<small>Approvals, invitations, visit reports, tickets, boarding passes: anything that supports the claim as a whole. Photos or PDFs, up to 10 MB each.</small>
+        <div>${c.docs.map((d, i) => `<span class="chip"><a href="/api/files/${d.fileId}" target="_blank" rel="noopener">📎 ${esc(d.name)}</a> <button type="button" class="btn sm ghost" data-docrm="${i}" aria-label="Remove ${esc(d.name)}">✕</button></span>`).join(' ') || '<span class="fine">None attached.</span>'}</div>
+        <label class="btn sm" style="align-self:flex-start">Attach documents<input type="file" accept="image/*,application/pdf" multiple hidden id="clDocs"></label></div>
+      ${iss.length && c.lines.some((l) => l.catId) ? `<div class="note warn">Approvers will see: ${esc(iss.join('; '))}.</div>` : ''}
+      <p class="err" id="clE"></p><div class="btns">${c0 ? '<button type="button" class="btn danger" id="clDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn" id="clDraft">Save draft</button><button class="btn pri">Send for approval</button></div></form>`, true);
+    const f = $('#clF');
+    if (f.elements.purposeId) f.elements.purposeId.onchange = () => { keep(f); draw(); };
+    // Typing a date, details or amount only updates the line and the total; the table is redrawn when the category
+    // or the km/days change. Redrawing on every field lost the box the user was clicking into next.
+    const tot = () => { const t = $('#clTot'); if (t) t.textContent = inr0(claimTotal(c)); };
+    f.querySelectorAll('[data-f]').forEach((el) => {
+      const light = ['date', 'desc', 'amount'].includes(el.dataset.f);
+      if (light) el.addEventListener('input', () => { c.lines[+el.dataset.i][el.dataset.f] = el.value; tot(); });
+      el.addEventListener('change', () => {
+        const l = c.lines[+el.dataset.i]; l[el.dataset.f] = el.value; const cat = catById(l.catId) || {};
+        if (cat.unit && cat.unit !== 'amount') l.amount = r2((+l.qty || 0) * (+cat.rate || 0));
+        if (light) tot(); else { keep(f); draw(); }
+      });
+    });
+    f.querySelectorAll('[data-up]').forEach((el) => el.addEventListener('change', async () => {
+      const file = el.files[0]; if (!file) return; keep(f); $('#clE').textContent = 'Uploading…';
+      try { const up = await uploadFile(file); Object.assign(c.lines[+el.dataset.up], { fileId: up.id, fileName: file.name }); draw(); } catch (er) { $('#clE').textContent = er.message; }
+    }));
+    $('#clDocs').onchange = async (ev) => { const files = [...ev.target.files]; if (!files.length) return; keep(f);
+      for (const [k, file] of files.entries()) { $('#clE').textContent = `Uploading ${k + 1} of ${files.length}…`;
+        try { const up = await uploadFile(file); c.docs.push({ id: uid(), fileId: up.id, name: file.name, size: file.size, at: Date.now() }); } catch (er) { $('#clE').textContent = `${file.name}: ${er.message}`; draw(); return; } }
+      draw(); };
+    f.querySelectorAll('[data-docrm]').forEach((el) => { el.onclick = () => { keep(f); c.docs.splice(+el.dataset.docrm, 1); draw(); }; });
+    f.querySelectorAll('[data-rm]').forEach((el) => { el.onclick = () => { keep(f); c.lines.splice(+el.dataset.rm, 1); if (!c.lines.length) c.lines.push(blankLine()); draw(); }; });
+    $('#clAdd').onclick = () => { keep(f); c.lines.push(blankLine()); draw(); };
+    if ($('#clDel')) $('#clDel').onclick = async () => { if (await confirmBox('Delete this claim?', 'It has not been sent.', 'Delete')) { S.expenseClaims = S.expenseClaims.filter((x) => x.id !== c0.id); saveNow(); closeDlg(); route(); } };
+    const store = (send) => {
+      keep(f); const err = (m) => { $('#clE').textContent = m; };
+      c.lines = c.lines.filter((l) => l.catId || +l.amount);
+      if (!c.lines.length) { c.lines.push(blankLine()); return err('Add at least one expense.'); }
+      if (c.lines.find((l) => !l.catId || !(+l.amount > 0) || !l.date)) return err('Each expense needs a date, a category and an amount.');
+      if (c.lines.some((l) => l.date > todayISO())) return err('Expenses cannot be in the future.');
+      const pp = catById(c.purposeId);
+      if (send && purposes.length && !pp) return err('Choose the purpose of the claim.');
+      if (send && pp && pp.refLabel && !String(c.ref || '').trim()) return err(`Enter the ${pp.refLabel.toLowerCase()}.`);
+      if (send && pp && pp.docsRequired && !c.docs.length) return err(`Attach the supporting documents: ${pp.docsNeeded || 'at least one'}.`);
+      c.lines.forEach((l) => { l.amount = +l.amount; l.qty = l.qty === '' ? '' : +l.qty; });
+      const rec = c0 || { id: uid(), companyId: me.companyId, empId: me.id, by: me.id, at: Date.now(), no: nextNo('exp-' + me.companyId, `${company().code}-EXP-`), log: [] };
+      const details = String(c.details || '').trim();
+      Object.assign(rec, { title: details || (pp ? pp.name : '') || `Expenses ${dShort(c.lines[0].date)}`, details, purposeId: pp ? pp.id : '', purpose: pp ? pp.name : '', ref: pp && pp.refLabel ? String(c.ref || '').trim() : '',
+        docs: c.docs, lines: c.lines, total: claimTotal(c) });
+      if (send) {
+        const issues = claimIssues(rec);
+        rec.status = 'pending'; rec.submittedAt = Date.now(); rec.issues = issues;
+        rec.steps = buildSteps('expense', me, rec.total, me.id, { purposeId: rec.purposeId, catIds: uniq(rec.lines.map((l) => l.catId)), issues: issues.length > 0 });
+        rec.participants = participantsOf(rec); logEntry(rec, 'Sent for approval', `${inr0(rec.total)}${rec.purpose ? `, ${rec.purpose}` : ''}${rec.docs.length ? `, ${rec.docs.length} document${rec.docs.length === 1 ? '' : 's'}` : ''}`);
+        if (!rec.steps.length) { rec.status = 'approved'; logEntry(rec, 'No approval needed'); }
+        audit('Expense claim sent', `${rec.no}: ${inr0(rec.total)}`, 'expenses', 'employee', me.id);
+      } else { rec.status = 'draft'; rec.participants = participantsOf({ ...rec, steps: [] }); if (!c0) logEntry(rec, 'Created'); }
+      if (!c0) S.expenseClaims.push(rec);
+      saveNow(); closeDlg(); toast(send ? (rec.status === 'approved' ? 'Sent; no approval needed' : 'Sent for approval') : 'Draft saved'); go('#/claim/' + rec.id);
+    };
+    $('#clDraft').onclick = () => store(false);
+    f.onsubmit = (ev) => { ev.preventDefault(); store(true); };
+  };
+  draw();
+};
+/* what an approved claim waits for */
+function claimPayNote(c) {
+  if (c.reimbRunNo) return `In ${c.reimbRunNo}, bank transfer to come`;
+  const cfg = reimbCfg(c.companyId); if (!cfg.on) return 'Finance to pay';
+  const d = reimbNext(cfg, todayISO()); return d ? `Next reimbursement run, ${dShort(d)}` : 'Finance to pay';
+}
+VIEWS.claim = () => {
+  const c = S.expenseClaims.find((x) => x.id === R.arg);
+  if (!c) return { title: 'Expense claim', html: '<div class="empty">That claim no longer exists.</div>' };
+  const mine = c.empId === me.id; const p = catById(c.purposeId); const iss = c.status === 'draft' ? [] : claimIssues(c); const run = c.reimbRunId && S.reimbRuns.find((x) => x.id === c.reimbRunId);
+  const cfg = reimbCfg(c.companyId);
+  return { title: `${c.no}: ${c.title || ''}`, html: `<div class="grid g21"><div><div class="card"><div class="hd"><div><h2>${esc(c.title || 'Expense claim')}</h2><p class="sub">${esc(c.no)} · ${esc(nameOf(c.empId))} · ${pill(c.status)}${c.payMonth ? ` paid with the salary for ${monthName(c.payMonth)}` : c.paidRef ? ` paid, ${esc(c.paidRef)}` : ''}${c.reimbRunNo ? ` · reimbursement run ${run && (isHR(c.companyId) || canPay(c.companyId)) ? `<a href="#/reimbrun/${run.id}">${esc(c.reimbRunNo)}</a>` : esc(c.reimbRunNo)}` : ''}${c.status === 'approved' && !c.reimbRunNo ? ` · ${esc(claimPayNote(c))}` : ''}</p></div>
+      <div class="tools">${mine && ['draft', 'rejected'].includes(c.status) ? `<button class="btn pri" data-act="claimEdit" data-id="${c.id}">${c.status === 'rejected' ? 'Correct and send again' : 'Edit and send'}</button>` : ''}
+        ${mine && c.status === 'pending' && !(c.steps || []).some((s) => s.decision) ? `<button class="btn" data-act="claimWithdraw" data-id="${c.id}">Withdraw</button>` : ''}
+        ${canDecide(c) ? `<button class="btn pri" data-act="claimDecide" data-id="${c.id}">Approve or reject</button>` : ''}${canPay(c.companyId) && !mine && c.status === 'approved' && !c.reimbRunId ? `<button class="btn ${cfg.on ? '' : 'pri'}" data-act="claimPay" data-id="${c.id}">${cfg.on ? 'Pay now, outside the cycle' : 'Pay'}</button>` : ''}</div></div>
+      ${p || c.ref ? `<p>${p ? `<b>Purpose:</b> ${esc(p.name)}${p.code ? ` <span class="fine mono">${esc(p.code)}</span>` : ''}` : ''}${c.ref ? ` · <b>${esc((p && p.refLabel) || 'Reference')}:</b> ${esc(c.ref)}` : ''}</p>` : ''}
+      ${iss.length ? `<div class="note warn">${esc(iss.join('; '))}.</div>` : ''}
+      <div class="scroll"><table class="t"><thead><tr><th>Date</th><th>Category</th><th>Details</th><th class="r">Amount</th><th>Receipt</th></tr></thead><tbody>${(c.lines || []).map((l) => { const cat = catById(l.catId) || {}; const li = lineIssues(c, l); return `<tr><td>${dmy(l.date)}</td><td>${esc(cat.name || '')}<div class="fine mono">${esc(cat.code || '')}</div></td><td>${esc(l.desc || '')}${l.qty ? `<div class="fine">${num(l.qty)} × ${inr0(cat.rate)}</div>` : ''}${li.length ? `<div class="fine" style="color:var(--warn)">${esc(li.join('; '))}</div>` : ''}</td><td class="r">${inr0(l.amount)}</td><td>${l.fileId ? `<a href="/api/files/${l.fileId}" target="_blank" rel="noopener">${esc(l.fileName || 'View')}</a>` : '—'}</td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td colspan="3"><b>Total</b></td><td class="r"><b>${inr0(claimTotal(c))}</b></td><td></td></tr></tfoot></table></div></div>
+      <div class="card"><h2>Supporting documents</h2>${(c.docs || []).length ? `<table class="t"><tbody>${c.docs.map((d) => `<tr><td><a href="/api/files/${d.fileId}" target="_blank" rel="noopener">📎 ${esc(d.name)}</a></td><td class="fine">${d.size ? `${Math.max(1, Math.round(d.size / 1024))} KB` : ''}</td><td class="fine">${d.at ? dt(d.at) : ''}</td></tr>`).join('')}</tbody></table>` : `<p class="fine">None attached.${p && p.docsNeeded ? ` For ${esc(p.name.toLowerCase())}: ${esc(p.docsNeeded)}.` : ''}</p>`}</div></div>
+    <div><div class="card"><h2>Approvals</h2>${c.status === 'draft' ? '<p class="fine">Not sent yet.</p>' : stepsHtml(c)}</div><div class="card"><h2>Activity</h2>${logTable(c.log)}</div></div></div>` };
+};
+
+/* ---------------------------------------------------------------- reimbursement runs and the cycle (backend/app/reimb.py) */
+const REIMB_MODE = { bank: 'Separate bank transfer', payroll: 'With the next salary' };
+const REIMB_FREQ = { monthly: 'Monthly', fortnightly: 'Fortnightly (15th and last day)', weekly: 'Weekly' };
+const WEEKDAYS = [[1, 'Monday'], [2, 'Tuesday'], [3, 'Wednesday'], [4, 'Thursday'], [5, 'Friday'], [6, 'Saturday'], [7, 'Sunday']];
+const RUN_STATUS = { scheduled: ['Waiting for the bank transfer', 'warn'], posted: ['Paid with salary', 'ok'], paid: ['Paid', 'ok'] };
+const reimbCfg = (coId) => ({ on: false, mode: 'bank', freq: 'monthly', day: 31, weekday: 5, cutoffDays: 0, auto: true, notify: true, ...((coById(coId || CO) || {}).reimb || {}) });
+/* the next run day on or after `from` (same rule as reimb.run_days on the server) */
+function reimbNext(cfg, from, skip = 0) {
+  let d = D(from); let found = 0;
+  for (let k = 0; k < 120; k++) {
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); const day = d.getDate(); const wd = d.getDay() || 7;
+    const hit = cfg.freq === 'weekly' ? wd === (+cfg.weekday || 5) : cfg.freq === 'fortnightly' ? day === 15 || day === last : day === (+cfg.day >= 29 || !+cfg.day ? last : +cfg.day);
+    if (hit) { if (found === skip) return isoOf(d); found++; }
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 12);
+  }
+  return '';
+}
+const waitingClaims = (coId) => S.expenseClaims.filter((c) => c.companyId === coId && c.status === 'approved' && !c.reimbRunId).sort((a, b) => nameOf(a.empId).localeCompare(nameOf(b.empId)));
+DEFAULT_TAB.reimb = 'runs';
+VIEWS.reimb = () => {
+  const tab = R.q.get('tab') || 'runs'; const co = company(); const cfg = reimbCfg(co.id); const hr = isHR(co.id);
+  const tabs = `<nav class="tabs"><a href="#/reimb?tab=runs" class="${tab === 'runs' ? 'on' : ''}">Runs</a><a href="#/reimb?tab=cycle" class="${tab === 'cycle' ? 'on' : ''}">Cycle</a></nav>`;
+  const nx = cfg.on ? reimbNext(cfg, todayISO()) : '';
+  if (tab === 'cycle') {
+    const f = [{ k: 'on', label: 'Pay approved claims in reimbursement runs on this cycle', type: 'check', wide: true }, { k: 'mode', label: 'Paid', type: 'select', opts: Object.entries(REIMB_MODE) },
+      { k: 'freq', label: 'How often', type: 'select', opts: Object.entries(REIMB_FREQ) }, { k: 'day', label: 'Day of the month (monthly)', type: 'number', min: 1, max: 31, help: '29, 30 or 31: the last day of the month' },
+      { k: 'weekday', label: 'Day of the week (weekly)', type: 'select', opts: WEEKDAYS }, { k: 'cutoffDays', label: 'Cut-off (days before the run)', type: 'number', min: 0, max: 15, help: 'Claims approved later wait for the next run' },
+      { k: 'auto', label: 'Make the run automatically on the run day', type: 'check', wide: true }, { k: 'notify', label: 'E-mail each employee what is paid', type: 'check', wide: true }];
+    return { title: 'Reimbursement cycle', html: `${tabs}<form class="card" id="rbF"><h2>Reimbursement cycle for ${esc(co.name)}</h2><p class="sub">After the last approval (usually Finance), claims wait for the next run. On the run day every claim approved by the cut-off is paid together: <b>with the next salary</b> as a reimbursement that is not taxed (component 1900), or by a <b>separate bank transfer</b>, for which Finance downloads the bank advice and records the transfer. With automatic runs the server makes the run on the run day, without anyone signing in.</p>
+      <div class="form">${f.map((x) => fieldHtml(hr ? x : { ...x, ro: true }, cfg[x.k])).join('')}</div>
+      ${cfg.on ? `<p class="fine">Next runs: ${[0, 1, 2].map((k) => dmy(reimbNext(cfg, todayISO(), k))).join(', ')}.${cfg.since ? ` Set up on ${dmy(cfg.since)}.` : ''}</p>` : ''}
+      ${hr ? '<div class="btns" style="justify-content:flex-start"><button class="btn pri">Save</button></div>' : '<p class="fine">HR sets the cycle.</p>'}</form>`,
+      after: () => { if (!hr) { $$('#rbF .inp, #rbF input').forEach((x) => { x.disabled = true; }); return; }
+        $('#rbF').onsubmit = (e) => { e.preventDefault(); const d = readForm(e.target, f);
+          if (d.freq === 'monthly' && !(+d.day >= 1 && +d.day <= 31)) { toast('Enter the day of the month, 1 to 31.'); return; }
+          const before = co.reimb || {}; const sched = ['on', 'freq', 'day', 'weekday'].some((k) => String(before[k] ?? '') !== String(d[k] ?? ''));
+          co.reimb = { ...before, ...d, day: +d.day || 31, weekday: +d.weekday || 5, cutoffDays: +d.cutoffDays || 0, since: sched || !before.since ? todayISO() : before.since };
+          audit('Reimbursement cycle changed', d.on ? `${REIMB_FREQ[d.freq]}, ${REIMB_MODE[d.mode].toLowerCase()}${d.auto ? ', automatic' : ''}` : 'off', 'expenses'); saveNow(); toast('Saved'); route(); }; } };
+  }
+  const wait = waitingClaims(co.id); const runs = S.reimbRuns.filter((x) => x.companyId === co.id).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const toBank = runs.filter((x) => x.status === 'scheduled');
+  return { title: 'Reimbursement runs', html: `${tabs}<div class="grid g4" style="margin-bottom:16px">
+      <div class="kpi"><span>Approved, waiting to be paid</span><b>${inr0(wait.reduce((s, c) => s + claimTotal(c), 0))}</b><small>${wait.length} claim${wait.length === 1 ? '' : 's'}, ${(() => { const n = uniq(wait.map((c) => c.empId)).length; return `${n} ${n === 1 ? 'person' : 'people'}`; })()}</small></div>
+      <div class="kpi"><span>Next run</span><b style="font-size:18px">${nx ? dmy(nx) : '—'}</b><small>${cfg.on ? `${REIMB_MODE[cfg.mode]}${cfg.auto ? ', automatic' : ', press Run now'}` : `${hr ? '<a href="#/reimb?tab=cycle">Set up the cycle</a>' : 'No cycle set up'}`}</small></div>
+      <div class="kpi"><span>Waiting for the bank transfer</span><b>${inr0(toBank.reduce((s, x) => s + (+x.total || 0), 0))}</b><small>${toBank.length} run${toBank.length === 1 ? '' : 's'}</small></div>
+      <div class="kpi"><span>Paid this year</span><b>${inr0(runs.filter((x) => x.status !== 'scheduled' && (x.runDate || '').slice(0, 4) === todayISO().slice(0, 4)).reduce((s, x) => s + (+x.total || 0), 0))}</b><small>${runs.length} run${runs.length === 1 ? '' : 's'} in all</small></div></div>
+    <div class="card"><div class="hd"><div><h2>Approved claims waiting</h2><p class="sub">${cfg.on ? `Paid in the next run on ${dmy(nx)}${+cfg.cutoffDays ? ` if approved by ${dmy(addDays(nx, -cfg.cutoffDays))}` : ''}. Run now pays them at once.` : 'Without a cycle, pay them here with Run now, or one by one from each claim.'}</p></div>${wait.length && canPay(co.id) ? '<button class="btn pri" data-act="reimbRunNow">Run now</button>' : ''}</div>
+      ${wait.length ? `<div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Claim</th><th>Purpose</th><th>Approved</th><th class="r">Amount</th></tr></thead><tbody>${wait.map((c) => `<tr class="click" data-act="claimOpen" data-id="${c.id}"><td>${esc(nameOf(c.empId))}</td><td><b>${esc(c.no)}</b><div class="fine">${esc(c.title || '')}</div></td><td>${esc(c.purpose || '—')}</td><td class="fine">${dt(Math.max(...(c.steps || []).map((s) => +s.at || 0), +c.submittedAt || 0))}</td><td class="r">${inr0(claimTotal(c))}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing waiting.</div>'}</div>
+    <div class="card"><h2>Runs</h2>${runs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Run</th><th>Date</th><th>Paid</th><th class="r">Claims</th><th class="r">Amount</th><th>Status</th><th>Made by</th></tr></thead><tbody>${runs.map((x) => `<tr class="click" data-act="reimbOpen" data-id="${x.id}"><td><b>${esc(x.no)}</b></td><td>${dmy(x.runDate)}</td><td>${esc(REIMB_MODE[x.mode] || '')}${x.payMonth ? `<div class="fine">${monthName(x.payMonth)} salary</div>` : ''}</td><td class="r">${x.count}</td><td class="r">${inr0(x.total)}</td><td>${trBadge(RUN_STATUS, x.status)}</td><td class="fine">${x.auto ? 'Automatic' : esc(nameOf(x.createdBy))}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No runs yet.</div>'}</div>` };
+};
+ACT.reimbOpen = (b) => go('#/reimbrun/' + b.dataset.id);
+ACT.reimbRunNow = () => {
+  const co = company(); const cfg = reimbCfg(co.id); const wait = waitingClaims(co.id); const own = wait.filter((c) => c.empId === me.id && !isHR(co.id));
+  openDlg(`<form class="dlg" id="rnF"><h2>Pay approved claims now</h2><p class="fine" style="margin:0">${cfg.mode === 'payroll' ? 'Paid with the next open salary month as a reimbursement (not taxed).' : 'A bank transfer batch: download the bank advice, make the transfer, then record it on the run.'}</p>
+    <div class="scroll" style="max-height:320px"><table class="t"><tbody>${wait.map((c) => `<tr><td><label class="chk"><input type="checkbox" name="cl" value="${c.id}" ${own.includes(c) ? 'disabled' : 'checked'}> ${esc(nameOf(c.empId))}</label></td><td>${esc(c.no)}<div class="fine">${esc(c.title || '')}</div></td><td class="r">${inr0(claimTotal(c))}</td></tr>`).join('')}</tbody></table></div>
+    ${own.length ? '<p class="fine">Your own claim is paid by HR or another member of Finance.</p>' : ''}<p class="err" id="rnE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Make the run</button></div></form>`, true);
+  $('#rnF').onsubmit = async (e) => { e.preventDefault(); const ids = $$('#rnF input[name=cl]:checked').map((x) => x.value); if (!ids.length) { $('#rnE').textContent = 'Tick at least one claim.'; return; }
+    $('#rnE').textContent = 'Making the run…';
+    try { await sync.flush(); const res = await api.post('/api/reimb/run', { companyId: co.id, claimIds: ids }); await hooks.reload(); closeDlg();
+      toast(`${res.run.no}: ${res.run.count} claims, ${inr0(res.run.total)}${res.mailed ? `. ${res.mailed} people e-mailed` : ''}`); go('#/reimbrun/' + res.run.id); }
+    catch (x) { $('#rnE').textContent = x.message; } };
+};
+VIEWS.reimbrun = () => {
+  const x = S.reimbRuns.find((r) => r.id === R.arg); if (!x || !(isHR(x.companyId) || canPay(x.companyId))) return { title: 'Reimbursement run', html: '<div class="card empty">This run is not available.</div>' };
+  const by = {}; (x.lines || []).forEach((l) => { (by[l.empId] = by[l.empId] || []).push(l); });
+  return { title: `Reimbursement run ${x.no}`, html: `<div class="card"><div class="hd"><div><h2>${esc(x.no)} ${trBadge(RUN_STATUS, x.status)}</h2><p class="sub">${dmy(x.runDate)}, ${esc(REIMB_MODE[x.mode] || '')}${x.payMonth ? ` for ${monthName(x.payMonth)}: added to each person’s pay as Expense reimbursement (1900)` : ''}. ${x.count} claims, ${x.employees} people, ${inr0(x.total)}. ${x.auto ? 'Made automatically on the run day.' : `Made by ${esc(nameOf(x.createdBy))}, ${dt(x.createdAt)}.`}${x.paidRef ? ` Transferred on ${dmy(x.paidOn)}, reference ${esc(x.paidRef)}.` : ''}</p></div>
+      <div class="tools"><a class="btn" href="#/reimb">All runs</a>${x.mode === 'bank' ? '<button class="btn" data-act="reimbAdvice">Download bank advice</button>' : ''}${x.status === 'scheduled' ? '<button class="btn pri" data-act="reimbPaid">Record the bank transfer</button>' : ''}</div></div>
+    <div class="scroll"><table class="t"><thead><tr><th>Employee</th><th>Claims</th>${x.mode === 'bank' ? '<th>Bank account</th>' : ''}<th class="r">Amount</th></tr></thead><tbody>${Object.entries(by).map(([emp, ls]) => { const e = empById(emp) || {};
+      return `<tr><td><b>${esc(nameOf(emp))}</b><div class="fine">${esc(e.empNo || '')}</div></td><td>${ls.map((l) => `<a href="#/claim/${l.claimId}">${esc(l.claimNo)}</a> <span class="fine">${esc(l.title || '')}, ${inr0(l.amount)}</span>`).join('<br>')}</td>
+        ${x.mode === 'bank' ? `<td>${e.bankAcc ? `${esc(e.bankName || '')} ••••${esc(String(e.bankAcc).slice(-4))}<div class="fine">${esc(e.ifsc || '')}</div>` : '<span class="badge bad">No bank account</span>'}</td>` : ''}<td class="r">${inr0(ls.reduce((s, l) => s + l.amount, 0))}</td></tr>`; }).join('')}</tbody>
+      <tfoot><tr><td colspan="${x.mode === 'bank' ? 3 : 2}"><b>Total</b></td><td class="r"><b>${inr0(x.total)}</b></td></tr></tfoot></table></div></div>` };
+};
+ACT.reimbAdvice = () => { const x = S.reimbRuns.find((r) => r.id === R.arg); const by = {}; (x.lines || []).forEach((l) => { by[l.empId] = (by[l.empId] || 0) + l.amount; });
+  const rows = Object.entries(by).map(([emp, amt]) => { const e = empById(emp) || {}; return { 'Beneficiary name': fullName(e), 'Employee number': e.empNo || '', 'Account number': e.bankAcc || '', IFSC: e.ifsc || '', Bank: e.bankName || '', Amount: Math.round(amt * 100) / 100, Narration: `Reimbursement ${x.no}` }; });
+  const missing = rows.filter((r) => !r['Account number']).length; writeBook(`Bank advice ${x.no}.xlsx`, { 'Bank advice': rows });
+  if (missing) toast(`${missing} without a bank account: add it on their profile, or pay them separately.`); };
+ACT.reimbPaid = () => {
+  const x = S.reimbRuns.find((r) => r.id === R.arg);
+  openDlg(`<form class="dlg" id="rpF" novalidate><h2>Bank transfer for ${esc(x.no)}</h2><p class="fine" style="margin:0">${inr0(x.total)} to ${x.employees} people. Every claim in the run is marked paid.</p>
+    <div class="form">${fieldHtml({ k: 'ref', label: 'Bank reference (UTR or batch number)', req: true }, '')}${fieldHtml({ k: 'paidOn', label: 'Transferred on', type: 'date', req: true, max: todayISO() }, todayISO())}</div>
+    <p class="err" id="rpE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Record</button></div></form>`);
+  $('#rpF').onsubmit = async (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); if (!f.ref.trim()) { $('#rpE').textContent = 'Enter the bank reference.'; return; }
+    try { await sync.flush(); await api.post('/api/reimb/paid', { runId: x.id, ref: f.ref.trim(), paidOn: f.paidOn }); await hooks.reload(); closeDlg(); toast('Recorded: the claims are paid'); route(); } catch (er) { $('#rpE').textContent = er.message; } };
+};
+
+/* =====================================================================
+   PeopleDesk 2.16: professional trainings attended before joining (validated by HR against the certificate),
+   total experience, and the news and knowledge hub: HR's broadcasts and shared information, shown at sign-in.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------- professional trainings attended */
+BG.prevTrainings = { title: 'Professional trainings attended', one: 'training', sub: 'Trainings and certifications from previous jobs or taken on your own. Upload the certificate: HR validates each entry against it. Without a certificate it stays as unvalidated information you gave.',
+  fields: [{ k: 'training', label: 'Training or certification', pick: 'training', master: 'training', req: true, help: 'From the company’s training records and the list of professional trainings. Choose Others for a new one: HR adds it to the list' },
+    { k: 'provider', label: 'Conducted by (institute, body or trainer)' }, { k: 'employer', label: 'Attended while at', pick: 'jobsOf' },
+    { k: 'from', label: 'From', type: 'date' }, { k: 'to', label: 'Completed on', type: 'date', req: true }, { k: 'hours', label: 'Duration (hours)', type: 'number', min: 0 },
+    { k: 'mode', label: 'Mode', type: 'select', opts: [['classroom', 'Classroom'], ['online', 'Online'], ['blended', 'Blended'], ['onjob', 'On the job']] },
+    { k: 'certNo', label: 'Certificate number' }, { k: 'validTill', label: 'Valid until', type: 'date', help: 'For certifications that expire' },
+    { k: 'doc', label: 'Certificate', type: 'file', wide: true, help: 'A photo or PDF of the certificate, up to 10 MB. HR validates the entry against it.' }],
+  sort: (a, b) => String(b.to || '').localeCompare(String(a.to || '')),
+  row: (x) => [`<b>${esc(x.training)}</b>${x.provider ? `<div class="fine">${esc(x.provider)}</div>` : ''}${x.trainingRecId ? '<div class="fine">From the company’s training records</div>' : ''}`,
+    `${x.to ? `Completed ${dmy(x.to)}` : ''}${x.employer ? `<div class="fine">at ${esc(x.employer)}</div>` : ''}${+x.hours ? `<div class="fine">${num(x.hours)} hours${x.mode ? `, ${esc({ classroom: 'classroom', online: 'online', blended: 'blended', onjob: 'on the job' }[x.mode] || '')}` : ''}</div>` : ''}`,
+    `${x.certNo ? esc(x.certNo) : '<span class="fine">No number</span>'}${x.validTill ? `<div class="fine" style="${x.validTill < todayISO() ? 'color:var(--bad)' : ''}">${x.validTill < todayISO() ? 'Expired' : 'Valid until'} ${dmy(x.validTill)}</div>` : ''}`],
+  head: ['Training', 'When and where', 'Certificate'],
+  prep: (d) => {
+    if (d.from && d.to && d.to < d.from) return 'The training ends before it starts.';
+    if (d.to && d.to > todayISO()) return 'Enter a training already completed.';
+    if (d.validTill && d.to && d.validTill < d.to) return 'The certificate is valid until before it was given.';
+    const t = S.trainings.find((x) => normKey(x.title) === normKey(d.training)); d.trainingRecId = t ? t.id : '';
+    return '';
+  } };
+BG_KEYS.push('prevTrainings');
+MASTER_FIELD.training = 'trainingId'; MASTER_KIND.training = 'training';
+MASTER_KINDS.training = 'Professional trainings'; MASTER_ONE.training = 'training';
+MASTER_SUB.training = 'Employees choose from it, and from the company’s training records, for the professional trainings they attended before joining (Background tab). A name they type under Others comes here for HR to add.';
+STARTER.training = ['Project Management Professional (PMP)', 'PRINCE2 Foundation', 'Certified ScrumMaster (CSM)', 'Lean Six Sigma Green Belt', 'Lean Six Sigma Black Belt', 'ITIL 4 Foundation',
+  'AWS Certified Solutions Architect – Associate', 'Microsoft Certified: Azure Fundamentals', 'Google Cloud Associate Cloud Engineer', 'Cisco Certified Network Associate (CCNA)', 'CompTIA Security+',
+  'Certified Information Systems Security Professional (CISSP)', 'Certified Information Systems Auditor (CISA)', 'Salesforce Certified Administrator', 'SAP Certified Application Associate',
+  'Chartered Financial Analyst (CFA)', 'Financial Risk Manager (FRM)', 'SHRM Certified Professional (SHRM-CP)', 'ISO 9001 Internal Auditor', 'ISO 27001 Lead Auditor', 'Advanced Excel',
+  'Power BI', 'Data analytics with Python', 'First aid and CPR', 'Fire safety', 'POSH awareness (prevention of sexual harassment)', 'Leadership development programme', 'Customer service excellence'].map((x) => [x]);
+function trainingUnvalidated(x) {
+  return `<span class="badge warn">Unvalidated</span><div class="fine">${x.docFileId ? 'Certificate uploaded: waiting for HR' : 'No certificate: given by the employee'}</div>`;
+}
+/* months worked here: from joining to today, or to the last working day */
+function monthsHere(e) {
+  if (!e.doj) return 0; const end = (e.status === 'exited' && e.exit && e.exit.lwd) || todayISO(); if (end < e.doj) return 0;
+  return Math.max(0, (+end.slice(0, 4) - +e.doj.slice(0, 4)) * 12 + (+end.slice(5, 7) - +e.doj.slice(5, 7)) - (+end.slice(8, 10) < +e.doj.slice(8, 10) ? 1 : 0));
+}
+
+/* ---------------------------------------------------------------- the news and knowledge hub
+   HR's posts (S.posts): company news and performance, something great that happened, events, policies, and the
+   knowledge hub's articles and documents. Each can go to everyone or to some departments or locations, start and end
+   on dates, be pinned, show at sign-in and ask people to confirm they have read it. What someone has read is kept on
+   their own record (postsRead), which also gives HR the read count. */
+const POST_KINDS = { news: ['Company news', '📣'], performance: ['Company performance', '📈'], achievement: ['Something great happened', '🏆'], event: ['Event', '📅'], policy: ['Policy or process', '📜'], knowledge: ['Knowledge hub', '📚'] };
+const HUB_CATS = ['Policies and handbooks', 'How-to guides', 'Products and business', 'Training material', 'Forms and templates', 'Industry and learning', 'Other'];
+const postKind = (p) => (POST_KINDS[p.kind] ? p.kind : 'news');
+const postIcon = (p) => POST_KINDS[postKind(p)][1];
+const postLive = (p) => (p.status || 'published') === 'published' && (!p.from || p.from <= todayISO()) && (!p.until || p.until >= todayISO());
+const postFor = (p, e) => !!e && p.companyId === e.companyId && (!(p.depts || []).length || p.depts.includes(e.deptId)) && (!(p.locations || []).length || p.locations.includes(e.locationId));
+/* announcements made before 2.16 (no kind) count as read, so nobody gets them all as new after the upgrade */
+const postRead = (p, e = me) => { if (!p.kind) return true; const at = ((e || {}).postsRead || {})[p.id]; return !!at && (!p.rereadAt || at >= p.rereadAt); };
+const postsForMe = () => (me ? S.posts.filter((p) => postFor(p, me) && postLive(p)) : []);
+const unreadPosts = () => postsForMe().filter((p) => !postRead(p) && (postKind(p) !== 'knowledge' || p.popup)).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.at || 0) - (a.at || 0));
+/* the home page's feed: news (not the knowledge hub), pinned first */
+const feedPosts = () => postsForMe().filter((p) => postKind(p) !== 'knowledge').map((p) => ({ ...p, unread: !postRead(p), icon: postIcon(p), kindLabel: POST_KINDS[postKind(p)][0] }));
+function markRead(ids) {
+  if (!me || !ids.length) return; const keep = new Set(S.posts.map((p) => p.id)); const now = Date.now();
+  const r = Object.fromEntries(Object.entries(me.postsRead || {}).filter(([id]) => keep.has(id))); ids.forEach((id) => { r[id] = now; }); me.postsRead = r; saveNow();
+}
+const audienceOf = (p) => S.employees.filter((e) => active(e) && postFor(p, e));
+const postStatus = (p) => ((p.status || 'published') === 'draft' ? ['Draft', ''] : p.from && p.from > todayISO() ? [`From ${dShort(p.from)}`, 'info'] : p.until && p.until < todayISO() ? ['Ended', ''] : ['Live', 'ok']);
+const fileChips = (files) => (files || []).map((f) => `<a class="chip" href="/api/files/${f.fileId}" target="_blank" rel="noopener">📎 ${esc(f.name)}</a>`).join(' ');
+function postHtml(p, full) {
+  const text = String(p.text || ''); const long = !full && text.length > 420;
+  return `<div class="card hubpost ${postRead(p) ? '' : 'unread'}"><div class="hd"><div><div class="fine">${postIcon(p)} ${esc(POST_KINDS[postKind(p)][0])}${p.category ? ` · ${esc(p.category)}` : ''}${p.pinned ? ' · 📌 Pinned' : ''}</div>
+      <h2>${full ? esc(p.title) : `<a href="#/hub/${p.id}">${esc(p.title)}</a>`} ${postRead(p) ? '' : '<span class="badge info">New</span>'}</h2><p class="sub">${esc(nameOf(p.by))}, ${dt(p.updatedAt || p.at)}${p.updatedAt && p.updatedAt !== p.at ? ' (updated)' : ''}</p></div>
+      <div class="tools">${!postRead(p) ? `<button class="btn sm ${p.ack ? 'pri' : ''}" data-act="hubRead" data-id="${p.id}">${p.ack ? 'I have read this' : 'Mark as read'}</button>` : p.ack ? '<span class="badge ok">Read and confirmed</span>' : ''}${isHR(p.companyId) ? `<button class="btn sm ghost" data-act="hubEdit" data-id="${p.id}">Edit</button>` : ''}</div></div>
+    ${text ? `<div class="hubtext">${esc(long ? text.slice(0, 400).replace(/\s+\S*$/, '') + '…' : text)}</div>${long ? `<a href="#/hub/${p.id}">Read more</a>` : ''}` : ''}
+    ${p.link ? `<p><a href="${esc(p.link)}" target="_blank" rel="noopener noreferrer">${esc(p.linkText || p.link)}</a></p>` : ''}${(p.files || []).length ? `<div style="margin-top:8px">${fileChips(p.files)}</div>` : ''}</div>`;
+}
+VIEWS.hub = () => {
+  const hr = isHR();
+  if (R.arg) {
+    const p = S.posts.find((x) => x.id === R.arg); if (!p || !(hr && isHR(p.companyId)) && !(postFor(p, me) && postLive(p))) return { title: 'News and knowledge hub', html: '<div class="card empty">This post is not available.</div>' };
+    if (!p.ack && !postRead(p) && postLive(p) && postFor(p, me)) setTimeout(() => { markRead([p.id]); route(); }, 0);
+    return { title: p.title, html: `<p><a href="#/hub?tab=${postKind(p) === 'knowledge' ? 'knowledge' : 'news'}">← News and knowledge hub</a></p>${postHtml(p, true)}${hr && isHR(p.companyId) ? readersCard(p) : ''}` };
+  }
+  const tab = R.q.get('tab') || 'news'; const q = (R.q.get('q') || '').toLowerCase(); const cat = R.q.get('cat') || '';
+  const tabs = `<nav class="tabs"><a href="#/hub?tab=news" class="${tab === 'news' ? 'on' : ''}">News</a><a href="#/hub?tab=knowledge" class="${tab === 'knowledge' ? 'on' : ''}">Knowledge hub</a>${hr ? `<a href="#/hub?tab=manage" class="${tab === 'manage' ? 'on' : ''}">Manage posts</a>` : ''}</nav>`;
+  const head = (h, sub) => `<div class="card"><div class="hd"><div><h2>${h}</h2><p class="sub">${sub}</p></div>${hr ? `<div class="tools"><button class="btn pri" data-act="hubEdit" data-kind="${tab === 'knowledge' ? 'knowledge' : 'news'}">${tab === 'knowledge' ? 'Add to the knowledge hub' : 'New post'}</button></div>` : ''}</div></div>`;
+  if (tab === 'manage' && hr) {
+    const all = S.posts.filter((p) => p.companyId === CO).sort((a, b) => (b.updatedAt || b.at || 0) - (a.updatedAt || a.at || 0));
+    return { title: 'News and knowledge hub', html: `${tabs}${head('Manage posts', 'Every post for this company, with who it goes to and how many have read it.')}
+      <div class="card">${all.length ? `<div class="scroll"><table class="t"><thead><tr><th>Post</th><th>Goes to</th><th>Status</th><th>Shown</th><th class="r">Read</th><th></th></tr></thead><tbody>${all.map((p) => { const aud = audienceOf(p); const n = aud.filter((e) => postRead(p, e)).length; const st = postStatus(p);
+        return `<tr><td>${postIcon(p)} <a href="#/hub/${p.id}"><b>${esc(p.title)}</b></a><div class="fine">${esc(POST_KINDS[postKind(p)][0])}${p.category ? `, ${esc(p.category)}` : ''}, ${dt(p.updatedAt || p.at)}</div></td>
+          <td class="fine">${audienceTxt(p)}</td><td><span class="badge ${st[1]}">${esc(st[0])}</span>${p.until ? `<div class="fine">until ${dmy(p.until)}</div>` : ''}</td><td class="fine">${[p.pinned ? 'Pinned' : '', p.popup ? 'At sign-in' : '', p.ack ? 'Asks to confirm' : ''].filter(Boolean).join(', ') || '—'}</td>
+          <td class="r">${(p.status || 'published') === 'draft' ? '—' : `<a href="#/hub/${p.id}">${n} of ${aud.length}</a>`}</td><td class="r" style="white-space:nowrap"><button class="btn sm" data-act="hubEdit" data-id="${p.id}">Edit</button> <button class="btn sm ghost" data-act="hubDel" data-id="${p.id}">Delete</button></td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No posts yet.</div>'}</div>` };
+  }
+  const mine = postsForMe();
+  if (tab === 'knowledge') {
+    const items = mine.filter((p) => postKind(p) === 'knowledge' && (!cat || (p.category || 'Other') === cat) && (!q || `${p.title} ${p.text} ${p.category} ${(p.files || []).map((f) => f.name).join(' ')}`.toLowerCase().includes(q)));
+    const cats = [...new Set(mine.filter((p) => postKind(p) === 'knowledge').map((p) => p.category || 'Other'))].sort();
+    const groups = [...new Set(items.map((p) => p.category || 'Other'))].sort();
+    return { title: 'News and knowledge hub', html: `${tabs}${head('Knowledge hub', 'Policies, guides, templates and learning shared by HR. Search, or pick a topic.')}
+      <div class="tools" style="margin-bottom:12px"><input class="inp" placeholder="Search the knowledge hub" value="${esc(R.q.get('q') || '')}" data-ch="hubQ" style="max-width:320px"><select class="inp" data-ch="hubCat" style="max-width:240px"><option value="">All topics</option>${cats.map((c) => `<option ${c === cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+      ${groups.length ? groups.map((g) => `<div class="card"><h2>${esc(g)}</h2>${items.filter((p) => (p.category || 'Other') === g).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || a.title.localeCompare(b.title)).map((p) => `<div class="hubitem"><div><a href="#/hub/${p.id}"><b>${esc(p.title)}</b></a> ${postRead(p) ? '' : '<span class="badge info">New</span>'}<div class="fine">${esc(String(p.text || '').slice(0, 160))}${String(p.text || '').length > 160 ? '…' : ''}</div>${(p.files || []).length ? `<div>${fileChips(p.files)}</div>` : ''}</div><div class="fine" style="white-space:nowrap">${dShort(isoOf(new Date(p.updatedAt || p.at)))}</div></div>`).join('')}</div>`).join('')
+        : `<div class="card empty">${q || cat ? 'Nothing matches.' : 'Nothing shared yet.'}</div>`}` };
+  }
+  const news = mine.filter((p) => postKind(p) !== 'knowledge').sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.at || 0) - (a.at || 0));
+  const unread = news.filter((p) => !postRead(p));
+  return { title: 'News and knowledge hub', html: `${tabs}${head('News', 'Company news and performance, achievements, events and policies from HR.')}
+    ${unread.length > 1 ? `<div class="tools" style="margin-bottom:10px"><button class="btn sm" data-act="hubReadAll">Mark all ${unread.filter((p) => !p.ack).length} as read</button><span class="fine">${unread.filter((p) => p.ack).length ? 'Posts that ask you to confirm need their own click.' : ''}</span></div>` : ''}
+    ${news.length ? news.map((p) => postHtml(p)).join('') : '<div class="card empty">No news yet.</div>'}` };
+};
+function audienceTxt(p) {
+  const d = (p.depts || []).map((id) => (dept(id) || {}).name).filter(Boolean), l = (p.locations || []).map((id) => (loc(id) || {}).name).filter(Boolean);
+  return d.length || l.length ? esc([d.join(', '), l.join(', ')].filter(Boolean).join('; in ')) : 'Everyone';
+}
+function readersCard(p) {
+  const aud = audienceOf(p); const read = aud.filter((e) => postRead(p, e)), not = aud.filter((e) => !postRead(p, e));
+  return `<div class="card"><div class="hd"><div><h2>Read by ${read.length} of ${aud.length}</h2><p class="sub">${p.ack ? 'People confirm with “I have read this”.' : 'Marked read when they open it or close it at sign-in.'} Goes to: ${audienceTxt(p)}.</p></div>${not.length ? '<button class="btn sm" data-act="hubNotRead">Download who has not read it</button>' : ''}</div>
+    ${not.length ? `<p class="fine">Not read yet: ${not.slice(0, 40).map((e) => esc(fullName(e))).join(', ')}${not.length > 40 ? ` and ${not.length - 40} more` : ''}.</p>` : '<p class="fine">Everyone has read it.</p>'}</div>`;
+}
+ACT.hubQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/hub?' + p); };
+ACT.hubCat = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('cat', el.value) : p.delete('cat'); go('#/hub?' + p); };
+ACT.hubRead = (b) => { markRead([b.dataset.id]); toast('Thank you'); route(); };
+ACT.hubReadAll = () => { markRead(postsForMe().filter((p) => postKind(p) !== 'knowledge' && !p.ack && !postRead(p)).map((p) => p.id)); route(); };
+ACT.hubNotRead = () => { const p = S.posts.find((x) => x.id === R.arg); writeBook(`Not read ${p.title.slice(0, 30)}.xlsx`, { 'Not read': audienceOf(p).filter((e) => !postRead(p, e)).map((e) => ({ 'Employee number': e.empNo, Name: fullName(e), Department: (dept(e.deptId) || {}).name || '', Location: (loc(e.locationId) || {}).name || '', 'E-mail': e.email || '' })) }); };
+ACT.hubDel = async (b) => { const p = S.posts.find((x) => x.id === b.dataset.id); if (!p || !(await confirmBox('Delete this post?', 'It disappears for everyone. Its read count goes too.', 'Delete'))) return;
+  S.posts = S.posts.filter((x) => x !== p); audit('Post deleted', p.title, 'org'); saveNow(); toast('Deleted'); go('#/hub?tab=manage'); };
+ACT.postNew = () => ACT.hubEdit({ dataset: { kind: 'news' } });
+ACT.hubEdit = (b) => {
+  const p0 = b.dataset.id ? S.posts.find((x) => x.id === b.dataset.id) : null; const kind0 = (p0 && postKind(p0)) || b.dataset.kind || 'news';
+  const v = p0 ? JSON.parse(JSON.stringify(p0)) : { kind: kind0, title: '', text: '', category: '', link: '', files: [], depts: [], locations: [], pinned: false, popup: kind0 !== 'knowledge', ack: false, from: todayISO(), until: '' };
+  v.files = v.files || []; const coId = p0 ? p0.companyId : CO;
+  const cats = [...new Set([...HUB_CATS, ...S.posts.filter((x) => x.companyId === coId && x.category).map((x) => x.category)])];
+  const keep = (f) => { ['kind', 'title', 'text', 'category', 'link', 'from', 'until'].forEach((k) => { if (f.elements[k]) v[k] = f.elements[k].value; }); ['pinned', 'popup', 'ack'].forEach((k) => { v[k] = f.elements[k].checked; });
+    v.depts = checked(f, 'depts'); v.locations = checked(f, 'locations'); };
+  const draw = () => {
+    const isK = v.kind === 'knowledge';
+    openDlg(`<form class="dlg" id="hbF" novalidate><h2>${p0 ? 'Edit post' : isK ? 'Add to the knowledge hub' : 'New post'}</h2>
+      <div class="form"><label class="field">What it is<select class="inp" name="kind">${Object.entries(POST_KINDS).map(([k, [l, i]]) => `<option value="${k}" ${k === v.kind ? 'selected' : ''}>${i} ${esc(l)}</option>`).join('')}</select></label>
+        ${isK ? `<label class="field">Topic<input class="inp" name="category" list="hbCats" value="${esc(v.category || '')}" placeholder="For example How-to guides"><datalist id="hbCats">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>` : ''}
+        <label class="field wide">${reqLabel({ label: 'Title', req: true })}<input class="inp" name="title" value="${esc(v.title)}" maxlength="160"></label>
+        <label class="field wide">${reqLabel({ label: 'Message', req: !isK })}<textarea class="inp" name="text" rows="8" maxlength="8000" placeholder="${isK ? 'What it covers and when to use it' : 'For example: our best quarter yet, revenue up 18%. Thank you, everyone.'}">${esc(v.text || '')}</textarea></label>
+        <label class="field wide">Link (optional)<input class="inp" name="link" value="${esc(v.link || '')}" placeholder="https://"></label></div>
+      <div class="field">Files<small>Documents, slides or pictures to share: PDF, Word, Excel, PowerPoint or images, up to 10 MB each.</small>
+        <div>${v.files.map((f, i) => `<span class="chip">📎 ${esc(f.name)} <button type="button" class="btn sm ghost" data-hbrm="${i}" aria-label="Remove ${esc(f.name)}">✕</button></span>`).join(' ') || '<span class="fine">None.</span>'}</div>
+        <label class="btn sm" style="align-self:flex-start">Attach files<input type="file" multiple hidden id="hbFiles" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt"></label></div>
+      <div class="form"><div class="field">Departments<small>None ticked: everyone</small>${checkList('depts', S.depts.filter((x) => x.companyId === coId).map((x) => [x.id, x.name]), v.depts)}</div>
+        <div class="field">Locations<small>None ticked: everywhere</small>${checkList('locations', S.locations.filter((x) => x.companyId === coId && x.kind !== 'city').map((x) => [x.id, x.name]), v.locations)}</div>
+        <label class="field">Show from<input class="inp" type="date" name="from" value="${esc(v.from || '')}"></label><label class="field">Show until<input class="inp" type="date" name="until" value="${esc(v.until || '')}"><small>Empty: until deleted</small></label>
+        <label class="chk wide" style="grid-column:1/-1"><input type="checkbox" name="popup" ${v.popup ? 'checked' : ''}> Show it to people when they sign in, until they read it</label>
+        <label class="chk wide" style="grid-column:1/-1"><input type="checkbox" name="ack" ${v.ack ? 'checked' : ''}> Ask people to confirm they have read it (for policies)</label>
+        <label class="chk wide" style="grid-column:1/-1"><input type="checkbox" name="pinned" ${v.pinned ? 'checked' : ''}> Pin it at the top</label>
+        ${p0 && (p0.status || 'published') === 'published' ? '<label class="chk wide" style="grid-column:1/-1"><input type="checkbox" name="reread"> Ask everyone to read it again (an important change)</label>' : ''}</div>
+      <p class="err" id="hbE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button type="button" class="btn" id="hbDraft">Save as draft</button><button class="btn pri">${p0 && (p0.status || 'published') === 'published' ? 'Save' : 'Publish'}</button></div></form>`, true);
+    const f = $('#hbF');
+    f.elements.kind.onchange = () => { const wasK = v.kind === 'knowledge'; keep(f); if (!p0 && wasK !== (v.kind === 'knowledge')) v.popup = v.kind !== 'knowledge'; draw(); };
+    $('#hbFiles').onchange = async (ev) => { const files = [...ev.target.files]; keep(f);
+      for (const [k, file] of files.entries()) { $('#hbE').textContent = `Uploading ${k + 1} of ${files.length}…`; try { const up = await uploadFile(file); v.files.push({ fileId: up.id, name: file.name, size: file.size }); } catch (er) { $('#hbE').textContent = `${file.name}: ${er.message}`; draw(); return; } }
+      draw(); };
+    f.querySelectorAll('[data-hbrm]').forEach((el) => { el.onclick = () => { keep(f); v.files.splice(+el.dataset.hbrm, 1); draw(); }; });
+    const store = (publish) => { keep(f); const err = (m) => { $('#hbE').textContent = m; };
+      v.title = v.title.trim(); v.text = v.text.trim(); v.link = v.link.trim();
+      if (!v.title) return err('Give it a title.'); if (v.kind !== 'knowledge' && !v.text) return err('Write the message.'); if (v.kind === 'knowledge' && !v.text && !v.files.length && !v.link) return err('Write something, attach a file or give a link.');
+      if (v.link && !/^https?:\/\/\S+$/i.test(v.link)) return err('The link starts with https://');
+      if (v.until && v.from && v.until < v.from) return err('It ends before it starts.');
+      const reread = f.elements.reread && f.elements.reread.checked;
+      const rec = p0 || { id: uid(), companyId: coId, by: me.id, at: Date.now() }; const was = rec.status || (p0 ? 'published' : '');
+      Object.assign(rec, { kind: v.kind, title: v.title, text: v.text, category: v.kind === 'knowledge' ? (v.category || '').trim() || 'Other' : '', link: v.link, files: v.files, depts: v.depts, locations: v.locations,
+        from: v.from || todayISO(), until: v.until || '', pinned: v.pinned, popup: v.popup, ack: v.ack, status: publish ? 'published' : 'draft' });
+      if (p0) { rec.updatedAt = Date.now(); rec.updatedBy = me.id; } if (publish && was !== 'published') rec.at = Date.now(); if (reread) rec.rereadAt = Date.now();
+      if (!p0) S.posts.push(rec);
+      audit(publish ? (p0 ? 'Post changed' : 'Post published') : 'Post saved as draft', rec.title, 'org'); saveNow(); closeDlg();
+      toast(publish ? `${p0 ? 'Saved' : 'Published'}: ${audienceOf(rec).length} people${rec.popup ? ' see it when they sign in' : ''}` : 'Draft saved'); go(publish ? '#/hub/' + rec.id : '#/hub?tab=manage');
+    };
+    $('#hbDraft').onclick = () => store(false);
+    f.onsubmit = (ev) => { ev.preventDefault(); store(true); };
+  };
+  draw();
+};
+/* at sign-in: the posts HR flagged, until read. Later shows them again at the next sign-in. Returns true when shown. */
+function showBroadcasts() {
+  const key = `pd.news.${me.id}`; try { if (sessionStorage.getItem(key)) return false; } catch (e) { /* no session storage */ }
+  const list = unreadPosts().filter((p) => p.popup).slice(0, 5); if (!list.length) return false;
+  const ack = list.some((p) => p.ack); const co = coById(me.companyId) || {};
+  openDlg(`<div class="dlg"><h2>News from ${esc(co.name || 'HR')}</h2>
+    <div style="max-height:60vh;overflow:auto;display:flex;flex-direction:column;gap:12px">${list.map((p) => `<div class="hubpop"><div class="fine">${postIcon(p)} ${esc(POST_KINDS[postKind(p)][0])}${p.ack ? ' · please confirm you have read it' : ''}</div><h3 style="margin:2px 0 4px">${esc(p.title)}</h3>
+      <div class="hubtext">${esc(String(p.text || '').slice(0, 700))}${String(p.text || '').length > 700 ? '…' : ''}</div>${(p.files || []).length ? `<div>${fileChips(p.files)}</div>` : ''}${p.link ? `<div><a href="${esc(p.link)}" target="_blank" rel="noopener noreferrer">${esc(p.link)}</a></div>` : ''}<div class="fine"><a href="#/hub/${p.id}" id="bc_${p.id}">Open</a></div></div>`).join('')}</div>
+    <div class="btns"><button class="btn ghost" id="bcLater">Later</button><button class="btn pri" id="bcRead" autofocus>${ack ? 'I have read these' : list.length > 1 ? 'Mark all as read' : 'Mark as read'}</button></div></div>`, true);
+  const done = (read) => { try { sessionStorage.setItem(key, '1'); } catch (e) { /* ignore */ } if (read) markRead(list.map((p) => p.id)); closeDlg(); route(); setTimeout(showLoginNotices, 200); };
+  $('#bcLater').onclick = () => done(false); $('#bcRead').onclick = () => done(true);
+  list.forEach((p) => { const a = $('#bc_' + p.id); if (a) a.onclick = () => { try { sessionStorage.setItem(key, '1'); } catch (e) { /* ignore */ } closeDlg(); }; });
+  return true;
+}
+
 export {
   hooks, sync, ACT, VIEWS, MENU, BOTTOM, ROLES, STATES, R,
   getS, getMe, getCO, loadServerState, clearSession, switchCompany, resolvePage, buildSetupState, buildRegisterRecords, buildDemoState,
@@ -9691,5 +10910,6 @@ export {
   num, inr0, hm, dt, dShort, dmy, toast, confirmBox, closeDlg, downloadText, audit, save, saveNow, loadGsi, msLogin, regAsked,
   uid, coById, DOC_CATEGORIES, docTypesFor, docPreview, downloadBlob,
   myNotices, showLoginNotices, mdOf, runReg, cwSelf, myDetailsChecklist, teamLabel, canPay, isFinance,
-  IN_STATES, COUNTRIES, EDU_LEVELS, FAMILY_RELATIONS, EMERGENCY_RELATIONS, BLOOD_GROUPS, BANKS
+  IN_STATES, COUNTRIES, EDU_LEVELS, FAMILY_RELATIONS, EMERGENCY_RELATIONS, BLOOD_GROUPS, BANKS,
+  feedPosts, unreadPosts
 };
