@@ -2,9 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
 
-/* Opened from the link HR sends a candidate (#/apply?t=…): no sign-in. The candidate fills in their details and
-   attaches their CV, saves as they go and sends the form. When they join, HR converts them into an employee and
-   these details become their employee record. The server checks and keeps the form (backend/app/candform.py). */
+/* The candidate's own page. HR sends a link (#/apply?t=…). 2.17: the link does not open the form by itself: the
+   first time, the candidate creates a candidate sign-in (their e-mail address or mobile number and a password of
+   their own); after that they sign in, from the link or from the sign-in page (Candidate? Sign in). Signed in as a
+   candidate, they fill in their details and attach their CV, save as they go and send the form. The form is read
+   and written only with a candidate's session, so an employee (or anyone who merely has the link) cannot fill it
+   in. When they join, HR converts them into an employee and these details become their employee record. The
+   server checks and keeps the form (backend/app/candform.py). */
 export const applyToken = () => {
   const h = window.location.hash || '';
   if (!h.startsWith('#/apply')) return '';
@@ -94,25 +98,17 @@ function RespMatrix({ list, main, sec, onChange, disabled, rowKey }) {
   );
 }
 
-export default function CandidateForm({ onDone }) {
-  const token = applyToken();
-  const [info, setInfo] = useState(null);
-  const [d, setD] = useState(null);
-  const [bad, setBad] = useState('');
+const asForm = (r) => ({ education: [], prevJobs: [], references: [], family: [], skillLevels: {}, ...r.data, awards: (r.data && r.data.awards) || [] });
+
+function FormPage({ initial, onSignOut, onSessionEnded }) {
+  const [info, setInfo] = useState(initial);
+  const [d, setD] = useState(() => asForm(initial));
   const [msg, setMsg] = useState({ text: '', err: false });
   const [busy, setBusy] = useState(false);
   const [cv, setCv] = useState(null);
+  const [pwOpen, setPwOpen] = useState(false);
   const top = useRef(null);
 
-  useEffect(() => {
-    if (!token) { setBad('This link is not complete. Open it again from the message you were sent.'); return; }
-    api.post('/api/apply/open', { token }).then((r) => { setInfo(r); setD({ education: [], prevJobs: [], references: [], family: [], skillLevels: {}, ...r.data, awards: (r.data && r.data.awards) || [] }); }).catch((e) => setBad(e.message));
-  }, [token]);
-
-  if (bad) return (
-    <div className="apply"><div className="card"><h2>This link cannot be used</h2><p className="sub">{bad}</p>{onDone && <button className="btn" onClick={onDone}>Close</button>}</div></div>
-  );
-  if (!info || !d) return <div className="boot">Loading…</div>;
   const ro = !info.editable;
   const set = (k) => (v) => setD({ ...d, [k]: v });
   const setRow = (list, i, k) => (v) => setD({ ...d, [list]: d[list].map((r, j) => (j === i ? { ...r, [k]: v } : r)) });
@@ -136,10 +132,13 @@ export default function CandidateForm({ onDone }) {
   const send = async (submit) => {
     setBusy(true); setMsg({ text: '', err: false });
     try {
-      const r = await api.post('/api/apply/save', { token, data: d, cv, submit });
+      const r = await api.post('/api/candidate/form', { data: d, cv, submit });
       setInfo(r); setCv(null);
-      setMsg({ text: submit ? 'Thank you. Your details have been sent.' : 'Saved. You can come back to this link to finish.', err: false });
-    } catch (x) { setMsg({ text: x.message, err: true }); }
+      setMsg({ text: submit ? 'Thank you. Your details have been sent.' : 'Saved. Sign in again any time to finish.', err: false });
+    } catch (x) {
+      if (x.status === 401) { onSessionEnded(x.message); return; }
+      setMsg({ text: x.message, err: true });
+    }
     finally { setBusy(false); if (top.current) top.current.scrollIntoView({ behavior: 'smooth' }); }
   };
 
@@ -165,11 +164,15 @@ export default function CandidateForm({ onDone }) {
   return (
     <div className="apply" ref={top}>
       <div className="apply-head"><span className="logo"><img src="/aequm-mark.png" alt="" /></span>
-        <div><b>{info.company}</b><small>Your details{info.jobs.length ? ` for ${info.jobs.join(', ')}` : ''}</small></div></div>
+        <div><b>{info.company}</b><small>Your details{info.jobs.length ? ` for ${info.jobs.join(', ')}` : ''}</small></div>
+        <div className="apply-who"><small>Signed in as a candidate: {info.login}</small>
+          <button type="button" className="btn sm ghost" onClick={() => setPwOpen(!pwOpen)}>Change password</button>
+          <button type="button" className="btn sm" onClick={onSignOut}>Sign out</button></div></div>
+      {pwOpen && <ChangePassword onDone={() => setPwOpen(false)} onSessionEnded={onSessionEnded} />}
       {info.jobs.length > 0 && !ro && <div className="note">You are applying for <b>{info.jobs.join(', ')}</b>. You do not need a CV to start: fill in your experience, education{skills.length ? ', your level in the skills the job needs' : ''} and the rest, and attach a CV later if you have one.</div>}
       <div className="card"><h2>Hello {info.name.split(' ')[0]}</h2>
         <p className="sub">{ro ? (info.status === 'submitted' ? 'Your details have been sent to HR. If something needs to change, HR will contact you.' : 'This form is closed.')
-          : 'Please fill in your details and attach your CV. You can save and come back to this link before you send it. When you join, these details go into your employee record, so you do not need to enter them again. Fields marked * must be filled in before you send the form.'}</p>
+          : 'Please fill in your details and attach your CV. You can save, sign out and sign in again to finish before you send it. When you join, these details go into your employee record, so you do not need to enter them again. Fields marked * must be filled in before you send the form.'}</p>
         {info.note && !ro && <div className="note warn">HR asked you to change: {info.note}</div>}
         {msg.text && <div className={`note ${msg.err ? 'bad' : 'ok'}`} role="alert">{msg.text}</div>}
       </div>
@@ -236,4 +239,135 @@ export default function CandidateForm({ onDone }) {
       )}
     </div>
   );
+}
+
+/* ---------------------------------------------------------------- 2.17: getting in */
+function ChangePassword({ onDone, onSessionEnded }) {
+  const [cur, setCur] = useState(''); const [pw, setPw] = useState(''); const [pw2, setPw2] = useState('');
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const go = async (e) => {
+    e.preventDefault(); setErr('');
+    if (pw.length < 10) { setErr('Use a new password of at least 10 characters.'); return; }
+    if (pw !== pw2) { setErr('The two new passwords are not the same.'); return; }
+    setBusy(true);
+    try { await api.post('/api/candidate/password', { current: cur, new: pw }); E.toast('Password changed'); onDone(); }
+    catch (x) { if (x.status === 401) onSessionEnded(x.message); else setErr(x.message); } finally { setBusy(false); }
+  };
+  return (
+    <form className="card" onSubmit={go} noValidate><h2>Change your password</h2><div className="form">
+      <label className="field">Current password<input className="inp" type="password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} /></label>
+      <label className="field">New password<input className="inp" type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} /></label>
+      <label className="field">New password again<input className="inp" type="password" autoComplete="new-password" value={pw2} onChange={(e) => setPw2(e.target.value)} /></label></div>
+      <p className="err" role="alert">{err}</p>
+      <div className="btns" style={{ justifyContent: 'flex-start' }}><button className="btn pri" disabled={busy}>{busy ? 'Saving…' : 'Change password'}</button><button type="button" className="btn ghost" onClick={onDone}>Cancel</button></div>
+    </form>
+  );
+}
+
+/* The link page before the form: create a candidate sign-in, or sign in. Shows nothing the candidate entered. */
+function Gate({ token, view, onIn, onSignOutOther }) {
+  const [want, setWant] = useState(view.hasAccount ? 'signin' : 'create');   // signin | create (also: set a new password)
+  const [pw, setPw] = useState(''); const [pw2, setPw2] = useState('');
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const first = (view.name || '').split(' ')[0];
+  const head = (
+    <div className="apply-head"><span className="logo"><img src="/aequm-mark.png" alt="" /></span>
+      <div><b>{view.company}</b><small>Candidate sign-in{view.jobs.length ? ` · ${view.jobs.join(', ')}` : ''}</small></div></div>
+  );
+  if (view.closed) return (
+    <div className="apply">{head}<div className="card"><h2>Welcome aboard</h2>
+      <p className="sub">You have joined the company, so your details are on your employee record now. Sign in as an employee to see them.</p>
+      <button className="btn pri" onClick={() => { window.location.hash = ''; window.location.reload(); }}>Go to the sign-in page</button></div></div>
+  );
+  if (view.signedIn && view.signedIn !== 'this') {
+    const as = { employee: 'an employee', contractor: 'a contractor', candidate: 'another candidate' }[view.signedIn];
+    return (
+      <div className="apply">{head}<div className="card"><h2>This form is for the candidate</h2>
+        <p className="sub">This browser is signed in as {as}. The candidate form is filled in by the candidate, signed in as a candidate: an employee cannot fill it in for them.</p>
+        <p className="sub">If you are {view.name}, sign out here and continue with your candidate sign-in. If you are from HR, send the link to the candidate instead.</p>
+        <button className="btn pri" onClick={onSignOutOther}>Sign out and continue as {first}</button></div></div>
+    );
+  }
+  const create = want === 'create';
+  const go = async (e) => {
+    e.preventDefault(); setErr('');
+    if (create) {
+      if (pw.length < 10) { setErr('Use a password of at least 10 characters.'); return; }
+      if (pw !== pw2) { setErr('The two passwords are not the same.'); return; }
+    } else if (!pw) { setErr('Enter your password.'); return; }
+    setBusy(true);
+    try {
+      if (create) await api.post('/api/apply/account', { token, password: pw });
+      else {
+        const r = await api.post('/api/auth/login', { email: view.login, password: pw });
+        if (r.kind !== 'candidate') { await api.post('/api/auth/logout').catch(() => {}); throw new Error('That is not a candidate sign-in.'); }
+      }
+      await onIn();
+    } catch (x) { setErr(x.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="apply">{head}
+      <form className="card cand-gate" onSubmit={go} noValidate>
+        <h2>{create ? (view.hasAccount ? 'Set a new password' : `Hello ${first}: create your candidate sign-in`) : `Hello ${first}: sign in to your form`}</h2>
+        <p className="sub">{create
+          ? (view.hasAccount ? 'Choose a new password for your candidate sign-in. This link sets a password once.'
+            : `${view.company} has asked you to fill in your details${view.jobs.length ? ` for ${view.jobs.join(', ')}` : ''}. First, create a candidate sign-in with a password of your own, so that only you can open and fill in your form. Afterwards, sign in with it from this link or from the sign-in page (Candidate? Sign in).`)
+          : 'Sign in with the password you chose for your candidate sign-in.'}</p>
+        <label className="field">You sign in with<input className="inp" type="text" autoComplete="username" value={view.login} readOnly /><small>To change it, ask HR.</small></label>
+        <label className="field">{create ? 'Choose a password' : 'Password'}<input className="inp" type="password" autoFocus autoComplete={create ? 'new-password' : 'current-password'} value={pw} onChange={(e) => setPw(e.target.value)} />{create && <small>At least 10 characters.</small>}</label>
+        {create && <label className="field">The password again<input className="inp" type="password" autoComplete="new-password" value={pw2} onChange={(e) => setPw2(e.target.value)} /></label>}
+        <button className="btn pri lg" disabled={busy}>{busy ? 'Please wait…' : create ? (view.hasAccount ? 'Set the new password' : 'Create my sign-in') : 'Sign in'}</button>
+        <p className="err" role="alert">{err}</p>
+        {!create && view.canSetPassword && <button type="button" className="btn ghost" onClick={() => { setWant('create'); setErr(''); setPw(''); }}>Forgot your password? Set a new one with this link</button>}
+        {!create && !view.canSetPassword && <p className="fine">Forgot your password? Ask HR to send you the link again; a new link lets you set a new one.</p>}
+        {create && view.hasAccount && <button type="button" className="btn ghost" onClick={() => { setWant('signin'); setErr(''); setPw(''); setPw2(''); }}>I remember it: sign in</button>}
+      </form>
+    </div>
+  );
+}
+
+/* mode "link": opened from HR's link; mode "session": a candidate signed in from the sign-in page */
+export default function CandidateForm({ mode = 'link', onDone, onSignedOut, onSessionEnded }) {
+  const token = mode === 'link' ? applyToken() : '';
+  const [stage, setStage] = useState('loading');      // loading | gate | form | bad
+  const [view, setView] = useState(null);
+  const [form, setForm] = useState(null);
+  const [bad, setBad] = useState('');
+
+  const openLink = async () => {
+    setStage('loading');
+    try {
+      const v = await api.post('/api/apply/open', { token });
+      setView(v);
+      if (v.signedIn === 'this' && !v.closed) await loadForm(); else setStage('gate');
+    } catch (e) { setBad(e.message); setStage('bad'); }
+  };
+  const loadForm = async () => {
+    try { setForm(await api.get('/api/candidate/form')); setStage('form'); }
+    catch (e) {
+      if (mode === 'link' && (e.status === 401 || e.status === 403)) { setStage('gate'); return; }
+      if (mode === 'session') { onSessionEnded(e.message); return; }
+      setBad(e.message); setStage('bad');
+    }
+  };
+  useEffect(() => {
+    if (mode === 'session') { loadForm(); return; }
+    if (!token) { setBad('This link is not complete. Open it again from the message you were sent.'); setStage('bad'); return; }
+    openLink();
+  }, [token, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const signOut = async () => {
+    await api.post('/api/auth/logout').catch(() => {});
+    if (mode === 'session') onSignedOut(); else openLink();
+  };
+  const ended = (m) => { if (mode === 'session') onSessionEnded(m); else { E.toast(m || 'Sign in again.'); openLink(); } };
+
+  if (stage === 'bad') return (
+    <div className="apply"><div className="card"><h2>This link cannot be used</h2><p className="sub">{bad}</p>
+      <p className="fine">Already created your candidate sign-in? You can sign in from the sign-in page: choose Candidate? Sign in.</p>
+      {onDone && <button className="btn" onClick={onDone}>Go to the sign-in page</button>}</div></div>
+  );
+  if (stage === 'loading') return <div className="boot">Loading…</div>;
+  if (stage === 'gate') return <Gate token={token} view={view} onIn={loadForm} onSignOutOther={signOut} />;
+  return <FormPage key={form.submittedAt || 'f'} initial={form} onSignOut={signOut} onSessionEnded={ended} />;
 }

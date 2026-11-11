@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from .collections import COLLS
 from .portal import CRED_DDL
+from .candform import CRED_DDL as CAND_CRED_DDL
 
 log = logging.getLogger("peopledesk")
 TAIL = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
@@ -44,6 +45,7 @@ def run(engine):
             conn.execute(text(FILES_DDL))
             conn.execute(text(COUNTERS_DDL))
             conn.execute(text(CRED_DDL))        # 2.9: contractors' portal passwords
+            conn.execute(text(CAND_CRED_DDL))   # 2.17: candidates' passwords
             have = {r[0] for r in conn.execute(text(
                 "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'audit_log'"))}
             for col, ddl in AUDIT_COLS.items():

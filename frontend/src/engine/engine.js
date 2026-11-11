@@ -8604,7 +8604,7 @@ PROFILE_TABS.assets = (e, { hr }) => {
 /* =====================================================================
    PeopleDesk 2.11: candidates' application forms, goal library and role weightages, the appraisal form,
    review and management meetings, succession planning
-   - Recruitment: HR sends a candidate a link to fill in their details and CV (no sign-in). Once selected, HR
+   - Recruitment: HR sends a candidate a link to fill in their details and CV (2.17: the candidate creates a candidate sign-in with it and signs in). Once selected, HR
      converts them into an employee at joining, and everything they entered becomes the employee record.
    - Performance: goals and competencies, with how each is measured and what earns each rating, are kept in a
      library independent of roles. Each role (designation, grade, department) gives library goals a weightage and
@@ -9385,11 +9385,11 @@ async function candFormLink(c) {
   try { res = await api.post('/api/candidate-form/link', { candId: c.id, send: true }); } catch (e) { toast(e.message); return; }
   c.form = res.form;
   const ph = phone10(c.phone);
-  const msg = `Hello ${c.name}, please fill in your details and attach your CV for ${company().name} using this link (it works for ${res.days} days): ${res.url}`;
+  const msg = `Hello ${c.name}, please fill in your details and attach your CV for ${company().name} using this link (it works for ${res.days} days): ${res.url} The first time, create your candidate sign-in with a password of your own; afterwards sign in with it, from the link or from the sign-in page (Candidate? Sign in).`;
   openDlg(`<div class="dlg"><h2>Application form for ${esc(c.name)}</h2>
     ${res.sent ? `<div class="note ok">Sent by e-mail to ${esc(res.to)}.</div>` : '<p class="fine" style="margin:0">Send this link to the candidate: by e-mail, WhatsApp or a text message.</p>'}
     <label class="field">Link (works for ${res.days} days; a new link stops older ones)<textarea class="inp" id="cfU" readonly rows="3" style="font-family:var(--mono,monospace);font-size:12px">${esc(res.url)}</textarea></label>
-    <p class="fine" style="margin:0">They do not need to sign in. They can save the form and come back to it; once they send it, you see it on the candidate.</p>
+    <p class="fine" style="margin:0">The first time, the candidate creates a candidate sign-in with ${c.email ? 'their e-mail address' : 'their mobile number'} and a password of their own; then they sign in, from this link or from the sign-in page (<b>Candidate? Sign in</b>), to fill in the form. Only the candidate can fill it in: not employees, and not someone who only has the link. They can save it and come back; once they send it, you see it on the candidate. A forgotten password? Send the link again: a new link lets them set a new one.</p>
     <div class="btns"><button class="btn" id="cfC">Copy link</button><a class="btn" href="mailto:${esc(c.email)}?subject=${encodeURIComponent(`Your details for ${company().name}`)}&body=${encodeURIComponent(msg)}">Open in e-mail</a>${ph ? `<a class="btn" target="_blank" rel="noopener" href="https://wa.me/91${ph}?text=${encodeURIComponent(msg)}">Send on WhatsApp</a>` : ''}<button class="btn pri" data-act="close">Done</button></div></div>`);
   $('#cfC').onclick = async () => { try { await navigator.clipboard.writeText(res.url); } catch (e) { $('#cfU').select(); document.execCommand('copy'); } toast('Link copied'); };
   route();
@@ -9398,7 +9398,7 @@ ACT.candFormSend = (b) => candFormLink(candById(b.dataset.id));
 ACT.candFormReturn = async (b) => {
   const c = candById(b.dataset.id); const n = await askText('Return the form for changes?', 'What should the candidate change', 'Return'); if (n === null) return;
   c.form = { ...c.form, status: 'returned', note: n }; audit('Application form returned for changes', `${c.name}: ${n}`, 'recruitment'); saveNow();
-  toast('Returned. The candidate can use their link again, or send them a new one.'); route();
+  toast('Returned. The candidate signs in again to make the changes.'); route();
 };
 ACT.candFormChecked = (b) => { const c = candById(b.dataset.id); c.formCheckedAt = Date.now(); c.formCheckedBy = me.id; saveNow(); closeDlg(); toast('Marked as checked'); route(); };
 function candFormCard(c, a) {
@@ -9406,7 +9406,7 @@ function candFormCard(c, a) {
   const f = cfOf(c); const st = f && f.status;
   const canJoin = a && ['selected', 'offer', 'offered', 'accepted'].includes(a.stage) && !c.exEmpId && !(a.offer && a.offer.status === 'accepted');
   return `<div class="card"><div class="hd"><div><h2>Candidate’s details ${st ? trBadge(CF_STATUS, st) : ''}</h2><p class="sub">${!f ? 'Ask the candidate to fill in their personal details, address, identity numbers, bank account, education, previous jobs, references and family, and to attach their CV. When they join, it all goes into their employee record.'
-      : st === 'submitted' ? `Received ${dt(f.submittedAt)}${c.formCheckedAt ? `, checked by ${esc(nameOf(c.formCheckedBy))}` : ''}.` : st === 'closed' ? 'The details are on the employee record now.' : `Link sent ${dt(f.sentAt)}${f.savedAt ? `; last saved ${dt(f.savedAt)}` : ''}.${f.note ? ` Asked to change: ${esc(f.note)}` : ''}`}</p></div>
+      : st === 'submitted' ? `Received ${dt(f.submittedAt)}${c.formCheckedAt ? `, checked by ${esc(nameOf(c.formCheckedBy))}` : ''}.` : st === 'closed' ? 'The details are on the employee record now.' : `Link sent ${dt(f.sentAt)}; ${f.accountAt ? `candidate sign-in created ${dt(f.accountAt)}` : 'the candidate has not created their sign-in yet'}${f.savedAt ? `; last saved ${dt(f.savedAt)}` : ''}.${f.note ? ` Asked to change: ${esc(f.note)}` : ''}`}</p></div>
     <div class="tools">${f && f.data ? `<button class="btn" data-act="candFormView" data-id="${c.id}">View the details</button>` : ''}${st === 'submitted' ? `<button class="btn" data-act="candFormReturn" data-id="${c.id}">Ask for changes</button>` : ''}
       ${st !== 'closed' ? `<button class="btn ${f ? '' : 'pri'}" data-act="candFormSend" data-id="${c.id}">${f ? 'Send the link again' : 'Ask the candidate to fill in their details'}</button>` : ''}
       ${canJoin && a.stage !== 'joined' ? '<button class="btn pri" data-act="offerJoin">Convert to employee at joining</button>' : ''}</div></div></div>`;
@@ -9490,7 +9490,7 @@ async function sendCvLinks(cands, title) {
     <div class="scroll"><table class="t"><thead><tr><th>Candidate</th><th>Sent</th><th>Link</th></tr></thead><tbody>${out.map((x) => `<tr><td><b>${esc(x.c.name)}</b><div class="fine">${esc(x.c.email || '')}</div></td>
       <td>${x.err ? `<span class="badge bad">Not sent</span><div class="fine">${esc(x.err)}</div>` : x.res.sent ? '<span class="badge ok">By e-mail</span>' : '<span class="badge warn">Send it yourself</span>'}</td>
       <td>${x.res ? `<input class="inp mono" readonly value="${esc(x.res.url)}" style="width:100%;font-size:12px">` : ''}</td></tr>`).join('')}</tbody></table></div>
-    <p class="fine">The links work for ${(out.find((x) => x.res) || { res: { days: 14 } }).res.days} days. Candidates can save their form and come back to it; a new link stops older ones.</p>
+    <p class="fine">The links work for ${(out.find((x) => x.res) || { res: { days: 14 } }).res.days} days. Each candidate creates a candidate sign-in with the link the first time and signs in to fill in the form; they can save it and come back. A new link stops older ones.</p>
     <div class="btns"><button class="btn pri" data-act="close">Done</button></div></div>`);
   route();
 }

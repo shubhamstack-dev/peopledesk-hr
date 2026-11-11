@@ -18,7 +18,7 @@ import CandidateForm from './pages/CandidateForm.jsx';
 const SESSION_ENDED = 'Your session has ended. Sign in again.';
 
 export default function App() {
-  const [phase, setPhase] = useState('loading');       // loading | setup | login | welcome | apply | app | contractor | down
+  const [phase, setPhase] = useState('loading');       // loading | setup | login | welcome | apply | candidate | app | contractor | down
   const [boot, setBoot] = useState(null);
   const [message, setMessage] = useState('');
   const [version, refresh] = useReducer((x) => x + 1, 0);
@@ -46,6 +46,8 @@ export default function App() {
       // a contractor's portal user has the contractor portal instead of the main app
       const who = await api.get('/api/session');
       if (who.kind === 'contractor') { E.clearSession(); setPhase('contractor'); return; }
+      // 2.17: a candidate has only their own form
+      if (who.kind === 'candidate') { E.clearSession(); setPhase('candidate'); return; }
       await loadState(); setPhase('app'); refresh(); if (fromSignIn || !window.location.hash) window.location.hash = '#/home';
       setTimeout(() => E.showLoginNotices(), 400);   // birthday, anniversary and shift-change greetings, once a day
     }
@@ -79,7 +81,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        // a candidate filling in their details from HR's link: no sign-in
+        // a candidate opening HR's link: they create their candidate sign-in, or sign in, on that page (2.17)
         if ((window.location.hash || '').startsWith('#/apply')) { setPhase('apply'); return; }
         const b = await api.get('/api/bootstrap');
         setBoot(b);
@@ -110,6 +112,13 @@ export default function App() {
 
   /* A new page closes any open dialog and starts at the top */
   useEffect(() => { E.closeDlg(); window.scrollTo(0, 0); }, [hash]);
+  // A candidate or access link pasted into a tab where PeopleDesk is already open changes only the address's #part,
+  // so the page does not load again: start over, as if the link were opened fresh.
+  useEffect(() => {
+    const h = hash || '';
+    if (phase === 'loading') return;
+    if ((h.startsWith('#/apply') && phase !== 'apply') || (h.startsWith('#/welcome') && phase !== 'welcome') || (phase === 'apply' && !h.startsWith('#/apply'))) window.location.reload();
+  }, [hash]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Views are run here, before the shell draws, because they set the route the menu highlights
   const resolved = useMemo(() => (phase === 'app' && E.getMe() ? E.resolvePage(hash) : null), [phase, hash, version]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -119,7 +128,12 @@ export default function App() {
     <div className="boot"><div className="card" style={{ maxWidth: 460 }}><h2>The server is not answering</h2>
       <p className="sub">{message}</p><button className="btn pri" onClick={() => window.location.reload()}>Try again</button></div></div>
   );
-  if (phase === 'apply') return <CandidateForm onDone={() => { window.history.replaceState(null, '', window.location.pathname); window.location.reload(); }} />;
+  if (phase === 'apply') return <CandidateForm mode="link" onDone={() => { window.history.replaceState(null, '', window.location.pathname); window.location.reload(); }} />;
+  if (phase === 'candidate') return (
+    <CandidateForm mode="session"
+      onSignedOut={() => { window.location.hash = ''; toSignIn(); }}
+      onSessionEnded={(m) => { window.location.hash = ''; toSignIn(m || SESSION_ENDED); }} />
+  );
   if (phase === 'welcome') return <Welcome onSignedIn={() => enter(true)} onSignIn={() => toSignIn()} />;
   if (phase === 'contractor') return (
     <ContractorPortal

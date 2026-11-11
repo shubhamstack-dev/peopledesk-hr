@@ -278,7 +278,11 @@ def login(body: LoginBody, resp: Response):
         if not emp:
             con, user = portal.find_user_by_login(conn, body.email)
             if not user:
-                raise bad
+                # 2.17: a candidate's sign-in
+                cand = _candidate_login(conn, body.email, body.password)
+                if not cand:
+                    raise bad
+                return _candidate_signed_in(resp, conn, cand)
             if not verify_password(portal.get_pw(conn, user["id"]), body.password)[0]:
                 raise bad
             if not portal.is_open(con, user):
@@ -287,9 +291,15 @@ def login(body: LoginBody, resp: Response):
             portal.note_login(conn, user["id"])
             repo.audit_add(conn, "Contractor signed in", f"{user.get('name')} ({con.get('name')})", None)
             return {"ok": True, "kind": "contractor"}
-        if not allow and workforce.register_of(emp) != "contract":
-            raise HTTPException(403, "Password sign-in is switched off. Sign in with Google.")
+        staff_off = not allow and workforce.register_of(emp) != "contract"
         ok, rehash = verify_password(get_pw_hash(conn, emp["id"]), body.password)
+        if not ok or staff_off:
+            # 2.17: a candidate whose mobile number is also an employee's signs in with their own password
+            cand = _candidate_login(conn, body.email, body.password) if "@" not in body.email else None
+            if cand:
+                return _candidate_signed_in(resp, conn, cand)
+        if staff_off:
+            raise HTTPException(403, "Password sign-in is switched off. Sign in with Google.")
         if not ok:
             raise bad
         if not active_employee(emp):
@@ -375,6 +385,24 @@ def logout(resp: Response):
     return {"ok": True}
 
 
+def _candidate_signed_in(resp: Response, conn, cand: dict):
+    why = candform.session_problem(cand, candform.get_cred(conn, cand["id"]))
+    if why:
+        raise HTTPException(403, why)
+    start_session(resp, candform.SESSION_PREFIX + cand["id"])
+    candform.note_login(conn, cand["id"])
+    repo.audit_add(conn, "Candidate signed in", cand.get("name") or "", None, module="recruitment", ref_type="candidate", ref_id=cand["id"])
+    return {"ok": True, "kind": "candidate"}
+
+
+def _candidate_login(conn, login: str, password: str):
+    """The candidate whose sign-in this is and whose password matches, or None."""
+    for cand in candform.candidates_for_login(conn, login):
+        if verify_password(candform.get_cred(conn, cand["id"])["pw"], password)[0]:
+            return cand
+    return None
+
+
 # ---------------------------------------------------------------- access links and the contractor portal
 class InviteBody(BaseModel):
     token: str
@@ -428,6 +456,13 @@ def session_kind(request: Request):
             if not portal.is_open(con, user):
                 raise HTTPException(401, "This account is not active.")
             return {"kind": "contractor"}
+        if sub.startswith(candform.SESSION_PREFIX):
+            cid = sub[len(candform.SESSION_PREFIX):]
+            cand = repo.get_records(conn, "cands", [cid]).get(cid)
+            why = candform.session_problem(cand, candform.get_cred(conn, cid))
+            if why:
+                raise HTTPException(401, why)
+            return {"kind": "candidate"}
         emp = repo.get_records(conn, "employees", [sub]).get(sub)
         if not active_employee(emp):
             raise HTTPException(401, "This account is not active.")
@@ -555,6 +590,12 @@ def candidate_form_link(body: CandLinkBody, request: Request, me=Depends(current
         cand = repo.get_records(conn, "cands", [body.candId]).get(body.candId)
         if not cand or not ctx.is_hr_for(cand.get("companyId")):
             raise HTTPException(403, "Only HR for this candidate's company can send the form.")
+        # 2.17: the form is for candidates; an employee's details are kept on their employee record
+        if candform.is_employee_login(conn, cand):
+            raise HTTPException(400, f"{cand.get('email')} is an employee's e-mail address. The candidate form is filled in by "
+                                     "candidates, not employees: give the candidate's own e-mail address.")
+        if not candform.login_name(cand):
+            raise HTTPException(400, "Add the candidate's e-mail address (or mobile number) first: they sign in with it to fill in the form.")
         rec, nonce = _cand_problem(candform.start, cand, me["id"])
         repo.upsert(conn, "cands", [rec], me["id"])
         repo.audit_add(conn, "Application form sent to a candidate", cand.get("name") or "", me["id"], module="recruitment", ref_type="candidate", ref_id=cand["id"])
@@ -575,20 +616,99 @@ def candidate_form_link(body: CandLinkBody, request: Request, me=Depends(current
     return {"url": url, "sent": sent, "to": to if sent else "", "days": candform.LINK_DAYS, "form": form}
 
 
+class ApplyAccountBody(BaseModel):
+    token: str
+    password: str = ""
+
+
+class CandSaveBody(BaseModel):
+    data: dict = Field(default_factory=dict)
+    cv: dict | None = None
+    submit: bool = False
+
+
+def _session_sub(request: Request) -> str:
+    try:
+        return session_subject(request)
+    except HTTPException:
+        return ""
+
+
 @app.post("/api/apply/open", dependencies=[Depends(require_csrf)])
-def apply_open(body: CandFormBody):
+def apply_open(body: CandFormBody, request: Request):
+    """2.17: the link page, before sign-in. Says whose link it is and whether to create a sign-in or sign in; shows
+    nothing the candidate entered. Whoever is signed in on this browser is reported, so the page can stop an employee."""
     with repo.engine.connect() as conn:
-        cand = _cand_problem(candform.open_candidate, conn, body.token)
-        return candform.public_view(conn, cand)
+        cand, nonce = _cand_problem(candform.read_link, conn, body.token)
+        out = candform.link_view(conn, cand, nonce, candform.get_cred(conn, cand["id"]))
+    sub = _session_sub(request)
+    out["signedIn"] = ("this" if sub == candform.SESSION_PREFIX + cand["id"] else "candidate" if sub.startswith(candform.SESSION_PREFIX)
+                       else "contractor" if sub.startswith(portal.PORTAL_PREFIX) else "employee" if sub else "")
+    return out
 
 
-@app.post("/api/apply/save", dependencies=[Depends(require_csrf)])
-def apply_save(body: CandFormBody):
+@app.post("/api/apply/account", dependencies=[Depends(require_csrf)])
+def apply_account(body: ApplyAccountBody, resp: Response):
+    """2.17: the candidate creates their sign-in with HR's link (or, with a newer link, sets a new password),
+    and is signed in."""
+    if not (candform.PW_MIN <= len(body.password) <= candform.PW_MAX):
+        raise HTTPException(400, f"Use a password of at least {candform.PW_MIN} characters.")
+    time.sleep(0.2)
+    with repo.engine.begin() as conn:
+        cand, nonce = _cand_problem(candform.read_link, conn, body.token)
+        cred = candform.get_cred(conn, cand["id"])
+        if cred.get("setWith") == nonce:
+            raise HTTPException(400, "A password was already set with this link. Sign in with it, or ask HR for a new link.")
+        why = candform.account_problem(conn, cand)
+        if why:
+            raise HTTPException(400, why)
+        candform.set_cred(conn, cand["id"], hash_password(body.password), nonce)
+        candform.note_account(conn, cand, first=not cred.get("pw"))
+        candform.note_login(conn, cand["id"])
+        repo.audit_add(conn, "Candidate created their sign-in" if not cred.get("pw") else "Candidate set a new password",
+                       cand.get("name") or "", None, module="recruitment", ref_type="candidate", ref_id=cand["id"])
+    start_session(resp, candform.SESSION_PREFIX + cand["id"])
+    return {"ok": True, "kind": "candidate", "login": candform.login_name(cand)}
+
+
+def current_candidate(request: Request, _=Depends(require_csrf)) -> dict:
+    """2.17: the signed-in candidate. Employees and contractors' portal users are refused: the form is the candidate's."""
+    sub = session_subject(request)
+    if not sub.startswith(candform.SESSION_PREFIX):
+        raise HTTPException(403, "The candidate form is filled in by the candidate, signed in as a candidate.")
+    cid = sub[len(candform.SESSION_PREFIX):]
+    with repo.engine.connect() as conn:
+        cand = repo.get_records(conn, "cands", [cid]).get(cid)
+        why = candform.session_problem(cand, candform.get_cred(conn, cid))
+    if why:
+        raise HTTPException(401, why)
+    return cand
+
+
+@app.get("/api/candidate/form")
+def candidate_form(cand=Depends(current_candidate)):
+    with repo.engine.connect() as conn:
+        return {**candform.public_view(conn, cand), "login": candform.login_name(cand)}
+
+
+@app.post("/api/candidate/form")
+def candidate_form_save(body: CandSaveBody, cand=Depends(current_candidate)):
     time.sleep(0.1)
     with repo.engine.begin() as conn:
-        cand = _cand_problem(candform.open_candidate, conn, body.token)
         rec = _cand_problem(candform.save, conn, cand, body.data, body.cv, body.submit)
-        return candform.public_view(conn, rec)
+        return {**candform.public_view(conn, rec), "login": candform.login_name(rec)}
+
+
+@app.post("/api/candidate/password")
+def candidate_password(body: PortalPasswordBody, cand=Depends(current_candidate)):
+    time.sleep(0.2)
+    with repo.engine.begin() as conn:
+        cred = candform.get_cred(conn, cand["id"])
+        if not verify_password(cred["pw"], body.current)[0]:
+            raise HTTPException(400, "The current password is not right.")
+        candform.set_cred(conn, cand["id"], hash_password(body.new), cred.get("setWith") or "")
+        repo.audit_add(conn, "Candidate changed their password", cand.get("name") or "", None, module="recruitment", ref_type="candidate", ref_id=cand["id"])
+    return {"ok": True}
 
 
 def current_portal_user(request: Request, _=Depends(require_csrf)):

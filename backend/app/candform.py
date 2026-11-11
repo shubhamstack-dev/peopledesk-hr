@@ -19,6 +19,15 @@ previous jobs carry main and secondary responsibilities, and the candidate rates
 requisitions they are in need. When the form is sent, their levels are kept as `selfLevels` and, on requisitions
 that shortlist automatically, a sourced candidate who matches well enough moves to Screening.
 
+2.17: the candidate signs in. HR's link no longer opens the form by itself: on the first visit the candidate creates
+a candidate sign-in (their e-mail address or mobile number, and a password of their own), and after that signs in,
+from the link or from the sign-in page, to fill in, save and send the form. The form is read and written only with a
+candidate's session (session subject "cd:" and the candidate id), so it is filled by the candidate: not by someone
+who merely has the link, and not by an employee (an employee's session is refused, and a candidate sign-in cannot be
+made for an active employee's e-mail address). Candidates' passwords are kept in `candidate_credentials`, apart from
+the candidate record. A link sets a password once; a newer link from HR lets the candidate set a new one, which is
+how a forgotten password is reset.
+
 2.14: the form also asks for awards, and starts from the employment history, education and awards HR recorded on the
 candidate. When it is sent, those lists on the candidate become what the candidate sent (HR's links to the standard
 lists are kept on the rows the candidate did not remove). The e-mail names the jobs the candidate is invited for.
@@ -30,6 +39,7 @@ import uuid
 from datetime import date
 
 import jwt
+from sqlalchemy import text
 
 from . import repo
 from .config import JWT_SECRET
@@ -84,6 +94,74 @@ class Problem(Exception):
     pass
 
 
+# ---------------------------------------------------------------- 2.17: the candidate's sign-in
+SESSION_PREFIX = "cd:"             # session subject of a candidate
+PW_MIN, PW_MAX = 10, 200
+CRED_DDL = """CREATE TABLE IF NOT EXISTS candidate_credentials (
+  cand_id     VARCHAR(64)  NOT NULL PRIMARY KEY,
+  pw_hash     VARCHAR(100) NULL,
+  set_with    VARCHAR(32)  NULL,
+  last_login  BIGINT       NULL,
+  updated_at  TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"""
+
+
+def _phone10(v) -> str:
+    d = re.sub(r"\D", "", str(v or ""))
+    return d[-10:] if len(d) >= 10 else ""
+
+
+def get_cred(conn, cand_id: str) -> dict:
+    r = conn.execute(text("SELECT pw_hash, set_with, last_login FROM candidate_credentials WHERE cand_id=:i"), {"i": cand_id}).first()
+    return {"pw": r[0], "setWith": r[1], "lastLogin": r[2]} if r else {"pw": None, "setWith": None, "lastLogin": None}
+
+
+def set_cred(conn, cand_id: str, pw_hash: str, nonce: str):
+    conn.execute(text("INSERT INTO candidate_credentials (cand_id, pw_hash, set_with) VALUES (:i, :h, :n) "
+                      "ON DUPLICATE KEY UPDATE pw_hash=VALUES(pw_hash), set_with=VALUES(set_with)"),
+                 {"i": cand_id, "h": pw_hash, "n": nonce})
+
+
+def note_login(conn, cand_id: str):
+    conn.execute(text("UPDATE candidate_credentials SET last_login=:t WHERE cand_id=:i"), {"t": int(time.time() * 1000), "i": cand_id})
+
+
+def login_name(cand: dict) -> str:
+    """What the candidate signs in with: their e-mail address, or their mobile number if HR has no e-mail."""
+    return (cand.get("email") or "").strip() or (cand.get("phone") or "").strip()
+
+
+def candidates_for_login(conn, login: str) -> list:
+    """The candidates with a sign-in whose e-mail address (or mobile number) this is, newest first. The same person
+    may be a candidate in more than one company of the group; each has its own record and password."""
+    login = (login or "").strip()
+    with_pw = [r[0] for r in conn.execute(text("SELECT cand_id FROM candidate_credentials WHERE pw_hash IS NOT NULL"))]
+    if not with_pw or not login:
+        return []
+    if "@" in login:
+        q = text("SELECT data FROM candidates WHERE email=:e AND id IN :ids ORDER BY updated_at DESC").bindparams(repo._expanding("ids"))
+        return [repo.loads(d) for d in conn.execute(q, {"e": login.lower(), "ids": with_pw}).scalars()]
+    ph = _phone10(login)
+    if not ph:
+        return []
+    out = []
+    for cid, c in repo.get_records(conn, "cands", with_pw).items():
+        if not (c.get("email") or "").strip() and _phone10(c.get("phone")) == ph:
+            out.append(c)
+    return out
+
+
+def session_problem(cand: dict | None, cred: dict) -> str:
+    """Why a candidate may not be signed in, or ''."""
+    if not cand or not cred.get("pw"):
+        return "This account is not active. Ask HR for a new link."
+    if ((cand.get("form") or {}).get("status")) == "closed":
+        return "You have joined the company, so your details are on your employee record now. Sign in as an employee."
+    if not (cand.get("form") or {}).get("nonce"):
+        return "HR has not asked you to fill in your details yet."
+    return ""
+
+
 # ---------------------------------------------------------------- the link
 def make_link(cand_id: str, nonce: str) -> str:
     now = int(time.time())
@@ -100,7 +178,9 @@ def link_mail(name: str, company: str, url: str, jobs: list | None = None) -> tu
     subject = f"{jobs[0]} at {company}: your details" if len(jobs) == 1 else f"Your details for {company}"
     body = (f"Dear {name},\n\nThank you for your interest in {company}{what}. Please fill in your details, your experience and "
             f"education{' and your level in the skills the job needs' if jobs else ''}, and attach your CV, using this link "
-            f"(it works for {LINK_DAYS} days):\n{url}\n\nNo CV yet? You can fill in the form now and attach it later. "
+            f"(it works for {LINK_DAYS} days):\n{url}\n\nThe first time, the link asks you to create a candidate sign-in with a "
+            f"password of your own. Afterwards, sign in with your e-mail address and that password, from this link or from the "
+            f"sign-in page (choose \"Candidate? Sign in\").\n\nNo CV yet? You can fill in the form now and attach it later. "
             f"You can save the form and come back to it before you send it.\n")
     return subject, body
 
@@ -118,7 +198,11 @@ def job_titles(conn, cand: dict) -> list:
 
 
 def open_candidate(conn, token: str) -> dict:
-    """The candidate the link is for, while the link and the form are valid."""
+    return read_link(conn, token)[0]
+
+
+def read_link(conn, token: str) -> tuple[dict, str]:
+    """(candidate, nonce) for a link, while the link is valid: the latest one HR sent, within 14 days."""
     try:
         c = jwt.decode(token or "", JWT_SECRET, algorithms=["HS256"])
     except jwt.ExpiredSignatureError:
@@ -131,7 +215,53 @@ def open_candidate(conn, token: str) -> dict:
     form = (cand or {}).get("form") or {}
     if not cand or form.get("nonce") != c.get("v"):
         raise Problem("This link is no longer valid. Ask HR for a new one.")
-    return cand
+    return cand, c["v"]
+
+
+def link_view(conn, cand: dict, nonce: str, cred: dict) -> dict:
+    """What the link page shows before sign-in: whose link it is and whether to create a sign-in or sign in.
+    Nothing the candidate entered is shown here."""
+    co = repo.get_records(conn, "companies", [cand.get("companyId")]).get(cand.get("companyId")) or {}
+    form = cand.get("form") or {}
+    return {"company": co.get("legalName") or co.get("name") or "", "name": cand.get("name") or "",
+            "login": login_name(cand), "jobs": job_titles(conn, cand), "hasAccount": bool(cred.get("pw")),
+            # a link sets a password once; HR's newer link lets the candidate set a new one
+            "canSetPassword": cred.get("setWith") != nonce,
+            "closed": form.get("status") == "closed"}
+
+
+def account_problem(conn, cand: dict) -> str:
+    """Why a candidate sign-in may not be made for this candidate, or ''."""
+    if ((cand.get("form") or {}).get("status")) == "closed":
+        return "You have joined the company, so your details are on your employee record now. Sign in as an employee."
+    who = login_name(cand)
+    if not who:
+        return "HR has no e-mail address or mobile number for you. Ask HR to add one and send the link again."
+    if is_employee_login(conn, cand):
+        return ("This e-mail address belongs to an employee of the company. The candidate form is filled in by candidates, "
+                "not employees. If you are an employee, speak to HR.")
+    return ""
+
+
+def is_employee_login(conn, cand: dict) -> bool:
+    """Whether the candidate's e-mail address is an active employee's sign-in."""
+    email = (cand.get("email") or "").strip().lower()
+    if not email:
+        return False
+    return bool(conn.execute(text("SELECT 1 FROM employees WHERE email=:e AND (status IS NULL OR status<>'exited') LIMIT 1"),
+                             {"e": email}).scalar())
+
+
+def note_account(conn, cand: dict, first: bool) -> dict:
+    """Records on the candidate, for HR, that they made (or reset) their sign-in."""
+    now = int(time.time() * 1000)
+    form = dict(cand.get("form") or {})
+    form["accountAt"] = form.get("accountAt") or now
+    form["log"] = [*(form.get("log") or [])[-30:], {"at": now, "what": "Candidate created their sign-in" if first else "Candidate set a new password"}]
+    rec = {**cand, "form": form}
+    repo.upsert(conn, "cands", [rec], None)
+    repo.bump_rev(conn)
+    return rec
 
 
 def can_edit(cand: dict) -> bool:
@@ -534,7 +664,7 @@ def start(cand: dict, by: str) -> tuple[dict, str]:
     return {**cand, "form": form}, nonce
 
 
-KEEP = ("data", "savedAt", "submittedAt", "nonce", "sentAt", "sentBy")
+KEEP = ("data", "savedAt", "submittedAt", "nonce", "sentAt", "sentBy", "accountAt")
 
 
 def merge_from_app(new: dict, old: dict | None, me: str) -> dict:

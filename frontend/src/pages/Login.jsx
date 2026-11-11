@@ -12,13 +12,14 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
   const [busy, setBusy] = useState(false);
   const [msBusy, setMsBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);       // passwords off for staff: contract workers and contractors still use one
+  const [cand, setCand] = useState(false);           // 2.17: a candidate signing in to fill in their form
   const gRef = useRef(null);
 
   useEffect(() => { setErr(message || ''); }, [message]);
 
   // Google Identity Services: the browser gets an ID token, the server verifies it
   useEffect(() => {
-    if (!googleOK) return;
+    if (!googleOK || cand) return;
     E.loadGsi().then(() => {
       window.google.accounts.id.initialize({
         client_id: s.googleClientId, auto_select: false, ux_mode: 'popup',
@@ -29,7 +30,7 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
       });
       if (gRef.current) window.google.accounts.id.renderButton(gRef.current, { theme: 'outline', size: 'large', width: 400, text: 'signin_with' });
     }).catch((e) => setErr(e.message));
-  }, [googleOK, s.googleClientId, onSignedIn]);
+  }, [googleOK, s.googleClientId, onSignedIn, cand]);   // cand: the button is drawn again on returning from the candidate sign-in
 
   const run = async (fn) => {
     setBusy(true); setErr('');
@@ -46,7 +47,7 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
   };
   const submit = (e) => {
     e.preventDefault();
-    if (!email.trim() || !pw) { setErr('Enter your e-mail or mobile number, and your password.'); return; }
+    if (!email.trim() || !pw) { setErr(cand ? 'Enter the e-mail address (or mobile number) HR has for you, and your password.' : 'Enter your e-mail or mobile number, and your password.'); return; }
     run(() => api.post('/api/auth/login', { email: email.trim(), password: pw }));
   };
 
@@ -66,6 +67,18 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
         <p className="fine" style={{ color: '#6F8C83' }}>Personnel, leave, time and shifts, performance and payroll</p>
       </div>
 
+      {cand ? (
+        <form onSubmit={submit} noValidate>
+          <h2>Candidate sign-in</h2>
+          <p className="sub" style={{ margin: 0 }}>For people HR has asked to fill in their details. Sign in to open your form: fill it in, save it, or send it.</p>
+          <label className="field">E-mail address or mobile number<input className="inp" type="text" inputMode="email" autoComplete="username" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /><small>The one HR has for you, on the link HR sent.</small></label>
+          <label className="field">Password<input className="inp" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} /></label>
+          <button className="btn pri lg" disabled={busy}>{busy ? 'Signing in…' : 'Sign in as a candidate'}</button>
+          <p className="fine" style={{ margin: 0 }}>First time? Open the link HR sent you to create your candidate sign-in. Forgot your password? Ask HR to send the link again.</p>
+          <p className="err" role="alert">{err}</p>
+          <button type="button" className="btn ghost" onClick={() => { setCand(false); setErr(''); }}>Back: employee sign-in</button>
+        </form>
+      ) : (
       <form onSubmit={submit} noValidate>
         <h2>Sign in</h2>
         {googleOK ? <div ref={gRef} /> : s.googleClientId ? <p className="note warn">Google sign-in works when this page is opened from a web address (https).</p> : null}
@@ -89,9 +102,12 @@ export default function Login({ boot, message, onSignedIn, onRegister }) {
           </>
         )}
         <p className="err" role="alert">{err}</p>
+        <div className="or">applying for a job?</div>
+        <button type="button" className="btn lg" onClick={() => { setCand(true); setErr(''); setPw(''); }}>Candidate? Sign in to fill in your details</button>
         <div className="or">new here?</div>
         <button type="button" className="btn lg" onClick={onRegister}>Register your company</button>
       </form>
+      )}
     </div>
   );
 }
