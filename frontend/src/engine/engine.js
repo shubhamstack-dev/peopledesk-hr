@@ -9415,7 +9415,6 @@ const CF_SECTIONS = [
   ['Personal', [['firstName', 'First name'], ['lastName', 'Last name'], ['gender', 'Gender', (v) => ({ M: 'Male', F: 'Female', O: 'Other' }[v] || v)], ['dob', 'Date of birth', dmy], ['marital', 'Marital status'], ['fatherName', 'Father’s or husband’s name'], ['blood', 'Blood group'], ['nationality', 'Nationality'],
     ['phone', 'Mobile'], ['altPhone', 'Other phone'], ['languages', 'Languages'], ['linkedin', 'LinkedIn']]],
   ['Address and emergency contact', [['address', 'Address'], ['addrCity', 'City'], ['addrState', 'State'], ['addrPin', 'PIN'], ['addrCountry', 'Country'], ['permAddress', 'Permanent address'], ['emergencyName', 'Emergency contact'], ['emergencyRelation', 'Relationship'], ['emergencyPhone', 'Phone']]],
-  ['Identity and bank', [['pan', 'PAN'], ['aadhaar', 'Aadhaar', (v) => (v ? 'XXXX XXXX ' + String(v).slice(-4) : '')], ['uan', 'UAN'], ['bankName', 'Bank'], ['bankAcc', 'Account number'], ['ifsc', 'IFSC']]],
   ['Current job', [['currentCompany', 'Employer'], ['currentTitle', 'Role'], ['expYears', 'Experience (years)'], ['currentCtc', 'Current CTC', inr0], ['expectedCtc', 'Expected CTC', inr0], ['noticeDays', 'Notice (days)'], ['skills', 'Skills'], ['about', 'About themselves']]],
 ];
 const CF_LISTS = [['education', 'Education', ['qualification', 'specialisation', 'institution', 'university', 'toYear', 'score']], ['prevJobs', 'Previous jobs', ['employer', 'designation', 'from', 'to', 'lastCtc', 'reason', 'mainResp', 'secResp']],
@@ -9561,8 +9560,8 @@ ACT.slGo = async () => {
 const CANDFORM_FIELDS = [['firstName', 'First name', 1], ['lastName', 'Last name'], ['gender', 'Gender', 1, 'select'], ['dob', 'Date of birth', 1, 'date'], ['marital', 'Marital status', 0, 'select'],
   ['fatherName', 'Father’s or husband’s name'], ['blood', 'Blood group', 0, 'select'], ['nationality', 'Nationality'], ['phone', 'Mobile', 1], ['altPhone', 'Other phone'], ['languages', 'Languages you speak'],
   ['linkedin', 'LinkedIn profile'], ['address', 'Current address', 1, 'textarea'], ['addrCity', 'City', 1], ['addrState', 'State or union territory', 0, 'select'], ['addrPin', 'PIN code'], ['permAddress', 'Permanent address', 0, 'textarea'],
-  ['emergencyName', 'Emergency contact: name', 1], ['emergencyRelation', 'Emergency contact: relationship'], ['emergencyPhone', 'Emergency contact: phone', 1], ['pan', 'PAN', 0, 'fixed'], ['aadhaar', 'Aadhaar number', 0, 'fixed'],
-  ['uan', 'UAN (PF)', 0, 'fixed'], ['bankName', 'Bank', 0, 'select'], ['bankAcc', 'Bank account number'], ['ifsc', 'IFSC', 0, 'fixed'], ['currentCompany', 'Current or last employer'], ['currentTitle', 'Current role'],
+  ['emergencyName', 'Emergency contact: name', 1], ['emergencyRelation', 'Emergency contact: relationship'], ['emergencyPhone', 'Emergency contact: phone', 1],
+  ['currentCompany', 'Current or last employer'], ['currentTitle', 'Current role'],
   ['expYears', 'Total experience (years)', 0, 'number'], ['currentCtc', 'Current annual CTC', 0, 'number'], ['expectedCtc', 'Expected annual CTC', 0, 'number'], ['noticeDays', 'Notice period (days)', 0, 'number'],
   ['skills', 'Other skills'], ['about', 'Anything else', 0, 'textarea']].map(([k, label, req, type]) => ({ k, label, req: !!req, type: type === 'fixed' ? 'select' : type }));
 function formRegistry() {

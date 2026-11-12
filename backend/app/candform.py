@@ -64,7 +64,7 @@ FIELDS = {
     "address": 400, "addrCity": 80, "addrState": 80, "addrPin": 12, "addrCountry": 60,
     "permAddress": 400,
     "emergencyName": S, "emergencyRelation": 40, "emergencyPhone": 20,
-    "pan": 10, "aadhaar": 14, "uan": 12, "bankName": 80, "bankAcc": 24, "ifsc": 11,
+    # PAN, Aadhaar, UAN and bank details are not asked of candidates: they are entered after joining
     "currentCompany": S, "currentTitle": S, "expYears": "num", "currentCtc": "num", "expectedCtc": "num", "noticeDays": "num",
     "location": 80, "skills": 600, "languages": 200, "linkedin": 200, "about": L, "declaration": "bool",
 }
@@ -363,10 +363,6 @@ def clean(data: dict) -> dict:
     for j in out["prevJobs"]:
         j["secResp"] = [x for x in j["secResp"] if x not in j["mainResp"]]     # main wins if both
     out["skillLevels"] = _levels(data.get("skillLevels"))
-    out["pan"] = out["pan"].upper().replace(" ", "")
-    out["ifsc"] = out["ifsc"].upper().replace(" ", "")
-    out["aadhaar"] = re.sub(r"\D", "", out["aadhaar"])
-    out["uan"] = re.sub(r"\D", "", out["uan"])
     return out
 
 
@@ -494,14 +490,6 @@ def auto_shortlist(conn, cand: dict) -> int:
 def check(d: dict, submit: bool):
     """Formats are checked on every save; what must be there, when the form is sent."""
     today = date.today().isoformat()
-    if d["pan"] and not PAN.match(d["pan"]):
-        raise Problem("The PAN has 10 characters: 5 letters, 4 digits and a letter, for example ABCDE1234F.")
-    if d["aadhaar"] and len(d["aadhaar"]) != 12:
-        raise Problem("The Aadhaar number has 12 digits.")
-    if d["uan"] and len(d["uan"]) != 12:
-        raise Problem("The UAN has 12 digits. Leave it empty if you have never had one.")
-    if d["ifsc"] and not IFSC.match(d["ifsc"]):
-        raise Problem("The IFSC has 11 characters, the fifth a zero, for example HDFC0001234.")
     if d["addrCountry"] in ("", "India") and d["addrPin"] and not re.match(r"^[1-9]\d{5}$", d["addrPin"]):
         raise Problem("The PIN code has 6 digits and does not start with 0.")
     for k, label in (("phone", "your mobile number"), ("altPhone", "the other phone number"), ("emergencyPhone", "the emergency contact's phone")):
