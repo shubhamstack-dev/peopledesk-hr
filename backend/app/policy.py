@@ -26,13 +26,14 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import text
 
-from . import candform, comp, perf, repo, training, workforce
+from . import candform, comp, perf, repo, training, workflow, workforce
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
            "payComps", "payInputs", "payRuns", "cycles", "posts", "shiftPatterns",
            "expenseCats", "perfTemplates", "onboardTemplates", "docTypes", "docTemplates", "compCycles", "contractors",
-           "goalLib", "reimbRuns"}
+           "goalLib", "reimbRuns",
+           "approverGroups", "emailTemplates", "reportDefs", "reportSchedules"}
 # Performance meetings and succession plans follow their own rules (perf.py)
 PERF = {"perfMeetings", "succession"}
 # Compensation planning: budgets and recommendations follow their own rules (comp.py)
@@ -407,7 +408,7 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         except perf.Problem as e:
             raise Rejected(str(e)) from None
     if coll in PARTICIPANT:
-        return _participant(coll, new, old, ctx)
+        return _participant(conn, coll, new, old, ctx)
     if coll == "masterItems":
         if co_new != ctx.me.get("companyId"):
             raise Rejected("belongs to another company")
@@ -539,7 +540,7 @@ def _step_decision(new: dict, old: dict, ctx: Ctx) -> dict:
     return new
 
 
-def _participant(coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
+def _participant(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
     """Approval requests, expense claims, onboarding and assets for people who are not HR:
     only those taking part may change them, an approval step can only be decided by its approver,
     nobody approves their own request, and only HR finishes (applies, pays, completes) one."""
@@ -547,6 +548,11 @@ def _participant(coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
     if (new.get("companyId") or own_co) != own_co:
         raise Rejected("belongs to another company")
     if not old:
+        if coll in ("requests", "expenseClaims"):
+            # who approves this, and in what order, is resolved here from the company's own
+            # approval-workflow settings -- never trusted from the client (workflow.py)
+            steps, participants = workflow.build_steps_for(conn, ctx.emps, coll, new, ctx.id)
+            new = {**new, "steps": steps, "participants": participants}
         if ctx.id not in (new.get("participants") or []):
             raise Rejected("you are not taking part in this")
         subject = new.get("empId")

@@ -97,6 +97,15 @@ COLLS = [
     # v2.15: reimbursement runs. Approved expense claims paid together on the company's reimbursement cycle, with the
     # next salary or as a separate bank transfer; created by Finance or automatically on the run day (see reimb.py)
     Coll("reimbRuns", "reimbursement_runs", {"run_no": ("no", "str"), "status": ("status", "str"), "run_date": ("runDate", "date")}),
+    # Admin: approval workflows, e-mail templates, reporting and the report scheduler
+    # Named, reusable sets of employees a flow step can approve through (see workflow.py)
+    Coll("approverGroups", "approver_groups", {"name": ("name", "str")}),
+    # Admin-editable subject/body for the e-mails the app sends, keyed by a stable mail key (see email_templates.py)
+    Coll("emailTemplates", "email_templates", {"mailKey": ("mailKey", "str")}),
+    # Saved report definitions: base collection, filters and columns (see reports.py)
+    Coll("reportDefs", "report_defs", {"name": ("name", "str")}),
+    # A saved report, its recipients and how often to e-mail it (see reports.py)
+    Coll("reportSchedules", "report_schedules", {"reportDefId": ("reportDefId", "str")}),
 ]
 BY_NAME = {c.name: c for c in COLLS}
 

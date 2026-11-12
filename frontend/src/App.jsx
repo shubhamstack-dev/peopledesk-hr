@@ -11,6 +11,8 @@ import Home from './pages/Home.jsx';
 import Approvals from './pages/Approvals.jsx';
 import Settings from './pages/Settings.jsx';
 import DocTemplates from './pages/DocTemplates.jsx';
+import EmailTemplates from './pages/EmailTemplates.jsx';
+import Reports from './pages/Reports.jsx';
 import ContractorPortal from './pages/ContractorPortal.jsx';
 import Welcome, { welcomeToken } from './pages/Welcome.jsx';
 import CandidateForm from './pages/CandidateForm.jsx';
@@ -148,6 +150,8 @@ export default function App() {
   else if (resolved.page === 'inbox') page = <Approvals />;
   else if (resolved.page === 'settings') page = <Settings onSignedOut={signOut} onWiped={() => { E.sync.stop(); E.clearSession(); toSignIn(); }} />;
   else if (resolved.page === 'doctemplates') page = <DocTemplates key={hash} />;
+  else if (resolved.page === 'emailtemplates') page = <EmailTemplates key={hash} />;
+  else if (resolved.page === 'reports') page = <Reports key={hash} />;
   else page = <PageHost view={resolved.view} />;
 
   return (

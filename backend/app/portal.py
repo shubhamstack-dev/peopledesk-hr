@@ -162,14 +162,6 @@ def invite_url(base: str, token: str) -> str:
     return f"{base.rstrip('/')}/#/welcome?t={token}"
 
 
-def invite_mail(name: str, who: str, company: str, url: str) -> tuple[str, str]:
-    subject = f"Your access to PeopleDesk, {company}"
-    body = (f"Dear {name},\n\n{who} has given you access to PeopleDesk for {company}.\n\n"
-            f"Open this link to set your password (it works once, for {INVITE_DAYS} days):\n{url}\n\n"
-            "Afterwards, sign in with your e-mail address or mobile number and that password.\n")
-    return subject, body
-
-
 # ---------------------------------------------------------------- HR saving a contractor
 def check_contractor(conn, new: dict, old: dict | None) -> dict:
     """Portal users on a contractor HR saves: names and e-mails tidied, and each e-mail or mobile number belongs to

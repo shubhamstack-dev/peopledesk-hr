@@ -10,3 +10,4 @@ requests>=2.31
 python-dotenv>=1.0
 python-multipart>=0.0.9
 docxtpl>=0.18
+openpyxl>=3.1

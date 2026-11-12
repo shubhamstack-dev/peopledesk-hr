@@ -904,6 +904,66 @@ CREATE TABLE IF NOT EXISTS reimbursement_runs (
   KEY ix_run_date (run_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- state.approverGroups
+CREATE TABLE IF NOT EXISTS approver_groups (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  name       VARCHAR(255) NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- state.emailTemplates
+CREATE TABLE IF NOT EXISTS email_templates (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  mailKey    VARCHAR(255) NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_mailKey (mailKey)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- state.reportDefs
+CREATE TABLE IF NOT EXISTS report_defs (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  name       VARCHAR(255) NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- state.reportSchedules
+CREATE TABLE IF NOT EXISTS report_schedules (
+  id         VARCHAR(64)  NOT NULL PRIMARY KEY,
+  company_id VARCHAR(64)  NULL,
+  emp_id     VARCHAR(64)  NULL,
+  reportDefId VARCHAR(255) NULL,
+  data       JSON         NOT NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  updated_by VARCHAR(64)  NULL,
+  KEY ix_company (company_id),
+  KEY ix_emp (emp_id),
+  KEY ix_reportDefId (reportDefId)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Shift roster: one row per employee per day (shift id, or WO for a rostered weekly off)
 CREATE TABLE IF NOT EXISTS roster (
   emp_id     VARCHAR(64)  NOT NULL,

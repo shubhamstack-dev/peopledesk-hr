@@ -30,7 +30,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import text
 
-from . import repo
+from . import email_templates, repo
 
 log = logging.getLogger("peopledesk")
 COMP = {"code": "1900", "name": "Expense reimbursement", "kind": "earning", "calc": "input", "value": 0, "order": 7,
@@ -219,10 +219,10 @@ def mails(conn, run: dict, co: dict) -> list:
         total = sum(x["amount"] for x in mine)
         how = (f"with your salary for {datetime.strptime(run['payMonth'], '%Y-%m').strftime('%B %Y')}" if run["mode"] == "payroll"
                else f"by bank transfer to your salary account, from {run['runDate']}")
-        body = (f"Dear {e.get('firstName') or ''},\n\nYour approved expense claims are being reimbursed {how}:\n\n"
-                + "\n".join(f"  {x['claimNo']}  {x['title']}  ₹{x['amount']:,.0f}" for x in mine)
-                + f"\n\nTotal ₹{total:,.0f}. Reimbursement run {run['no']}, {co.get('name') or ''}.\n")
-        out.append((to, f"Expense reimbursement ₹{total:,.0f} ({run['no']})", body))
+        subject, body = email_templates.render(conn, co.get("id"), "reimb.paid", {
+            "firstName": e.get("firstName") or "", "how": how, "total": f"{total:,.0f}", "runNo": run["no"], "companyName": co.get("name") or "",
+            "claims": [{"no": x["claimNo"], "title": x["title"], "amount": f"{x['amount']:,.0f}"} for x in mine]})
+        out.append((to, subject, body))
     return out
 
 

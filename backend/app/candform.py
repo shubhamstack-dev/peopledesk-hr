@@ -172,17 +172,6 @@ def link_url(base: str, token: str) -> str:
     return f"{base.rstrip('/')}/#/apply?t={token}"
 
 
-def link_mail(name: str, company: str, url: str, jobs: list | None = None) -> tuple[str, str]:
-    jobs = [j for j in (jobs or []) if j]
-    what = f" for the position of {', '.join(jobs[:3])}" if jobs else ""
-    subject = f"{jobs[0]} at {company}: your details" if len(jobs) == 1 else f"Your details for {company}"
-    body = (f"Dear {name},\n\nThank you for your interest in {company}{what}. Please fill in your details, your experience and "
-            f"education{' and your level in the skills the job needs' if jobs else ''}, and attach your CV, using this link "
-            f"(it works for {LINK_DAYS} days):\n{url}\n\nThe first time, the link asks you to create a candidate sign-in with a "
-            f"password of your own. Afterwards, sign in with your e-mail address and that password, from this link or from the "
-            f"sign-in page (choose \"Candidate? Sign in\").\n\nNo CV yet? You can fill in the form now and attach it later. "
-            f"You can save the form and come back to it before you send it.\n")
-    return subject, body
 
 
 def job_titles(conn, cand: dict) -> list:

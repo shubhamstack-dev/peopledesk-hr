@@ -49,7 +49,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import candform, doctemplates, mailer, migrate, perf, policy, portal, reimb, repo, training, workforce
+from . import candform, doctemplates, email_templates, mailer, migrate, perf, policy, portal, reimb, reports, repo, training, workforce
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
@@ -67,6 +67,8 @@ def _migrate():
     # 2.15: automatic reimbursement runs on each company's cycle
     # mail set up later in the app is used too: the reminder sends only while mail is configured
     reimb.start(repo.engine, send=lambda *a, **k: mailer.send(*a, **k) if mailer.configured() else None)
+    # Admin: e-mail a saved report on its schedule
+    reports.start(repo.engine, send=lambda *a, **k: mailer.send(*a, **k) if mailer.configured() else None)
 if CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                        allow_methods=["GET", "POST"], allow_headers=["content-type", "x-peopledesk"])
@@ -517,10 +519,12 @@ def invite_accept(body: InviteBody, resp: Response):
         return {"ok": True, "kind": "contractor"}
 
 
-def _send_link(to: str, name: str, who: str, company: str, url: str, want: bool) -> bool:
+def _send_link(co_id, to: str, name: str, who: str, company: str, url: str, want: bool) -> bool:
     if not (want and to and "@" in to and mailer.configured()):
         return False
-    subject, text_ = portal.invite_mail(name, who, company, url)
+    with repo.engine.connect() as conn:
+        subject, text_ = email_templates.render(conn, co_id, "access.invite",
+                                                 {"name": name, "who": who, "company": company, "url": url, "inviteDays": portal.INVITE_DAYS})
     try:
         mailer.send([to], subject, text_)
         return True
@@ -558,7 +562,7 @@ def access_link(body: AccessLinkBody, request: Request, me=Depends(current_user)
         co = repo.get_records(conn, "companies", [co_id]).get(co_id) or {}
         url = portal.invite_url(_base_url(request), token)
         repo.audit_add(conn, "Access link created", name, me["id"])
-    sent = _send_link(to, name, f"{me.get('firstName', '')} {me.get('lastName', '')}".strip() or "HR", co.get("legalName") or co.get("name", ""), url, body.send)
+    sent = _send_link(co_id, to, name, f"{me.get('firstName', '')} {me.get('lastName', '')}".strip() or "HR", co.get("legalName") or co.get("name", ""), url, body.send)
     return {"url": url, "sent": sent, "to": to if sent else "", "days": portal.INVITE_DAYS}
 
 
@@ -608,7 +612,13 @@ def candidate_form_link(body: CandLinkBody, request: Request, me=Depends(current
     sent = False
     to = cand.get("email") or ""
     if body.send and to and mailer.configured():
-        subject, text_ = candform.link_mail(cand.get("name") or "", co.get("legalName") or co.get("name", ""), url, jobs)
+        jobs = [j for j in (jobs or []) if j]
+        job_label = jobs[0] if len(jobs) == 1 else ""
+        with repo.engine.connect() as conn:
+            subject, text_ = email_templates.render(conn, cand.get("companyId"), "candidate.link", {
+                "name": cand.get("name") or "", "company": co.get("legalName") or co.get("name", ""), "url": url, "linkDays": candform.LINK_DAYS,
+                "jobLabel": job_label, "what": f" for the position of {', '.join(jobs[:3])}" if jobs else "",
+                "skillsNote": " and your level in the skills the job needs" if jobs else ""})
         try:
             mailer.send([to], subject, text_)
             sent = True
@@ -1249,21 +1259,19 @@ def notify(body: NotifyBody, me=Depends(current_user)):
                 (e.get("role") == "super" and co not in private) or (e.get("role") == "hr" and co in {e.get("companyId"), *(e.get("hrCompanies") or [])}))]
             mask = lambda k, v: ("XXXX XXXX " + str(v)[-4:]) if k == "aadhaar" and v else (v or "—")  # noqa: E731
             lines = [f"- {STAT_LABELS.get(k, k)}: {mask(k, (r.get('old') or {}).get(k))} -> {mask(k, v)}" for k, v in (r.get("changes") or {}).items()]
-            subject = f"Approval needed: statutory details change for {name} ({r.get('no')})"
-            text_ = (f"{name} has asked to change their statutory details:\n\n" + "\n".join(lines) +
-                     f"\n\n{len(r.get('documents') or [])} supporting document(s) attached in PeopleDesk." +
-                     (f"\nNote: {r.get('reason')}" if r.get("reason") else "") +
-                     f"\n\nReview and approve: {APP_URL}/#/request/{r['id']}\n\nThe change applies only after HR approves it.")
+            subject, text_ = email_templates.render(conn, co, "statutory.submitted", {
+                "name": name, "no": r.get("no"), "changesLines": "\n".join(lines), "docCount": len(r.get("documents") or []),
+                "noteLine": f"\nNote: {r.get('reason')}" if r.get("reason") else "", "link": f"{APP_URL}/#/request/{r['id']}"})
         elif body.event == "decided":
             if not is_hr:
                 raise HTTPException(403, "Only HR can announce a decision.")
             to = [emp.get("email")]
             ok = r.get("status") == "applied"
             note = next((st.get("note") for st in reversed(r.get("steps") or []) if st.get("decision")), "")
-            subject = f"Your statutory details change was {'approved' if ok else 'not approved'} ({r.get('no')})"
-            text_ = (f"Dear {emp.get('firstName', '')},\n\nHR has {'approved' if ok else 'not approved'} your request to change: "
-                     f"{', '.join(STAT_LABELS.get(k, k) for k in (r.get('changes') or {}))}." + (f"\n\nNote from HR: {note}" if note else "") +
-                     f"\n\nSee it in PeopleDesk: {APP_URL}/#/request/{r['id']}")
+            subject, text_ = email_templates.render(conn, co, "statutory.decided", {
+                "firstName": emp.get("firstName", ""), "outcome": "approved" if ok else "not approved", "no": r.get("no"),
+                "changeLabels": ", ".join(STAT_LABELS.get(k, k) for k in (r.get("changes") or {})),
+                "noteBlock": f"\n\nNote from HR: {note}" if note else "", "link": f"{APP_URL}/#/request/{r['id']}"})
         else:
             raise HTTPException(400, "Unknown event.")
         to = [t for t in to if t]
@@ -1310,11 +1318,9 @@ def comp_notify(body: CompNotifyBody, me=Depends(current_user)):
             if not ctx.is_hr_for(co):
                 raise HTTPException(403, "Only HR opens salary planning.")
             to_ids = [p.get("empId") for p in pools]
-            subject = f"Salary revision planning is open: {cycle.get('name', '')}"
-            text_ = (f"Salary revision planning for {cycle.get('name', '')} is open in PeopleDesk.\n\n"
-                     f"You have a budget for increases in your team. Hand part of it to the managers below you if you wish, "
-                     f"propose each person's new salary and submit your plan" + (f" by {cycle['deadline']}" if cycle.get("deadline") else "") + ".\n\n"
-                     f"New salaries take effect from {cycle.get('effective', '')}.\n\nOpen your plan: {link}")
+            subject, text_ = email_templates.render(conn, co, "comp.launched", {
+                "cycleName": cycle.get("name", ""), "deadlineBlock": f" by {cycle['deadline']}" if cycle.get("deadline") else "",
+                "effective": cycle.get("effective", ""), "link": link})
         else:
             pool = next((p for p in pools if p.get("id") == body.poolId), None)
             if not pool:
@@ -1330,17 +1336,18 @@ def comp_notify(body: CompNotifyBody, me=Depends(current_user)):
                 if holder != me["id"] and not ctx.is_hr_for(co):
                     raise HTTPException(403, "Only the budget holder submits it.")
                 to_ids = next_ids
-                subject = f"Salary revision plan from {who} for your review"
-                text_ = f"{who} has submitted their salary revision plan for {cycle.get('name', '')}.\n\nReview it, discuss, then approve or send it back: {link}&p={pool['id']}"
+                subject, text_ = email_templates.render(conn, co, "comp.submitted",
+                                                         {"who": who, "cycleName": cycle.get("name", ""), "link": f"{link}&p={pool['id']}"})
             elif body.event == "decided":
                 last = next((s for s in reversed(steps) if s.get("decision")), None)
                 if not last or last.get("by") != me["id"]:
                     raise HTTPException(403, "Only the person who decided can announce it.")
                 ok = last.get("decision") == "approved"
                 to_ids = [holder] + (next_ids if ok else [])
-                subject = f"Salary revision plan of {who} {'approved' if ok else 'sent back'} by {nm(me['id'])}"
-                text_ = (f"{nm(me['id'])} has {'approved' if ok else 'sent back for changes'} the salary revision plan of {who} for {cycle.get('name', '')}."
-                         + (f"\n\nNote: {last.get('note')}" if last.get("note") else "") + f"\n\nOpen it: {link}&p={pool['id']}")
+                subject, text_ = email_templates.render(conn, co, "comp.decided", {
+                    "who": who, "outcome": "approved" if ok else "sent back", "outcomeVerb": "approved" if ok else "sent back for changes",
+                    "deciderName": nm(me["id"]), "cycleName": cycle.get("name", ""), "noteBlock": f"\n\nNote: {last.get('note')}" if last.get("note") else "",
+                    "link": f"{link}&p={pool['id']}"})
             elif body.event == "comment":
                 c = (pool.get("comments") or [None])[-1]
                 if not c or c.get("by") != me["id"]:
@@ -1348,8 +1355,8 @@ def comp_notify(body: CompNotifyBody, me=Depends(current_user)):
                 to_ids = [holder] + [i for s in steps for i in (s.get("approverIds") or [])] + [p.get("empId") for p in pools if p.get("id") == pool.get("parentId")]
                 if nxt and nxt.get("kind") == "hr":
                     to_ids += hr_ids
-                subject = f"New comment on the salary revision plan of {who}"
-                text_ = f"{nm(me['id'])} wrote:\n\n{c.get('text', '')}\n\nReply in PeopleDesk: {link}&p={pool['id']}"
+                subject, text_ = email_templates.render(conn, co, "comp.comment",
+                                                         {"who": who, "writerName": nm(me["id"]), "commentText": c.get("text", ""), "link": f"{link}&p={pool['id']}"})
             else:
                 raise HTTPException(400, "Unknown event.")
         to = [(emps.get(i) or {}).get("email") for i in dict.fromkeys(to_ids) if i and i != me["id"] and (emps.get(i) or {}).get("status") != "exited"]
@@ -1450,18 +1457,15 @@ def training_report_mail(body: TrainerReportBody, me=Depends(current_user)):
             raise HTTPException(400, "There is no e-mail address for this trainer. Add it to the training.")
         if not mailer.configured():
             return {"sent": False, "reason": "e-mail is not set up on the server; print the report instead"}
-        lines = [f"Dear {name},", "", f"Thank you for running {len(r['trainings'])} training{'s' if len(r['trainings']) > 1 else ''} with us: "
-                 + ", ".join(f"{t.get('title')} ({t.get('start')})" for t in r["trainings"]) + ".",
-                 f"{r['attended']} of {r['enrolled']} participants attended and {r['feedback']} gave feedback. Ratings are out of 5.", "", "Ratings"]
-        lines += [f"- {x['label']}: {x['avg']}" + (f" (all our trainings {x['org']})" if x["org"] else "") for x in reversed(r["rows"])]
-        lines += ["", "Areas to improve"] + [f"- {x['label']}: rated {x['avg']}" for x in r["improve"]]
-        if r["comments"]:
-            lines += ["", "What participants would like improved"] + [f"- {c}" for c in r["comments"][:30]]
-        if r["liked"]:
-            lines += ["", "What participants liked"] + [f"- {c}" for c in r["liked"][:15]]
-        lines += ["", "Feedback is anonymous.", "", "Human resources"]
+        comments_block = ("\n\nWhat participants would like improved\n" + "\n".join(f"- {c}" for c in r["comments"][:30])) if r["comments"] else ""
+        liked_block = ("\n\nWhat participants liked\n" + "\n".join(f"- {c}" for c in r["liked"][:15])) if r["liked"] else ""
+        subject, body = email_templates.render(conn, next((t.get("companyId") for t in r["trainings"]), None), "training.feedback", {
+            "name": name, "trainingsCount": len(r["trainings"]), "trainingsList": ", ".join(f"{t.get('title')} ({t.get('start')})" for t in r["trainings"]),
+            "statsLine": f"{r['attended']} of {r['enrolled']} participants attended and {r['feedback']} gave feedback. Ratings are out of 5.",
+            "ratingsBlock": "\n".join(f"- {x['label']}: {x['avg']}" + (f" (all our trainings {x['org']})" if x["org"] else "") for x in reversed(r["rows"])),
+            "improveBlock": "\n".join(f"- {x['label']}: rated {x['avg']}" for x in r["improve"]), "commentsBlock": comments_block, "likedBlock": liked_block})
         try:
-            mailer.send([to], f"Your training feedback report ({len(r['trainings'])} training{'s' if len(r['trainings']) > 1 else ''})", "\n".join(lines))
+            mailer.send([to], subject, body)
         except Exception as e:  # noqa: BLE001
             log.warning("Mail failed: %s", e)
             return {"sent": False, "reason": "the e-mail server refused the message; print the report instead"}
@@ -1567,6 +1571,107 @@ def health():
     with repo.engine.connect() as conn:
         conn.execute(text("SELECT 1"))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- admin: e-mail templates
+EMAIL_TEMPLATE_SAMPLES = {
+    "access.invite": {"name": "Asha Rao", "who": "Priya Shah", "company": "Acme Pvt Ltd", "url": "https://example.com/#/welcome?t=sample", "inviteDays": 7},
+    "candidate.link": {"name": "Rohit Verma", "company": "Acme Pvt Ltd", "jobLabel": "Sales Executive", "what": " for the position of Sales Executive",
+                        "skillsNote": " and your level in the skills the job needs", "url": "https://example.com/#/apply?t=sample", "linkDays": 14},
+    "reimb.paid": {"firstName": "Asha", "how": "with your salary for July 2026", "total": "4,250", "runNo": "RR/2627/0012", "companyName": "Acme Pvt Ltd",
+                   "claims": [{"no": "EC-0101", "title": "Client visit, Pune", "amount": "2,500"}, {"no": "EC-0104", "title": "Internet reimbursement", "amount": "1,750"}]},
+    "statutory.submitted": {"name": "Asha Rao", "no": "SR-0021", "changesLines": "- PAN: ABCDE1234F -> ABCDE5678F", "docCount": 1,
+                             "noteLine": "\nNote: Name change after marriage", "link": "https://example.com/#/request/sample"},
+    "statutory.decided": {"firstName": "Asha", "outcome": "approved", "no": "SR-0021", "changeLabels": "PAN", "noteBlock": "", "link": "https://example.com/#/request/sample"},
+    "comp.launched": {"cycleName": "FY26-27 revision", "deadlineBlock": " by 2026-12-15", "effective": "2027-01-01", "link": "https://example.com/#/compplan?c=sample"},
+    "comp.submitted": {"who": "Priya Shah", "cycleName": "FY26-27 revision", "link": "https://example.com/#/compplan?c=sample"},
+    "comp.decided": {"who": "Priya Shah", "outcome": "approved", "outcomeVerb": "approved", "deciderName": "Rahul Menon", "cycleName": "FY26-27 revision",
+                      "noteBlock": "", "link": "https://example.com/#/compplan?c=sample"},
+    "comp.comment": {"who": "Priya Shah", "writerName": "Rahul Menon", "commentText": "Please revisit the increase for the Sales team.", "link": "https://example.com/#/compplan?c=sample"},
+    "training.feedback": {"name": "Kiran Patel", "trainingsCount": 2, "trainingsList": "Effective Feedback (2026-09-10), Time Management (2026-10-02)",
+                           "statsLine": "24 of 28 participants attended and 20 gave feedback. Ratings are out of 5.",
+                           "ratingsBlock": "- Content: 4.3\n- Delivery: 4.6", "improveBlock": "- Pace: rated 3.2", "commentsBlock": "", "likedBlock": ""},
+    "report.scheduled": {"name": "there", "reportName": "Monthly attrition", "when": "01 Jan 2027 08:00", "rowCount": 12},
+}
+
+
+class MailTemplateTestBody(BaseModel):
+    mailKey: str
+
+
+@app.get("/api/email-templates/catalogue")
+def email_template_catalogue(me=Depends(current_user)):
+    _require_hr(me)
+    return {"templates": email_templates.catalogue()}
+
+
+@app.post("/api/email-templates/test", dependencies=[Depends(require_csrf)])
+def email_template_test(body: MailTemplateTestBody, me=Depends(current_user)):
+    _require_hr(me)
+    if body.mailKey not in email_templates.DEFAULTS:
+        raise HTTPException(404, "Unknown e-mail key.")
+    if not mailer.configured():
+        raise HTTPException(400, "E-mail is not set up on the server.")
+    to = me.get("email")
+    if not to:
+        raise HTTPException(400, "You have no e-mail address to send the test to.")
+    with repo.engine.connect() as conn:
+        subject, body_text = email_templates.render(conn, me.get("companyId"), body.mailKey, EMAIL_TEMPLATE_SAMPLES.get(body.mailKey, {}))
+    try:
+        mailer.send([to], f"[Test] {subject}", body_text)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"The e-mail server refused the message: {e}") from None
+    return {"sent": True, "to": to}
+
+
+# ---------------------------------------------------------------- admin: reporting
+class ReportRunBody(BaseModel):
+    reportDefId: str | None = None
+    baseCollection: str | None = None
+    filters: list[dict] = []
+    columns: list[str] = []
+
+
+def _report_def_from(conn, body: ReportRunBody, me) -> dict:
+    if body.reportDefId:
+        rd = repo.get_records(conn, "reportDefs", [body.reportDefId]).get(body.reportDefId)
+        if not rd:
+            raise HTTPException(404, "That report is not saved yet.")
+        return rd
+    if not body.baseCollection:
+        raise HTTPException(400, "Choose what to report on.")
+    return {"baseCollection": body.baseCollection, "filters": body.filters, "columns": body.columns}
+
+
+@app.get("/api/reports/fields")
+def report_fields(me=Depends(current_user)):
+    _require_hr(me)
+    return {"collections": reports.catalogue()}
+
+
+@app.post("/api/reports/run")
+def report_run(body: ReportRunBody, me=Depends(current_user)):
+    _require_hr(me)
+    with repo.engine.connect() as conn:
+        ctx = _ctx(conn, me)
+        rd = _report_def_from(conn, body, me)
+        rows = reports.run(conn, rd, ctx)
+    cols = rd.get("columns") or [f for f, _ in reports.REPORTABLE.get(rd.get("baseCollection"), {}).get("fields", [])]
+    return {"rows": rows[:5000], "total": len(rows), "columns": cols}
+
+
+@app.post("/api/reports/export")
+def report_export(body: ReportRunBody, me=Depends(current_user)):
+    _require_hr(me)
+    with repo.engine.connect() as conn:
+        ctx = _ctx(conn, me)
+        rd = _report_def_from(conn, body, me)
+        rows = reports.run(conn, rd, ctx)
+    cols = rd.get("columns") or [f for f, _ in reports.REPORTABLE.get(rd.get("baseCollection"), {}).get("fields", [])]
+    data = reports.to_excel(rows, cols)
+    name = f"{(rd.get('name') or rd.get('baseCollection') or 'report').replace(' ', '_')}.xlsx"
+    return RawResponse(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"content-disposition": f'attachment; filename="{name}"'})
 
 
 # ---------------------------------------------------------------- the built React app (production)

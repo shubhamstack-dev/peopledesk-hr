@@ -117,7 +117,9 @@ def _m365_token(s: dict) -> str:
     return j["access_token"]
 
 
-def send(to: list[str], subject: str, text_: str, html: str | None = None, cfg: dict | None = None) -> None:
+def send(to: list[str], subject: str, text_: str, html: str | None = None, cfg: dict | None = None,
+         attachments: list[tuple[str, bytes, str]] | None = None) -> None:
+    """attachments: [(filename, data, mime type), ...]."""
     s = cfg or settings()
     to = [t for t in dict.fromkeys(to) if t]
     if not to:
@@ -131,6 +133,9 @@ def send(to: list[str], subject: str, text_: str, html: str | None = None, cfg: 
     msg.set_content(text_)
     if html:
         msg.add_alternative(html, subtype="html")
+    for name, data, mime in attachments or []:
+        maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+        msg.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=name)
     ctx = ssl.create_default_context()
     port, sec, auth = int(s.get("port") or 587), s.get("security") or "starttls", s.get("auth") or "password"
     smtp = smtplib.SMTP_SSL(s["host"], port, context=ctx, timeout=25) if sec == "ssl" else smtplib.SMTP(s["host"], port, timeout=25)

@@ -955,6 +955,7 @@ const MENU = [
   ] },
   { grp: 'admin', label: 'Administration', items: [{ page: 'teams', label: 'Teams: Administration, IT and Finance', show: HR }, { page: 'flows', label: 'Approval workflows', show: HR },
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
+    { page: 'emailtemplates', label: 'E-mail templates', show: HR }, { page: 'reports', label: 'Reports', show: HR },
     { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
 const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf', training: 'mine', register: 'own', payroll: 'own', masterdata: 'review', timecontrols: 'rules' };
@@ -972,8 +973,8 @@ const R = { page: 'home', arg: '', q: new URLSearchParams() };
 const go = (h) => { if (location.hash === h) route(); else location.hash = h; };
 
 /* Pages drawn by React components rather than by the HTML views below */
-const REACT_PAGES = new Set(['home', 'inbox', 'settings', 'doctemplates']);
-const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data', doctemplates: 'Document templates' };
+const REACT_PAGES = new Set(['home', 'inbox', 'settings', 'doctemplates', 'emailtemplates', 'reports']);
+const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data', doctemplates: 'Document templates', emailtemplates: 'E-mail templates', reports: 'Reports' };
 /* Works out the page for a location hash: sets R, runs the page's view, and names the menu item it belongs to */
 function resolvePage(hash) {
   const raw = String(hash || '').replace(/^#\/?/, '');
@@ -3914,6 +3915,11 @@ const FLOW_TYPES = {
   leave: { label: 'Leave', def: [{ level: 'manager' }], hrLast: false, unit: 'days', note: 'Applies to new leave requests. A step “only from” a number of days applies to longer leave. HR is added when the leave type or the company’s HR approval limit requires it.' },
 };
 const LEVELS = { manager: 'Line manager', matrix: 'Dotted-line manager', skip: 'Manager’s manager', deptHead: 'Head of department', payroll: 'Payroll approver', person: 'A named person', finance: 'Finance team', hr: 'HR' };
+/* a step's level is a fixed one (LEVELS), "person" (named on the step), or "group:<id>" naming an
+   approverGroups record -- resolved on the server the same way (workflow.py's LEVELS/groups) */
+const groupsFor = (coId) => S.approverGroups.filter((g) => g.companyId === coId);
+const levelLabel = (l) => (l.level === 'person' ? nameOf(l.personId) : l.level && l.level.startsWith('group:')
+  ? (groupsFor(CO).find((g) => g.id === l.level.slice(6)) || {}).name || 'Deleted group' : LEVELS[l.level]);
 const flowFor = (coId, type) => (((coById(coId) || {}).flows || {})[type] || FLOW_TYPES[type].def);
 function buildSteps(type, emp, amount, requesterId, data) {
   const co = coById(emp.companyId) || {};
@@ -3938,7 +3944,7 @@ function buildSteps(type, emp, amount, requesterId, data) {
     if (!ids.length) return;                                     // nobody in that role: the step is skipped
     const prev = steps[steps.length - 1];
     if (prev && prev.approverIds.join() === ids.join()) return;  // same person twice in a row approves once
-    steps.push({ level: l.level, label: l.level === 'person' ? nameOf(l.personId) : LEVELS[l.level], approverIds: ids, decision: '', by: '', at: 0, note: '' });
+    steps.push({ level: l.level, label: levelLabel(l), approverIds: ids, decision: '', by: '', at: 0, note: '' });
   });
   return steps;
 }
@@ -3963,18 +3969,24 @@ function decideDialog(title, onDone) {
   $('#dcNo').onclick = () => { const n = $('#dcF').elements.n.value.trim(); if (!n) { $('#dcE').textContent = 'Say why it is rejected.'; return; } onDone(false, n); };
 }
 VIEWS.flows = () => {
-  const co = company(); const flows = co.flows || {};
+  const co = company(); const flows = co.flows || {}; const groups = groupsFor(co.id).sort((a, c) => a.name.localeCompare(c.name));
   return { title: 'Approval workflows', html: `<div class="card"><h2>Approval workflows for ${esc(co.name)}</h2>
     <p class="sub">Who approves each kind of request, in order. A step is skipped when nobody holds that role (for example no dotted-line manager), and someone never approves their own request. Leave, attendance, overtime and goals keep their own rules under Leave and Time Management.</p></div>
+    <div class="card"><div class="hd"><div><h2>Approver groups</h2><p class="sub">Named sets of people you can use as a step, instead of one role or one person.</p></div><button class="btn" data-act="groupAdd">Add a group</button></div>
+      ${groups.length ? `<table class="t"><thead><tr><th>Name</th><th>Members</th><th /></tr></thead><tbody>${groups.map((g) => `<tr><td>${esc(g.name)}</td><td>${(g.employeeIds || []).map(nameOf).join(', ') || '—'}</td>
+        <td><button class="btn sm" data-act="groupEdit" data-id="${g.id}">Edit</button> <button class="btn sm danger" data-act="groupDelete" data-id="${g.id}">Delete</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">None yet.</div>'}</div>
     ${Object.entries(FLOW_TYPES).filter(([, t]) => !t.hidden).map(([k, t]) => { const ch = flows[k] || t.def; return `<div class="card"><div class="hd"><div><h2>${esc(t.label)}</h2><p class="sub">${t.note || (t.hrLast ? 'HR always approves last, because the result changes pay or leave records.' : 'After approval, HR pays the claim through payroll or marks it paid.')}</p></div><button class="btn" data-act="flowEdit" data-k="${k}">Change</button></div>
-      <ol class="steps">${ch.map((l) => `<li><b>${esc(l.level === 'person' ? nameOf(l.personId) : LEVELS[l.level])}</b>${+l.minAmount > 0 ? ` <span class="fine">only for ${t.unit ? `more than ${l.minAmount} ${t.unit}` : `${inr0(l.minAmount)} or more`}</span>` : ''}${k === 'expense' ? stepCondTxt(l) : ''}</li>`).join('')}${t.hrLast && ch[ch.length - 1]?.level !== 'hr' ? '<li><b>HR</b> <span class="fine">added automatically</span></li>' : ''}</ol></div>`; }).join('')}` };
+      <ol class="steps">${ch.map((l) => `<li><b>${esc(levelLabel(l))}</b>${+l.minAmount > 0 ? ` <span class="fine">only for ${t.unit ? `more than ${l.minAmount} ${t.unit}` : `${inr0(l.minAmount)} or more`}</span>` : ''}${k === 'expense' ? stepCondTxt(l) : ''}</li>`).join('')}${t.hrLast && ch[ch.length - 1]?.level !== 'hr' ? '<li><b>HR</b> <span class="fine">added automatically</span></li>' : ''}</ol></div>`; }).join('')}` };
 };
 ACT.flowEdit = (b) => {
   const co = company(); const k = b.dataset.k; let ch = JSON.parse(JSON.stringify(flowFor(co.id, k)));
   const people = coEmployees().sort((a, c) => fullName(a).localeCompare(fullName(c)));
+  const groups = groupsFor(co.id).sort((a, c) => a.name.localeCompare(c.name));
+  const levelOptions = (sel) => Object.entries(LEVELS).map(([v, n]) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${esc(n)}</option>`).join('')
+    + (groups.length ? `<optgroup label="Approver groups">${groups.map((g) => `<option value="group:${g.id}" ${sel === `group:${g.id}` ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</optgroup>` : '');
   const draw = () => {
     openDlg(`<form class="dlg" id="flF" novalidate><h2>${esc(FLOW_TYPES[k].label)}: approvers in order</h2><div id="flRows">${ch.map((l, i) => `<div class="form" style="grid-template-columns:2fr 2fr ${k === 'expense' || FLOW_TYPES[k].unit ? '1.2fr ' : ''}auto;align-items:end;margin-bottom:6px">
-      <label class="field">Step ${i + 1}<select class="inp" data-i="${i}" data-f="level">${Object.entries(LEVELS).map(([v, n]) => `<option value="${v}" ${v === l.level ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+      <label class="field">Step ${i + 1}<select class="inp" data-i="${i}" data-f="level">${levelOptions(l.level)}</select></label>
       <label class="field" ${l.level === 'person' ? '' : 'style="visibility:hidden"'}>Person<select class="inp" data-i="${i}" data-f="personId"><option value="">Choose</option>${people.map((p) => `<option value="${p.id}" ${p.id === l.personId ? 'selected' : ''}>${esc(fullName(p))}</option>`).join('')}</select></label>
       ${k === 'expense' || FLOW_TYPES[k].unit ? `<label class="field">Only from (${FLOW_TYPES[k].unit || '₹'})<input class="inp" type="number" min="0" data-i="${i}" data-f="minAmount" value="${esc(l.minAmount || '')}"></label>` : ''}
       <div class="tools"><button type="button" class="btn sm" data-mv="${i}" data-d="-1" ${i ? '' : 'disabled'}>↑</button><button type="button" class="btn sm" data-mv="${i}" data-d="1" ${i < ch.length - 1 ? '' : 'disabled'}>↓</button><button type="button" class="btn sm danger" data-rm="${i}">✕</button></div></div>${k === 'expense' ? stepCondHtml(l, i) : ''}`).join('')}</div>
@@ -3991,11 +4003,40 @@ ACT.flowEdit = (b) => {
     f.onsubmit = (ev) => {
       ev.preventDefault();
       if (ch.some((l) => l.level === 'person' && !l.personId)) { $('#flE').textContent = 'Choose the person for each “named person” step.'; return; }
-      co.flows = { ...(co.flows || {}), [k]: ch }; audit('Approval workflow changed', `${FLOW_TYPES[k].label}: ${ch.map((l) => LEVELS[l.level]).join(' → ')}`, 'approvals');
+      co.flows = { ...(co.flows || {}), [k]: ch }; audit('Approval workflow changed', `${FLOW_TYPES[k].label}: ${ch.map(levelLabel).join(' → ')}`, 'approvals');
       saveNow(); closeDlg(); toast('Workflow saved'); route();
     };
   };
   draw();
+};
+function groupDialog(g) {
+  const co = company(); const people = coEmployees().sort((a, c) => fullName(a).localeCompare(fullName(c)));
+  let picked = [...(g.employeeIds || [])];
+  openDlg(`<form class="dlg" id="grF" novalidate><h2>${g.id ? 'Edit' : 'Add'} approver group</h2>
+    <label class="field wide">Name<input class="inp" name="name" value="${esc(g.name || '')}" required></label>
+    <label class="field wide">Members<div class="picklist" id="grPpl">${people.map((p) => `<label><input type="checkbox" value="${p.id}" ${picked.includes(p.id) ? 'checked' : ''}> ${esc(fullName(p))}</label>`).join('') || '<span class="fine">No one in this company yet.</span>'}</div></label>
+    <p class="err" id="grE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
+  const f = $('#grF');
+  f.onsubmit = (ev) => {
+    ev.preventDefault();
+    const name = f.elements.name.value.trim();
+    if (!name) { $('#grE').textContent = 'Give the group a name.'; return; }
+    picked = $$('#grPpl input:checked', f).map((x) => x.value);
+    const rec = { ...g, id: g.id || uid(), companyId: co.id, name, employeeIds: picked };
+    const i = S.approverGroups.findIndex((x) => x.id === rec.id);
+    if (i >= 0) S.approverGroups[i] = rec; else S.approverGroups.push(rec);
+    audit(g.id ? 'Approver group changed' : 'Approver group added', name, 'approvals');
+    saveNow(); closeDlg(); toast('Group saved'); route();
+  };
+}
+ACT.groupAdd = () => groupDialog({ employeeIds: [] });
+ACT.groupEdit = (b) => { const g = S.approverGroups.find((x) => x.id === b.dataset.id); if (g) groupDialog(g); };
+ACT.groupDelete = async (b) => {
+  const g = S.approverGroups.find((x) => x.id === b.dataset.id); if (!g) return;
+  const used = Object.entries(company().flows || {}).filter(([, ch]) => (ch || []).some((l) => l.level === `group:${g.id}`)).map(([k]) => FLOW_TYPES[k]?.label || k);
+  if (used.length && !(await confirmBox('Delete this group?', `It is used in: ${used.join(', ')}. Those steps will no longer resolve to anyone until you change them.`, 'Delete'))) return;
+  if (!used.length && !(await confirmBox('Delete this group?', 'This cannot be undone.', 'Delete'))) return;
+  S.approverGroups = S.approverGroups.filter((x) => x.id !== g.id); audit('Approver group deleted', g.name, 'approvals'); saveNow(); toast('Group deleted'); route();
 };
 
 /* a generic request (promotion proposal or leave encashment) on its own page */
