@@ -190,10 +190,6 @@ function FormPage({ initial, onSignOut, onSessionEnded }) {
         {F('addrPin', 'PIN code')}{F('addrCountry', 'Country', 'select', { opts: E.COUNTRIES.map((x) => [x, x]) })}{F('permAddress', 'Permanent address, if different', 'textarea', { wide: true })}
         {F('emergencyName', 'Emergency contact: name')}{F('emergencyRelation', 'Relationship', 'select', { opts: [['', 'Choose'], ...E.EMERGENCY_RELATIONS.map((x) => [x, x])] })}{F('emergencyPhone', 'Emergency contact: phone')}</div></div>
 
-      <div className="card"><h2>Identity and bank account</h2><p className="sub">Needed for payroll, PF and income tax from your first month. Seen only by HR and payroll.</p><div className="form">
-        {F('pan', 'PAN')}{F('aadhaar', 'Aadhaar number')}{F('uan', 'UAN (PF), if you have one')}
-        {F('bankName', 'Bank', 'select', { opts: [['', 'Choose'], ...E.BANKS.map((b) => [b[0], b[0]])] })}{F('bankAcc', 'Account number')}{F('ifsc', 'IFSC')}</div></div>
-
       <div className="card"><h2>Your current job</h2><div className="form">
         {F('currentCompany', 'Current or last employer')}{F('currentTitle', 'Current role')}{F('expYears', 'Total experience (years)', 'number')}
         {F('currentCtc', 'Current annual CTC (₹)', 'number')}{F('expectedCtc', 'Expected annual CTC (₹)', 'number')}{F('noticeDays', 'Notice period (days)', 'number')}
