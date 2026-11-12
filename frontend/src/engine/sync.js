@@ -18,7 +18,9 @@ export const COLLECTIONS = ['companies', 'employees', 'depts', 'desigs', 'grades
   // performance (2.11): goal library, review and management meetings, succession plans
   'goalLib', 'perfMeetings', 'succession',
   // reimbursement runs (2.15): made by the server; listed so the app's copy stays in step
-  'reimbRuns'];
+  'reimbRuns',
+  // admin: approval workflows, e-mail templates, reporting and the report scheduler
+  'approverGroups', 'emailTemplates', 'reportDefs', 'reportSchedules'];
 const SINGLETONS = ['group', 'settings', 'stat', 'seq'];
 const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
