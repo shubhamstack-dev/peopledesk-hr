@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
 
@@ -14,6 +14,13 @@ const OPS = [['equals', 'is'], ['notEquals', 'is not'], ['contains', 'contains']
 const CADENCES = [['daily', 'Every day'], ['weekly', 'Every week'], ['monthly', 'Every month']];
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+function cadenceLabel(s) {
+  const c = s.cadence || {};
+  if (c.type === 'weekly') return `Every ${WEEKDAYS[c.dayOfWeek || 0]}, ${c.hour}:00`;
+  if (c.type === 'monthly') return `Day ${c.dayOfMonth} of the month, ${c.hour}:00`;
+  return `Daily, ${c.hour}:00`;
+}
+
 async function exportExcel(body) {
   const r = await fetch('/api/reports/export', { method: 'POST', credentials: 'same-origin', headers: { 'x-peopledesk': '1', 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(typeof d.detail === 'string' ? d.detail : `The server returned ${r.status}`); }
@@ -25,16 +32,18 @@ export default function Reports() {
   const [fields, setFields] = useState(null);
   const [err, setErr] = useState('');
   const [edit, setEdit] = useState(null);     // a reportDefs id, '' for new, or null for the list
+  const [action, setAction] = useState(null); // what to do as soon as the editor opens: 'view' | 'schedule' | null
   useEffect(() => { api.get('/api/reports/fields').then((d) => setFields(d.collections)).catch((x) => setErr(x.message)); }, []);
 
   const S = E.getS();
   const cos = E.companiesForMe();
   const mine = (S.reportDefs || []).filter((r) => !r.companyId || cos.some((c) => c.id === r.companyId)).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const collLabel = (k) => (fields || []).find((c) => c.collection === k)?.label || k;
+  const open = (id, act) => { setAction(act); setEdit(id); };
 
   if (err) return <div className="note bad">{err}</div>;
   if (!fields) return <div className="empty">Loading…</div>;
-  if (edit !== null) return <Editor fields={fields} reportId={edit} onDone={() => setEdit(null)} />;
+  if (edit !== null) return <Editor fields={fields} reportId={edit} initialAction={action} onDone={() => { setEdit(null); setAction(null); }} />;
 
   return (
     <div className="card">
@@ -42,21 +51,24 @@ export default function Reports() {
       <p className="sub">Build a report over your HR data, run it or download it as Excel, and optionally e-mail it to people on a schedule.</p>
       {mine.length ? (
         <div className="scroll"><table className="t">
-          <thead><tr><th>Name</th><th>Over</th><th>Schedules</th><th /></tr></thead>
-          <tbody>{mine.map((r) => (
-            <tr key={r.id}>
-              <td>{r.name}</td><td>{collLabel(r.baseCollection)}</td>
-              <td>{(S.reportSchedules || []).filter((s) => s.reportDefId === r.id).length || <span className="fine">None</span>}</td>
-              <td><button className="btn sm" onClick={() => setEdit(r.id)}>Open</button></td>
-            </tr>
-          ))}</tbody>
+          <thead><tr><th>Name</th><th>Over</th><th>Schedule</th><th /></tr></thead>
+          <tbody>{mine.map((r) => {
+            const sch = (S.reportSchedules || []).find((s) => s.reportDefId === r.id);
+            return (
+              <tr key={r.id}>
+                <td>{r.name}</td><td>{collLabel(r.baseCollection)}</td>
+                <td>{sch ? cadenceLabel(sch) : <button className="btn sm ghost" onClick={() => open(r.id, 'schedule')}>Schedule</button>}</td>
+                <td><button className="btn sm" onClick={() => open(r.id, 'view')}>View</button> <button className="btn sm ghost" onClick={() => open(r.id, null)}>Open</button></td>
+              </tr>
+            );
+          })}</tbody>
         </table></div>
       ) : <div className="empty">No reports saved yet.</div>}
     </div>
   );
 }
 
-function Editor({ fields, reportId, onDone }) {
+function Editor({ fields, reportId, initialAction, onDone }) {
   const S = E.getS();
   const existing = reportId ? (S.reportDefs || []).find((r) => r.id === reportId) : null;
   const [name, setName] = useState(existing?.name || '');
@@ -67,6 +79,7 @@ function Editor({ fields, reportId, onDone }) {
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const schedRef = useRef(null);
 
   const coll = fields.find((c) => c.collection === baseCollection) || { fields: [] };
   const allFields = coll.fields.map(([f]) => f);
@@ -79,6 +92,12 @@ function Editor({ fields, reportId, onDone }) {
     try { const d = await api.post('/api/reports/run', body()); setRows(d.rows); setTotal(d.total); }
     catch (x) { setMsg(x.message); } finally { setBusy(false); }
   };
+
+  // "View" from the list runs it straight away; "Schedule" scrolls down to the schedule card
+  useEffect(() => {
+    if (initialAction === 'view' && existing) run();
+    else if (initialAction === 'schedule') setTimeout(() => schedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const download = async () => {
     setBusy(true); setMsg('');
@@ -150,7 +169,7 @@ function Editor({ fields, reportId, onDone }) {
           </div>
         )}
       </div>
-      {existing && <Schedules reportDef={existing} />}
+      {existing && <div ref={schedRef}><Schedules reportDef={existing} /></div>}
     </>
   );
 }
@@ -181,8 +200,7 @@ function Schedules({ reportDef }) {
           <tbody>{mine.map((s) => (
             <tr key={s.id}>
               <td>{(s.recipients || []).join(', ')}</td>
-              <td>{s.cadence?.type === 'weekly' ? `Every ${WEEKDAYS[s.cadence.dayOfWeek || 0]}, ${s.cadence.hour}:00`
-                : s.cadence?.type === 'monthly' ? `Day ${s.cadence.dayOfMonth} of the month, ${s.cadence.hour}:00` : `Daily, ${s.cadence?.hour}:00`}</td>
+              <td>{cadenceLabel(s)}</td>
               <td>{s.lastSentAt ? E.dt(s.lastSentAt) : <span className="fine">Never</span>}{s.lastError && <div className="fine err">{s.lastError}</div>}</td>
               <td><input type="checkbox" checked={s.active !== false} onChange={() => toggle(s)} /></td>
               <td><button className="btn sm ghost" onClick={() => remove(s)}>Remove</button></td>
