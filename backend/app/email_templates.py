@@ -13,6 +13,7 @@ in as the context -- the same values, just handed to Jinja instead of an f-strin
 structures ({% if %}, {% for %}) work in a customised template too, same as doctemplates.py's Word
 templates allow {%tr for %}.
 """
+import logging
 from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import text
 
@@ -137,6 +138,10 @@ def _lookup(conn, company_id, mail_key: str) -> dict | None:
     own = next((t for t, (_, c) in zip(cands, rows) if c == company_id and t.get("active", True)), None)
     if own:
         return own
+    # a group-wide template (set by the group administrator) is not used for a company that registered
+    # itself: that company is private, and its mail says only what its own HR wrote, or the default
+    if company_id and company_id in repo.registered_companies(conn):
+        return None
     return next((t for t, (_, c) in zip(cands, rows) if c is None and t.get("active", True)), None)
 
 
@@ -150,4 +155,8 @@ def render(conn, company_id, mail_key: str, ctx: dict) -> tuple[str, str]:
     t = _lookup(conn, company_id, mail_key)
     subject_tpl = (t.get("subject") if t else None) or d["subject"]
     body_tpl = (t.get("body") if t else None) or d["body"]
-    return _render_str(subject_tpl, ctx).strip(), _render_str(body_tpl, ctx)
+    try:
+        return _render_str(subject_tpl, ctx).strip(), _render_str(body_tpl, ctx)
+    except Exception as e:  # noqa: BLE001 - a broken or unsafe edited template must not stop the e-mail
+        logging.getLogger("peopledesk").warning("E-mail template %s of company %s could not be used (%s): sending the default", mail_key, company_id, e)
+        return _render_str(d["subject"], ctx).strip(), _render_str(d["body"], ctx)

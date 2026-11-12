@@ -74,13 +74,24 @@ def _visible_company_ids(conn, ctx) -> set | None:
     return {c for c in all_ids if ctx.is_hr_for(c)}
 
 
+def columns_for(report_def: dict) -> list[str]:
+    allowed = [f for f, _ in REPORTABLE.get(report_def.get("baseCollection"), {}).get("fields", [])]
+    return [c for c in (report_def.get("columns") or allowed) if c in allowed] or allowed
+
+
 def _rows_for(conn, report_def: dict, visible: set | None) -> list[dict]:
     coll = report_def.get("baseCollection")
-    if coll not in repo.BY_NAME:
+    # only what the catalogue offers: its collections and their fields (no salaries or bank details by asking)
+    if coll not in REPORTABLE or coll not in repo.BY_NAME:
         raise ValueError(f"unknown collection: {coll}")
+    allowed = [f for f, _ in REPORTABLE[coll]["fields"]]
+    report_def = {**report_def, "columns": [c for c in (report_def.get("columns") or allowed) if c in allowed] or allowed,
+                  "filters": [f for f in (report_def.get("filters") or []) if (f or {}).get("field") in allowed]}
     rows = [repo.loads(d) for d in conn.execute(text(f"SELECT data FROM {repo.BY_NAME[coll].table}")).scalars()]
     if visible is not None:
-        rows = [r for r in rows if r.get("companyId") in visible]
+        # a row belongs to its companyId, or else to the company of the employee it is about (leave, punches…)
+        emp_co = {r[0]: r[1] for r in conn.execute(text("SELECT id, company_id FROM employees"))}
+        rows = [r for r in rows if (r.get("companyId") or emp_co.get(r.get("empId"))) in visible]
     for f in report_def.get("filters") or []:
         field, op, target = f.get("field"), f.get("op"), f.get("value")
         if field and op in OPS:
@@ -100,7 +111,10 @@ def run_unattended(conn, report_def: dict) -> list[dict]:
     administrator can leave it empty, which here means every company, same as when they run it
     themselves) -- never to "whoever happens to be signed in when the tick fires"."""
     co_id = report_def.get("companyId")
-    return _rows_for(conn, report_def, {co_id} if co_id else None)
+    if co_id:
+        return _rows_for(conn, report_def, {co_id})
+    # no company: the group administrator's own group, never the companies that registered themselves
+    return _rows_for(conn, report_def, {r[0] for r in conn.execute(text("SELECT id FROM companies"))} - repo.registered_companies(conn))
 
 
 def to_excel(rows: list[dict], columns: list[str]) -> bytes:
@@ -142,7 +156,7 @@ def _run_schedule(conn, sch: dict, send) -> None:
     rd = repo.get_records(conn, "reportDefs", [sch.get("reportDefId")]).get(sch.get("reportDefId"))
     if not rd:
         raise ValueError("the saved report this was scheduled from no longer exists")
-    cols = rd.get("columns") or [f for f, _ in REPORTABLE.get(rd.get("baseCollection"), {}).get("fields", [])]
+    cols = columns_for(rd)
     rows = run_unattended(conn, rd)
     data = to_excel(rows, cols)
     to = [r for r in (sch.get("recipients") or []) if r]

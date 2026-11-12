@@ -47,9 +47,19 @@ def _active(e: dict | None) -> bool:
     return (e or {}).get("status") != "exited"
 
 
-def _hr_ids_of(employees: dict, co_id) -> list:
+def _hr_ids_of(employees: dict, co_id, with_super: bool = True) -> list:
+    """HR of the company; the group administrator too, except for a company that registered itself
+    (those are private: the group administrator does not see or approve their requests)."""
     return [e["id"] for e in employees.values()
-            if _active(e) and (e.get("role") == "super" or (e.get("role") == "hr" and (e.get("companyId") == co_id or co_id in (e.get("hrCompanies") or []))))]
+            if _active(e) and ((with_super and e.get("role") == "super") or (e.get("role") == "hr" and (e.get("companyId") == co_id or co_id in (e.get("hrCompanies") or []))))]
+
+
+def _of_company(ids: list, employees: dict, co_id) -> list:
+    """Only people who can act for this company: its own employees, its HR, the group administrator."""
+    def ok(i):
+        e = employees.get(i) or {}
+        return e.get("companyId") == co_id or co_id in (e.get("hrCompanies") or []) or e.get("role") == "super"
+    return [i for i in ids if i and ok(i)]
 
 
 def _team_ids_of(employees: dict, co_id, team: str) -> list:
@@ -90,15 +100,17 @@ def _resolve_level(step: dict, emp: dict, employees: dict, depts: dict, co: dict
         return [d.get("headId")]
     if level == "payroll":
         return [co.get("payrollApproverId")]
+    sup = co.get("source") != "register"
     if level == "person":
-        return [step.get("personId")]
+        return _of_company([step.get("personId")], employees, emp.get("companyId")) if sup else [i for i in [step.get("personId")] if (employees.get(i) or {}).get("companyId") == emp.get("companyId")]
     if level == "hr":
-        return _hr_ids_of(employees, emp.get("companyId"))
+        return _hr_ids_of(employees, emp.get("companyId"), sup)
     if level == "finance":
         f = _team_ids_of(employees, emp.get("companyId"), "finance")
-        return f if f else _hr_ids_of(employees, emp.get("companyId"))
+        return f if f else _hr_ids_of(employees, emp.get("companyId"), sup)
     if level and level.startswith("group:"):
-        return list((groups.get(level[6:]) or {}).get("employeeIds") or [])
+        ids = list((groups.get(level[6:]) or {}).get("employeeIds") or [])
+        return _of_company(ids, employees, emp.get("companyId")) if sup else [i for i in ids if (employees.get(i) or {}).get("companyId") == emp.get("companyId")]
     return []
 
 
@@ -131,12 +143,12 @@ def build_steps(employees: dict, depts: dict, co: dict, groups: dict, kind: str,
     return steps
 
 
-def participants_of(rec: dict, employees: dict) -> list:
+def participants_of(rec: dict, employees: dict, with_super: bool = True) -> list:
     co_id = rec.get("companyId")
     out = [rec.get("empId"), rec.get("by")]
     for s in rec.get("steps") or []:
         out += s.get("approverIds") or []
-    out += _hr_ids_of(employees, co_id)
+    out += _hr_ids_of(employees, co_id, with_super)
     if rec.get("lines"):
         out += _team_ids_of(employees, co_id, "finance")
     return list(dict.fromkeys(i for i in out if i))
@@ -171,5 +183,5 @@ def build_steps_for(conn, employees: dict, coll: str, rec: dict, requester_id: s
     groups = {g["id"]: g for g in repo.records_where(conn, "approverGroups", "company_id", co_id)} if co_id else {}
     amount, data = _amount_and_data(coll, kind, rec)
     steps = build_steps(employees, depts, co, groups, kind, emp_id, requester_id, amount, data)
-    participants = participants_of({**rec, "steps": steps}, employees)
+    participants = participants_of({**rec, "steps": steps}, employees, co.get("source") != "register")
     return steps, participants

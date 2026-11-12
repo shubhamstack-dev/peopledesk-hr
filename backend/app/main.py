@@ -1655,8 +1655,11 @@ def report_run(body: ReportRunBody, me=Depends(current_user)):
     with repo.engine.connect() as conn:
         ctx = _ctx(conn, me)
         rd = _report_def_from(conn, body, me)
-        rows = reports.run(conn, rd, ctx)
-    cols = rd.get("columns") or [f for f, _ in reports.REPORTABLE.get(rd.get("baseCollection"), {}).get("fields", [])]
+        try:
+            rows = reports.run(conn, rd, ctx)
+        except ValueError:
+            raise HTTPException(400, "That cannot be reported on.")
+    cols = reports.columns_for(rd)
     return {"rows": rows[:5000], "total": len(rows), "columns": cols}
 
 
@@ -1666,8 +1669,11 @@ def report_export(body: ReportRunBody, me=Depends(current_user)):
     with repo.engine.connect() as conn:
         ctx = _ctx(conn, me)
         rd = _report_def_from(conn, body, me)
-        rows = reports.run(conn, rd, ctx)
-    cols = rd.get("columns") or [f for f, _ in reports.REPORTABLE.get(rd.get("baseCollection"), {}).get("fields", [])]
+        try:
+            rows = reports.run(conn, rd, ctx)
+        except ValueError:
+            raise HTTPException(400, "That cannot be reported on.")
+    cols = reports.columns_for(rd)
     data = reports.to_excel(rows, cols)
     name = f"{(rd.get('name') or rd.get('baseCollection') or 'report').replace(' ', '_')}.xlsx"
     return RawResponse(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
