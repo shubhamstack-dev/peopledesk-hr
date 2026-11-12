@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
+import MailSettings from './MailSettings.jsx';
 
 export default function Settings({ onSignedOut, onWiped }) {
   const S = E.getS();
@@ -66,6 +67,8 @@ export default function Settings({ onSignedOut, onWiped }) {
         </div>
         <div className="btns" style={{ justifyContent: 'flex-start' }}><button className="btn pri">Save</button></div>
       </form>}
+
+      {sup && <MailSettings />}
 
       <form className="card" onSubmit={changePw}>
         <h2>Your back-up password</h2>

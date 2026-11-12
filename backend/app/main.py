@@ -65,7 +65,8 @@ app = FastAPI(title="PeopleDesk HR API", version="2.0")
 def _migrate():
     migrate.run(repo.engine)
     # 2.15: automatic reimbursement runs on each company's cycle
-    reimb.start(repo.engine, send=mailer.send if mailer.configured() else None)
+    # mail set up later in the app is used too: the reminder sends only while mail is configured
+    reimb.start(repo.engine, send=lambda *a, **k: mailer.send(*a, **k) if mailer.configured() else None)
 if CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                        allow_methods=["GET", "POST"], allow_headers=["content-type", "x-peopledesk"])
@@ -895,6 +896,81 @@ def _guarded(fn, *args):
 def _require_super(me):
     if me.get("role") != "super":
         raise HTTPException(403, "Only the group administrator can do this.")
+
+
+# ---------------------------------------------------------------- e-mail sending (group administrator)
+class MailBody(BaseModel):
+    host: str = ""
+    port: int = 587
+    security: str = "starttls"          # starttls | ssl | none
+    auth: str = "password"              # password | m365 | none
+    user: str = ""
+    password: str = ""                  # empty keeps the saved one
+    fromAddr: str = ""
+    fromName: str = ""
+    tenant: str = ""
+    clientId: str = ""
+    clientSecret: str = ""              # empty keeps the saved one
+
+
+def _mail_view(d: dict, source: str) -> dict:
+    keys = ("host", "port", "security", "auth", "user", "fromAddr", "fromName", "tenant", "clientId")
+    return {**{k: d.get(k, "") for k in keys}, "hasPassword": bool(d.get("password")), "hasSecret": bool(d.get("clientSecret")), "source": source}
+
+
+@app.get("/api/admin/mail")
+def mail_get(me=Depends(current_user)):
+    _require_super(me)
+    with repo.engine.connect() as conn:
+        d = mailer.stored(conn)
+    if d.get("host"):
+        return _mail_view(d, "app")
+    env = mailer._env()
+    return _mail_view(env, "env" if env.get("host") else "none")
+
+
+@app.post("/api/admin/mail", dependencies=[Depends(require_csrf)])
+def mail_save(body: MailBody, me=Depends(current_user)):
+    _require_super(me)
+    if body.security not in ("starttls", "ssl", "none") or body.auth not in ("password", "m365", "none"):
+        raise HTTPException(400, "Choose the security and the sign-in method.")
+    if body.host.strip():
+        sender = (body.fromAddr or body.user).strip()
+        if not EMAIL.match(sender):
+            raise HTTPException(400, "Enter the address the mail comes from.")
+        if body.auth == "m365" and not (GUID.match(body.tenant.strip()) and GUID.match(body.clientId.strip())):
+            raise HTTPException(400, "For Microsoft 365, enter the Directory (tenant) ID and the Application (client) ID.")
+    with repo.engine.begin() as conn:
+        old = mailer.stored(conn)
+        d = {"host": body.host.strip(), "port": int(body.port or 587), "security": body.security, "auth": body.auth,
+             "user": body.user.strip(), "fromAddr": body.fromAddr.strip(), "fromName": body.fromName.strip()[:80],
+             "tenant": body.tenant.strip().lower(), "clientId": body.clientId.strip(),
+             "password": mailer.encrypt(body.password) if body.password else old.get("password", ""),
+             "clientSecret": mailer.encrypt(body.clientSecret) if body.clientSecret else old.get("clientSecret", "")}
+        if body.auth == "m365" and not d["clientSecret"]:
+            raise HTTPException(400, "Enter the client secret of the Microsoft 365 app.")
+        mailer.save(conn, d)
+        repo.audit_add(conn, "E-mail settings changed", f"{d['host']} ({d['auth']})" if d["host"] else "switched off", me["id"])
+    return _mail_view(d, "app" if d["host"] else "none")
+
+
+class MailTestBody(BaseModel):
+    to: str
+
+
+@app.post("/api/admin/mail/test", dependencies=[Depends(require_csrf)])
+def mail_test(body: MailTestBody, me=Depends(current_user)):
+    _require_super(me)
+    to = body.to.strip()
+    if not EMAIL.match(to):
+        raise HTTPException(400, "Enter the address to send the test to.")
+    if not mailer.configured():
+        raise HTTPException(400, "Save the server settings first.")
+    try:
+        mailer.send([to], "PeopleDesk HR: test e-mail", "This is a test from PeopleDesk HR. E-mail is working.")
+    except Exception as e:  # noqa: BLE001 - shown to the administrator as it is
+        raise HTTPException(502, f"Not sent: {str(e)[:300]}")
+    return {"ok": True}
 
 
 @app.get("/api/admin/backup")
