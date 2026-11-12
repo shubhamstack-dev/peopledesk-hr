@@ -57,7 +57,7 @@ export default function Reports() {
             return (
               <tr key={r.id}>
                 <td>{r.name}</td><td>{collLabel(r.baseCollection)}</td>
-                <td>{sch ? cadenceLabel(sch) : <button className="btn sm ghost" onClick={() => open(r.id, 'schedule')}>Schedule</button>}</td>
+                <td>{sch ? cadenceLabel(sch) : <button className="btn sm" onClick={() => open(r.id, 'schedule')}>Schedule</button>}</td>
                 <td><button className="btn sm" onClick={() => open(r.id, 'view')}>View</button> <button className="btn sm ghost" onClick={() => open(r.id, null)}>Open</button></td>
               </tr>
             );
@@ -80,6 +80,7 @@ function Editor({ fields, reportId, initialAction, onDone }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const schedRef = useRef(null);
+  const rowsRef = useRef(null);
 
   const coll = fields.find((c) => c.collection === baseCollection) || { fields: [] };
   const allFields = coll.fields.map(([f]) => f);
@@ -89,8 +90,11 @@ function Editor({ fields, reportId, initialAction, onDone }) {
 
   const run = async () => {
     setBusy(true); setMsg('');
-    try { const d = await api.post('/api/reports/run', body()); setRows(d.rows); setTotal(d.total); }
-    catch (x) { setMsg(x.message); } finally { setBusy(false); }
+    try {
+      const d = await api.post('/api/reports/run', body());
+      setRows(d.rows); setTotal(d.total);
+      setTimeout(() => rowsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    } catch (x) { setMsg(x.message); } finally { setBusy(false); }
   };
 
   // "View" from the list runs it straight away; "Schedule" scrolls down to the schedule card
@@ -159,8 +163,9 @@ function Editor({ fields, reportId, initialAction, onDone }) {
           <button className="btn pri" disabled={busy} onClick={save}>Save</button>
         </div>
 
+        {busy && !rows && <div className="empty">Running the report…</div>}
         {rows && (
-          <div className="scroll" style={{ maxHeight: 360 }}>
+          <div className="scroll" ref={rowsRef} style={{ maxHeight: 360 }}>
             <p className="fine">{total} row{total === 1 ? '' : 's'}{rows.length < total ? ` (showing the first ${rows.length})` : ''}</p>
             <table className="t">
               <thead><tr>{columns.map((c) => <th key={c}>{(coll.fields.find(([x]) => x === c) || [c, c])[1]}</th>)}</tr></thead>
