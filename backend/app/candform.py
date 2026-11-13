@@ -139,8 +139,10 @@ def candidates_for_login(conn, login: str) -> list:
     if not with_pw or not login:
         return []
     if "@" in login:
-        q = text("SELECT data FROM candidates WHERE email=:e AND id IN :ids ORDER BY updated_at DESC").bindparams(repo._expanding("ids"))
-        return [repo.loads(d) for d in conn.execute(q, {"e": login.lower(), "ids": with_pw}).scalars()]
+        # newest first, sorted here: MySQL sorting whole candidate rows can run out of sort memory (error 1038)
+        q = text("SELECT updated_at, data FROM candidates WHERE email=:e AND id IN :ids").bindparams(repo._expanding("ids"))
+        rows = sorted(conn.execute(q, {"e": login.lower(), "ids": with_pw}).all(), key=lambda r: r[0], reverse=True)
+        return [repo.loads(r[1]) for r in rows]
     ph = _phone10(login)
     if not ph:
         return []
@@ -230,6 +232,16 @@ def account_problem(conn, cand: dict) -> str:
         return ("This e-mail address belongs to an employee of the company. The candidate form is filled in by candidates, "
                 "not employees. If you are an employee, speak to HR.")
     return ""
+
+
+def signin_companies(conn, email: str) -> set:
+    """The companies where this e-mail address signs in as a candidate (a candidate with a password)."""
+    email = (email or "").strip().lower()
+    if not email:
+        return set()
+    rows = conn.execute(text("SELECT c.company_id FROM candidates c JOIN candidate_credentials k ON k.cand_id=c.id "
+                             "WHERE LOWER(c.email)=:e AND k.pw_hash IS NOT NULL"), {"e": email}).all()
+    return {r[0] for r in rows}
 
 
 def is_employee_login(conn, cand: dict) -> bool:

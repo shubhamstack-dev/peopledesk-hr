@@ -352,6 +352,13 @@ CODED = {"depts": "departments", "desigs": "designations", "grades": "grades", "
 
 def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
     """Returns the record to store, or raises Rejected."""
+    if coll == "employees":
+        # one e-mail address, one kind of sign-in: an address that already signs in as a candidate of another
+        # company cannot become an employee's (its own company's candidate who joins keeps it: that is the hire)
+        em = str(new.get("email") or "").strip().lower()
+        if em and em != str((old or {}).get("email") or "").strip().lower():
+            if candform.signin_companies(conn, em) - {new.get("companyId")}:
+                raise Rejected("that e-mail address is already used for another sign-in. Use a different address")
     co_new, co_old = record_company(conn, coll, new, ctx), record_company(conn, coll, old, ctx)
     if coll in CODED and str(new.get("code") or "").strip():
         # two departments, designations, grades or locations of one company never share a code (checked here too,

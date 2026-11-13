@@ -41,8 +41,10 @@ def is_empty(conn: Connection) -> bool:
 def load_state(conn: Connection) -> dict:
     st = blank_state()
     for c in COLLS:
-        rows = conn.execute(text(f"SELECT data FROM {c.table} ORDER BY created_at, id")).scalars()
-        st[c.name] = [loads(r) for r in rows]
+        # sorted here, not by MySQL: a sort of whole rows (big JSON such as offer letters and message threads)
+        # can exceed MySQL's sort buffer and fail with "Out of sort memory" (error 1038)
+        rows = sorted(conn.execute(text(f"SELECT created_at, id, data FROM {c.table}")).all(), key=lambda r: (r[0] is None, r[0] or 0, r[1]))
+        st[c.name] = [loads(r[2]) for r in rows]
     for k, data in conn.execute(text("SELECT k, data FROM app_kv")):
         if k in SINGLETONS:
             st[k] = loads(data)

@@ -242,6 +242,8 @@ def register(body: RegisterBody, request: Request, resp: Response):
             raise HTTPException(409, "That short code is already used by another company. Choose another.")
         if _find_by_email(conn, email):
             raise HTTPException(409, "An account with this e-mail already exists. Sign in instead.")
+        if candform.signin_companies(conn, email):
+            raise HTTPException(409, "This e-mail address is used for a candidate's sign-in. Register with your work e-mail address.")
         for coll, items in recs.items():
             if repo.get_records(conn, coll, [r["id"] for r in items]):
                 raise HTTPException(409, "Registration data clashes with existing records. Try again.")
