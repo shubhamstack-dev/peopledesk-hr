@@ -118,8 +118,8 @@ def _m365_token(s: dict) -> str:
 
 
 def send(to: list[str], subject: str, text_: str, html: str | None = None, cfg: dict | None = None,
-         attachments: list[tuple[str, bytes, str]] | None = None) -> None:
-    """attachments: [(filename, data, mime type), ...]."""
+         attachments: list[tuple[str, bytes, str]] | None = None, reply_to: str | None = None) -> None:
+    """attachments: [(filename, data, mime type), ...]. reply_to: where replies go (2.19: the replies mailbox)."""
     s = cfg or settings()
     to = [t for t in dict.fromkeys(to) if t]
     if not to:
@@ -130,6 +130,8 @@ def send(to: list[str], subject: str, text_: str, html: str | None = None, cfg: 
     msg = EmailMessage()
     msg["From"] = formataddr((s.get("fromName") or "", sender))
     msg["To"], msg["Subject"] = ", ".join(to), subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.set_content(text_)
     if html:
         msg.add_alternative(html, subtype="html")

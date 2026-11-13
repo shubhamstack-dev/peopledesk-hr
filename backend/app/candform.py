@@ -683,4 +683,6 @@ def redact(cand: dict) -> dict:
     f = cand.get("form")
     if isinstance(f, dict):
         cand["form"] = {k: f.get(k) for k in ("status", "sentAt", "submittedAt") if k in f}
+    for k in ("msgs", "msgRef", "msgOwner"):          # 2.19: the conversation with the candidate is HR's
+        cand.pop(k, None)
     return cand

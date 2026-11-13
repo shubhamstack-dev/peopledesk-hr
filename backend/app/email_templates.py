@@ -120,6 +120,55 @@ DEFAULTS: dict[str, dict] = {
         "tags": [("name", "recipient's name, if known, else \"there\""), ("reportName", "the saved report's name"),
                   ("when", "when the report was run"), ("rowCount", "how many rows it returned")],
     },
+    # 2.18: the recruitment flow
+    "recruit.shortlist": {
+        "subject": "Shortlist for {{ job }} ({{ reqNo }}): {{ count }} candidate{{ 's' if count > 1 else '' }} for your approval",
+        "body": "Dear {{ firstName }},\n\n{{ sender }} has shortlisted {{ count }} candidate{{ 's' if count > 1 else '' }} for {{ job }} ({{ reqNo }}) "
+                "and asks for your approval before interviews are arranged:\n\n{{ candidatesLines }}\n{{ noteBlock }}\n"
+                "Approve, reject or hold each candidate: {{ link }}\n",
+        "tags": [("firstName", "approver's first name"), ("sender", "who sent the shortlist"), ("job", "requisition title"),
+                 ("reqNo", "requisition number"), ("count", "number of candidates"), ("candidatesLines", "one line per candidate"),
+                 ("noteBlock", "\"Note: ...\" or empty"), ("link", "link to the approval page")],
+    },
+    "recruit.selection": {
+        "subject": "Final selection for {{ job }} ({{ reqNo }}): your decision",
+        "body": "Dear {{ firstName }},\n\nThe interviews for {{ job }} ({{ reqNo }}) are complete. {{ sender }} proposes:\n\n{{ candidatesLines }}\n\n"
+                "Agree or decide otherwise for each candidate: {{ link }}\n",
+        "tags": [("firstName", "hiring manager's first name"), ("sender", "who made the proposal"), ("job", "requisition title"),
+                 ("reqNo", "requisition number"), ("candidatesLines", "one line per candidate with the proposal"), ("link", "link to the final selection")],
+    },
+    "recruit.referral": {
+        "subject": "Your view needed on {{ candidate }} for {{ job }}",
+        "body": "Dear {{ firstName }},\n\n{{ sender }} interviewed {{ candidate }} for {{ job }} ({{ round }}) and refers the decision to you."
+                "{{ questionBlock }}\n\nSee the CV and the interview feedback, then recommend hiring, rejection or hold: {{ link }}\n",
+        "tags": [("firstName", "first name of the person referred to"), ("sender", "the interviewer"), ("candidate", "candidate's name"),
+                 ("job", "requisition title"), ("round", "interview round"), ("questionBlock", "\"\\n\\nQuestion: ...\" or empty"), ("link", "link to the candidate")],
+    },
+    # 2.19: the conversation with a candidate, both ways
+    "candidate.message": {
+        "subject": "{{ subject }}",
+        "body": "Dear {{ firstName }},\n\n{{ text }}\n{{ filesLine }}\n{{ replyLine }}\n{{ link }}\n\n{{ sender }}\n{{ company }}\n",
+        "tags": [("firstName", "candidate's first name"), ("subject", "the message's subject"), ("text", "the message"), ("filesLine", "names of files attached, or empty"),
+                 ("replyLine", "how to reply"), ("link", "the sign-in page"), ("sender", "who wrote it"), ("company", "company name")],
+    },
+    "candidate.toHr": {
+        "subject": "{{ candidate }}: {{ subject }}",
+        "body": "Dear {{ firstName }},\n\n{{ candidate }} ({{ job }}) wrote{{ via }}:\n\n{{ text }}\n{{ filesLine }}\n{{ replyLine }}\n{{ link }}\n",
+        "tags": [("firstName", "your first name"), ("candidate", "candidate's name"), ("job", "the job"), ("subject", "the message's subject"), ("via", "\" in the candidate portal\" or \" by e-mail\""),
+                 ("text", "the message"), ("filesLine", "files attached, or empty"), ("replyLine", "how to answer"), ("link", "the candidate in PeopleDesk")],
+    },
+    "candidate.notice.interview": {
+        "subject": "{{ headline }}: {{ job }}, {{ when }}",
+        "body": "{{ intro }}\n\n{{ round }}: {{ when }} ({{ duration }} minutes)\n{{ where }}\n{{ panelLine }}\n\n{{ outro }}",
+        "tags": [("headline", "Interview, Interview moved or Interview cancelled"), ("intro", "first sentence"), ("job", "the job"), ("round", "e.g. First round"),
+                 ("when", "date and time"), ("duration", "minutes"), ("where", "the link, venue or phone"), ("panelLine", "who interviews, or empty"), ("outro", "last sentence")],
+    },
+    "candidate.notice.offer": {
+        "subject": "Your offer: {{ job }}",
+        "body": "We are pleased to offer you the position of {{ job }}{{ roundWord }}. Your offer letter {{ letterNo }} is in your candidate portal: "
+                "read it there, then accept it, decline it or ask for changes.{{ expiryLine }}",
+        "tags": [("job", "the job"), ("roundWord", "\" (revised offer)\" or empty"), ("letterNo", "offer letter number"), ("expiryLine", "\" Please reply by ...\" or empty")],
+    },
 }
 
 MAIL_KEYS = list(DEFAULTS)

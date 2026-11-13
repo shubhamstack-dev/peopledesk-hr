@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import text
 
-from . import candform, comp, perf, repo, training, workflow, workforce
+from . import candform, comp, cportal, perf, recruit, repo, training, workflow, workforce
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
@@ -366,8 +366,14 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
         # what the candidate entered through their link is kept as stored (candform.py)
         try:
             new = candform.merge_from_app(dict(new), old, ctx.id)
+            new = cportal.merge_cand(new, old)       # 2.19: the conversation is written only on the server
         except candform.Problem as e:
             raise Rejected(str(e)) from None
+    if coll == "apps":
+        new = cportal.merge_app(dict(new), old)       # 2.19: what the candidate did in the portal stands
+    if coll in ("apps", "interviews"):
+        # 2.18: management approval, feedback, final selection and the signed offer (recruit.py), for everyone
+        _recruit(conn, coll, new, old, ctx, co_new or co_old)
     if ctx.is_super:
         if ctx.private and ({co_new, co_old} & ctx.private or (coll == "employees" and set(new.get("hrCompanies") or []) & ctx.private)):
             raise Rejected("this belongs to another company")
@@ -447,6 +453,45 @@ def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict
             if not (coll == "goals" and no_manager):
                 raise Rejected("you cannot approve your own request")
     return new
+
+
+def _one(conn, coll: str, rid):
+    return (repo.get_records(conn, coll, [rid]) or {}).get(rid) if rid else None
+
+
+def _same_company(conn, ids: list, coid, ctx: Ctx):
+    """Approvers, panel members and people referred to must be able to act for the requisition's company: they
+    are e-mailed the candidate's details. The group administrator only for the companies of its own group."""
+    private = repo.registered_companies(conn)
+    for i in ids:
+        if not i:
+            continue
+        e = ctx.emps.get(i) or {}
+        if not (e.get("companyId") == coid or coid in (e.get("hrCompanies") or []) or (e.get("role") == "super" and coid not in private)):
+            raise Rejected("approvers, interviewers and people referred to must be from this company")
+
+
+def _recruit(conn, coll: str, new: dict, old: dict | None, ctx: Ctx, co):
+    """2.18: an application or interview, against its requisition and the company's recruitment settings.
+    Records saved earlier in the same batch are already in the database (companies, then requisitions,
+    candidates, applications, then interviews)."""
+    try:
+        if coll == "apps":
+            req = _one(conn, "reqs", new.get("reqId") or (old or {}).get("reqId"))
+            coid = (req or {}).get("companyId") or co
+            recruit.check_app(new, old, ctx.id, ctx.is_hr_for(coid), req, _one(conn, "companies", coid))
+            _same_company(conn, [x.get("id") for x in ((new.get("shortlist") or {}).get("approvers") or []) if isinstance(x, dict)], coid, ctx)
+            return
+        app = _one(conn, "apps", new.get("appId") or (old or {}).get("appId"))
+        req = _one(conn, "reqs", (app or {}).get("reqId"))
+        coid = (req or {}).get("companyId") or co
+        owners = {(req or {}).get("hiringMgr"), (req or {}).get("createdBy"), (old or {}).get("createdBy")} - {None, ""}
+        recruit.check_interview(new, old, ctx.id, ctx.is_hr_for(coid), owners)
+        _same_company(conn, list(new.get("panel") or []) + [x.get("to") for x in (new.get("referrals") or []) if isinstance(x, dict)], coid, ctx)
+        if not old:
+            recruit.check_new_interview(app, _one(conn, "companies", coid))
+    except recruit.Problem as e:
+        raise Rejected(str(e)) from None
 
 
 def _comp_context(conn, rec: dict):

@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import { PublicClientApplication } from '@azure/msal-browser';
 import { createSync } from './sync.js';
 import { api } from '../api.js';
+import { PORTALS, PI_FIELDS, findHeaderRow, autoMap, rowToCand, matchCvFile } from './portal-import.js';
 
 /* What the React app plugs in */
 const hooks = { refresh: () => {}, logout: () => {}, onSyncRejected: () => {}, onSessionEnded: () => {}, reload: async () => {} };
@@ -880,6 +881,8 @@ const MENU = [
     { page: 'reqs', label: 'Job requisitions', show: MGR },
     { page: 'cands', label: 'Candidates and CVs', show: HR },
     { page: 'interviews', label: 'Interviews', show: () => isHR() || isManager() || S.interviews.some((i) => (i.panel || []).includes(me.id)) },
+    { page: 'slapprove', label: 'Shortlists to approve', show: () => isHR() || isManager() || rflow(CO).slIds.includes(me.id) || S.apps.some(slMine) },
+    { page: 'finalsel', label: 'Final selection', show: () => MGR() || S.reqs.some((r) => r.hiringMgr === me.id) },
     { page: 'offers', label: 'Offers and approvals', show: () => isHR() || S.companies.some((c) => c.payrollApproverId === me.id) },
     { page: 'recruitsetup', label: 'Recruitment settings', show: HR },
   ] },
@@ -3019,21 +3022,21 @@ function rehireEmp(e, d, source) {
    Recruitment: job requisitions, candidates and CVs, pipeline, F2F/video/phone interviews,
    follow-ups, offer with payroll approval, offer letter, joining (new hire or rehire)
    ===================================================================== */
-const RSTAGES = { sourced: 'Sourced', screening: 'Screening', interview: 'Interview', selected: 'Selected', offer: 'Offer approval', offered: 'Offer issued', accepted: 'Offer accepted', joined: 'Joined', rejected: 'Rejected', withdrawn: 'Withdrawn' };
-const BOARD = ['sourced', 'screening', 'interview', 'selected', 'offer', 'offered', 'accepted', 'joined'];
+const RSTAGES = { sourced: 'Sourced', screening: 'Screening', approval: 'Management approval', interview: 'Interview', selected: 'Selected', offer: 'Offer approval', offered: 'Offer issued', accepted: 'Offer accepted', joined: 'Joined', rejected: 'Rejected', withdrawn: 'Withdrawn' };
+const BOARD = ['sourced', 'screening', 'approval', 'interview', 'selected', 'offer', 'offered', 'accepted', 'joined'];
 const REQ_STATUS = { draft: ['Draft', ''], pending: ['Waiting for approval', 'warn'], open: ['Open', 'ok'], onhold: ['On hold', 'info'], closed: ['Closed', ''], rejected: ['Not approved', 'bad'] };
 const SOURCES = ['Job portal', 'Employee referral', 'Recruitment agency', 'Company website', 'LinkedIn', 'Campus', 'Walk-in', 'Former employee'];
 const MODES = { f2f: 'Face to face', video: 'Video call', phone: 'Phone' };
-const RECS = { strong: 'Strong hire', hire: 'Hire', hold: 'Hold', no: 'No hire' };
+const RECS = { hire: 'Recommend hiring', reject: 'Reject', hold: 'On hold', refer: 'Refer to others', strong: 'Strong hire', no: 'No hire' };
 const reqById = (id) => S.reqs.find((r) => r.id === id);
 const candById = (id) => S.cands.find((c) => c.id === id);
 const appById = (id) => S.apps.find((a) => a.id === id);
 const canSeeReq = (r) => isHR(r.companyId) || r.hiringMgr === me.id || r.createdBy === me.id;
 const isOfferApprover = (a) => !!(a.offer && (a.offer.approvals || []).some((x) => x.who === me.id || (x.who === 'super' && isSuper())));
-const canSeeApp = (a) => { const r = reqById(a.reqId); return r && (canSeeReq(r) || isOfferApprover(a) || S.interviews.some((i) => i.appId === a.id && (i.panel || []).includes(me.id))); };
+const canSeeApp = (a) => { const r = reqById(a.reqId); return r && (canSeeReq(r) || isOfferApprover(a) || S.interviews.some((i) => i.appId === a.id && (i.panel || []).includes(me.id)) || rcCanSee(a)); };
 const exEmployeeFor = (c) => S.employees.find((e) => e.status === 'exited' && ((c.email && (e.personalEmail || '').toLowerCase() === c.email.toLowerCase()) || (c.email && (e.email || '').toLowerCase() === c.email.toLowerCase()) || (c.phone && e.phone && e.phone.replace(/\D/g, '').slice(-10) === c.phone.replace(/\D/g, '').slice(-10))));
 const setStage = (a, stage, note) => { a.stage = stage; a.stageAt = Date.now(); (a.history = a.history || []).push({ stage, at: Date.now(), by: me.id, note: note || '' }); };
-const stageBadge = (s) => `<span class="badge ${s === 'joined' ? 'ok' : s === 'rejected' || s === 'withdrawn' ? 'bad' : ['offer', 'offered', 'accepted'].includes(s) ? 'mari' : 'info'}">${RSTAGES[s]}</span>`;
+const stageBadge = (s) => `<span class="badge ${s === 'approval' ? 'warn' : s === 'joined' ? 'ok' : s === 'rejected' || s === 'withdrawn' ? 'bad' : ['offer', 'offered', 'accepted'].includes(s) ? 'mari' : 'info'}">${RSTAGES[s]}</span>`;
 function inWords(n) {
   n = Math.round(+n || 0); if (!n) return 'zero rupees';
   const a = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
@@ -3495,14 +3498,14 @@ This offer is subject to satisfactory reference and background checks and to the
 On joining, please bring: proof of identity and address, PAN card, Aadhaar, educational certificates, relieving letter and last three payslips from your current employer, and two photographs.
 
 We look forward to welcoming you.`;
-ACT.offerLetter = () => {
-  const a = curApp(), o = a.offer, r = reqById(a.reqId), c = candById(a.candId), co = coById(r.companyId); const k = offerCalc(a);
+function offerLetterParts(a) {   // 2.19: built once, printed for HR and kept on the offer for the candidate
+  const o = a.offer, r = reqById(a.reqId), c = candById(a.candId), co = coById(r.companyId); const k = offerCalc(a);
   const tpl = co.offerTemplate || S.settings.offerTemplate || OFFER_TEMPLATE;
   const vals = { name: c.name, designation: (desig(o.desigId) || {}).name || r.title, department: (dept(r.deptId) || {}).name || '', company: co.legalName || co.name, location: (loc(o.locationId) || {}).name || '', manager: nameOf(o.managerId),
     ctc: inr0(o.ctc), ctcWords: inWords(o.ctc).replace(/^./, (x) => x.toUpperCase()), doj: dmy(o.doj), probation: o.probationMonths, expiry: dmy(o.expiry), bonusLine: +o.joiningBonus ? `You will also receive a one-time joining bonus of ${inr0(o.joiningBonus)}. ` : '' };
   const body = tpl.replace(/\{\{(\w+)\}\}/g, (m, key) => esc(vals[key] ?? m));
   const comps = compsFor(r.companyId).filter((x) => x.kind === 'earning' && x.calc !== 'input' && k.st.amounts[x.code]);
-  printHtml(`Offer letter ${o.letterNo}`, `<div style="border-bottom:2px solid #0E2A24;padding-bottom:8px;margin-bottom:16px"><h2>${esc(co.legalName || co.name)}</h2><div class="fine">${esc(co.address || '')}</div></div>
+  return { title: `Offer letter ${o.letterNo}`, html: `<div style="border-bottom:2px solid #0E2A24;padding-bottom:8px;margin-bottom:16px"><h2>${esc(co.legalName || co.name)}</h2><div class="fine">${esc(co.address || '')}</div></div>
     <p>Ref: ${esc(o.letterNo)}<br>Date: ${dmy(isoOf(new Date(o.issuedAt || Date.now())))}</p><p>${esc(c.name)}<br>${esc(c.email)}, ${esc(c.phone)}</p><h2>Offer of employment</h2>
     <div style="white-space:pre-wrap;line-height:1.55">${body}</div><br><p>For ${esc(co.legalName || co.name)}<br><br><br>Authorised signatory, Human resources</p>
     <p style="margin-top:30px">I accept this offer.<br><br>Signature ______________________ Date ____________</p>
@@ -3511,13 +3514,14 @@ ACT.offerLetter = () => {
       <tr><td><b>Gross pay (A)</b></td><td class="r"><b>${inr0(k.st.gross)}</b></td><td class="r"><b>${inr0(k.st.gross * 12)}</b></td></tr>
       <tr><td>Employer provident fund</td><td class="r">${inr0(k.st.employerPF)}</td><td class="r">${inr0(k.st.employerPF * 12)}</td></tr>${k.st.employerESI ? `<tr><td>Employer ESI</td><td class="r">${inr0(k.st.employerESI)}</td><td class="r">${inr0(k.st.employerESI * 12)}</td></tr>` : ''}
       ${k.st.gratuity ? `<tr><td>Gratuity</td><td class="r">${inr0(k.st.gratuity)}</td><td class="r">${inr0(k.st.gratuity * 12)}</td></tr>` : ''}<tr><td><b>Cost to company</b></td><td class="r"><b>${inr0(k.st.monthlyCTC)}</b></td><td class="r"><b>${inr0(o.ctc)}</b></td></tr></table>
-      <p class="fine">Statutory deductions from gross pay: employee provident fund, ${k.esiEE ? 'ESI, ' : ''}professional tax where applicable, and income tax under the regime you choose. Estimated monthly take-home on joining: ${inr0(k.net)}.</p></div>`);
-};
+      <p class="fine">Statutory deductions from gross pay: employee provident fund, ${k.esiEE ? 'ESI, ' : ''}professional tax where applicable, and income tax under the regime you choose. Estimated monthly take-home on joining: ${inr0(k.net)}.</p></div>` };
+}
+ACT.offerLetter = () => { const p = offerLetterParts(curApp()); printHtml(p.title, p.html); };
 ACT.offerResp = async (b) => { const a = curApp(), o = a.offer, ok = b.dataset.r === 'accepted'; const n = ok ? '' : await askText('Offer declined', 'Reason given by the candidate', 'Save'); if (!ok && n === null) return;
   o.status = b.dataset.r; o.respondedAt = Date.now(); o.declineReason = n; setStage(a, ok ? 'accepted' : 'rejected', ok ? 'Offer accepted' : `Offer declined: ${n}`);
   if (ok) (a.followups = a.followups || []).push({ id: uid(), due: addDays(o.doj, -3) < todayISO() ? todayISO() : addDays(o.doj, -3), note: 'Confirm joining date', done: false, by: me.id });
   saveNow(); toast(ok ? 'Offer accepted' : 'Offer declined'); route(); };
-function markJoined(a, e) { const r = reqById(a.reqId); setStage(a, 'joined', `Joined as ${e.empNo}`); a.empId = e.id; a.closure = { ...(a.closure || {}), outcome: 'joined', outcomeAt: Date.now(), outcomeBy: me.id, joinedOn: e.doj }; r.filled = (r.filled || 0) + 1; if (r.filled >= r.positions) { r.status = 'closed'; r.approvals.push({ by: me.id, at: Date.now(), decision: 'filled' }); } }
+function markJoined(a, e) { const r = reqById(a.reqId); signedToDocument(a, e); setStage(a, 'joined', `Joined as ${e.empNo}`); a.empId = e.id; a.closure = { ...(a.closure || {}), outcome: 'joined', outcomeAt: Date.now(), outcomeBy: me.id, joinedOn: e.doj }; r.filled = (r.filled || 0) + 1; if (r.filled >= r.positions) { r.status = 'closed'; r.approvals.push({ by: me.id, at: Date.now(), decision: 'filled' }); } }
 ACT.offerJoin = () => {
   const a = curApp(), o = a.offer, r = reqById(a.reqId), c = candById(a.candId), co = coById(r.companyId);
   if (c.exEmpId) { ACT.rehireStart({ dataset: { id: c.exEmpId } }, { companyId: r.companyId, doj: o.doj, deptId: r.deptId, desigId: o.desigId, gradeId: o.gradeId, locationId: o.locationId, managerId: o.managerId, ctc: o.ctc, probationMonths: o.probationMonths, source: `Rehired through ${r.no}`, onDone: (e) => markJoined(a, e) }); return; }
@@ -4807,6 +4811,8 @@ function extPending() {
   trPending().forEach((x) => out.push(x));
   wfPending().forEach((x) => out.push(x));
   p11Pending().forEach((x) => out.push(x));
+  rcPending().forEach((x) => out.push(x));
+  candPending().forEach((x) => out.push(x));
   return out;
 }
 function extEnsureSchema() {
@@ -10241,9 +10247,10 @@ function negoCard(a, c, r) {
   const terms = (ctc, doj, bonus, other) => [ctc ? inr0(ctc) : '', doj ? `joining ${dmy(doj)}` : '', +bonus ? `bonus ${inr0(bonus)}` : '', other || ''].filter(Boolean).map(esc).join(', ') || '—';
   return `<div class="card"><div class="hd"><div><h2>Negotiation</h2><p class="sub">Each round of the candidate’s asks and our answer. Agreed terms become the offer when you revise it; an offer above the budget needs group approval.</p></div>
       <div class="tools">${differs ? '<button class="btn pri" data-act="negoRevise">Revise the offer to the agreed terms</button>' : ''}${!['joined', 'rejected', 'withdrawn'].includes(a.stage) ? '<button class="btn" data-act="negoNew">Record a round</button>' : ''}</div></div>
-    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Round</th><th>Candidate asked</th><th>We offered</th><th>Outcome</th></tr></thead><tbody>${list.map((x, k) => `<tr><td><b>${k + 1}</b> <span class="fine">${dmy(x.date)}, ${esc(nameOf(x.by))}</span></td>
+    ${list.length ? `<div class="scroll"><table class="t"><thead><tr><th>Round</th><th>Candidate asked</th><th>We offered</th><th>Outcome</th></tr></thead><tbody>${list.map((x, k) => `<tr><td><b>${k + 1}</b> <span class="fine">${dmy(x.date)}, ${x.viaPortal ? 'asked in the candidate portal' : esc(nameOf(x.by))}</span></td>
       <td>${terms(x.askCtc, x.askDoj, x.askBonus, x.askOther)}${+x.askCtc > +r.ctcMax ? ' <span class="badge bad">Above budget</span>' : ''}</td><td>${terms(x.ourCtc, x.ourDoj, x.ourBonus)}</td>
-      <td>${trBadge(NEGO_OUT, x.outcome)}${x.note ? `<div class="fine">${esc(x.note)}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">No negotiation recorded.</p>'}
+      <td>${trBadge(NEGO_OUT, x.outcome)}${x.note ? `<div class="fine">${esc(x.note)}</div>` : ''}${x.answer ? `<div class="fine">Our answer: ${esc(x.answer)}</div>` : ''}
+        ${x.viaPortal && x.outcome === 'open' && !['joined', 'rejected', 'withdrawn'].includes(a.stage) ? `<button class="btn sm pri" data-act="negoAnswer" data-id="${x.id}">Answer the candidate</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="mut">No negotiation recorded.</p>'}
     ${(o && o.versions || []).length ? `<p class="fine">Earlier versions of the offer: ${o.versions.map((v) => `${inr0(v.ctc)}, joining ${dmy(v.doj)}${v.letterNo ? ` (${esc(v.letterNo)})` : ''}`).join('; ')}.</p>` : ''}</div>`;
 }
 ACT.negoNew = () => {
@@ -10942,6 +10949,686 @@ function showBroadcasts() {
   list.forEach((p) => { const a = $('#bc_' + p.id); if (a) a.onclick = () => { try { sessionStorage.setItem(key, '1'); } catch (e) { /* ignore */ } closeDlg(); }; });
   return true;
 }
+
+/* =====================================================================
+   PeopleDesk 2.18: the recruitment flow, end to end.
+   CVs from job portals (import) or the candidate's form -> HR shortlists (Screening) -> management approves
+   the shortlist (stage Management approval) -> interviews, online or face to face, each panel member filling
+   in the feedback form (hire, reject, hold, or refer the decision to others) -> the final selection, HR
+   proposing and the hiring manager deciding -> offer rounds -> acceptance with the signed offer letter ->
+   joining. The server checks every step (backend/app/recruit.py).
+   ===================================================================== */
+const RF0 = { slOn: true, slHM: true, slIds: [], slRule: 'any', selOn: true, signOn: true };
+const CRIT0 = [['tech', 'Technical and functional knowledge'], ['exp', 'Relevant experience'], ['prob', 'Problem solving'], ['comm', 'Communication'],
+  ['fit', 'Attitude and culture fit'], ['team', 'Teamwork and leadership']];
+function rflow(coId) { return { ...RF0, ...((coById(coId) || {}).rflow || {}) }; }
+function ivCriteria(coId) { const c = (coById(coId) || {}).ivCriteria; return Array.isArray(c) && c.length ? c : CRIT0.map(([k, name]) => ({ k, name })); }
+const appCoId = (a) => (reqById(a.reqId) || {}).companyId;
+const PRE_IV = ['sourced', 'screening', 'approval'];
+const REC_CLS = { hire: 'ok', strong: 'ok', reject: 'bad', no: 'bad', hold: 'warn', refer: 'info' };
+const recBadge = (k) => (k ? `<span class="badge ${REC_CLS[k] || ''}">${esc(RECS[k] || k)}</span>` : '');
+const SL_ST = { pending: ['Waiting for approval', 'warn'], approved: ['Approved for interviews', 'ok'], rejected: ['Not approved', 'bad'], hold: ['On hold', 'info'], skipped: ['Interviewed without approval', 'info'] };
+const SL_D = { approve: ['Approved', 'ok'], reject: ['Rejected', 'bad'], hold: ['Hold', 'info'] };
+const SEL_W = { select: ['Select', 'ok'], reject: ['Reject', 'bad'], hold: ['Keep on hold', 'warn'] };
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const last10 = (p) => String(p || '').replace(/\D/g, '').slice(-10);
+
+/* where a shortlist approval stands: the same rule as the server (recruit.sl_status) */
+function slStatus(sl) {
+  const ap = (sl.approvers || []); const ds = ap.map((x) => x.decision || ''); if (!ap.length) return 'pending';
+  if ((sl.rule || 'any') === 'all') { if (ds.includes('reject')) return 'rejected'; if (ds.every((d) => d === 'approve')) return 'approved'; if (!ds.includes('') && ds.includes('hold')) return 'hold'; return 'pending'; }
+  const dec = ap.filter((x) => x.decision).sort((x, y) => (x.at || 0) - (y.at || 0)); if (!dec.length) return 'pending';
+  return { approve: 'approved', reject: 'rejected', hold: 'hold' }[dec[dec.length - 1].decision];
+}
+function slApprovers(r) {
+  const f = rflow(r.companyId); const ids = [...(f.slHM && r.hiringMgr ? [r.hiringMgr] : []), ...(f.slIds || [])];
+  return [...new Set(ids)].filter((i) => { const e = empById(i); return e && active(e); });
+}
+const slOk = (a) => !rflow(appCoId(a)).slOn || !PRE_IV.includes(a.stage) || ['approved', 'skipped'].includes((a.shortlist || {}).status);
+const slEntry = (a) => ((a.shortlist || {}).approvers || []).find((x) => x.id === me.id);
+function slMine(a) {
+  const sl = a.shortlist; if (!me || !sl || a.stage !== 'approval' || !['pending', 'hold'].includes(sl.status)) return false;
+  const x = slEntry(a); return !!x && (!x.decision || x.decision === 'hold');
+}
+/* people outside HR and the requisition who still see the candidate: approvers, the hiring manager deciding, people referred to */
+function rcCanSee(a) {
+  if (!me) return false;
+  return ((a.shortlist || {}).approvers || []).some((x) => x.id === me.id) || (a.sel || {}).mgrId === me.id
+    || S.interviews.some((i) => i.appId === a.id && (i.referrals || []).some((x) => x.to === me.id));
+}
+async function rcSave() { try { await sync.flush(); } catch (x) { /* a refused save shows its reason and reloads */ } }
+async function rcNotify(body) {
+  try { const res = await api.post('/api/recruit/notify', body); if (res.sent) toast(`E-mailed ${res.to}`); else toast(`Saved. Not e-mailed: ${res.reason}.`); }
+  catch (x) { toast(`Saved. Not e-mailed: ${x.message}`); }
+}
+
+/* ---------------------------------------------------------------- interviews: are they done? */
+function ivReady(a) {
+  const ivs = S.interviews.filter((i) => i.appId === a.id && i.status !== 'cancelled');
+  if (!ivs.length) return { ok: false, why: 'no interview yet' };
+  const sched = ivs.filter((i) => i.status === 'scheduled').length;
+  const due = [...new Set(ivs.filter((i) => i.status === 'completed').flatMap((i) => (i.panel || []).filter((p) => !(i.feedback || {})[p])))];
+  const refs = [...new Set(ivs.flatMap((i) => (i.referrals || []).filter((x) => !x.decision).map((x) => x.to)))];
+  const why = [sched ? `${plural(sched, 'interview')} still scheduled` : '', due.length ? `feedback due from ${due.map(nameOf).join(', ')}` : '',
+    refs.length ? `referral not answered by ${refs.map(nameOf).join(', ')}` : ''].filter(Boolean).join('; ');
+  return { ok: !why, why };
+}
+function fbStats(a) {
+  const ivs = S.interviews.filter((i) => i.appId === a.id); const fbs = ivs.flatMap((i) => Object.values(i.feedback || {}));
+  const refs = ivs.flatMap((i) => (i.referrals || []).filter((x) => x.decision)); const n = {};
+  fbs.forEach((f) => { const k = f.rec === 'strong' ? 'hire' : f.rec === 'no' ? 'reject' : f.rec; n[k] = (n[k] || 0) + 1; });
+  refs.forEach((x) => { n[x.decision] = (n[x.decision] || 0) + 1; });
+  return { n, count: fbs.length + refs.length, avg: fbs.length ? Math.round(fbs.reduce((s, f) => s + (+f.rating || 0), 0) / fbs.length * 10) / 10 : null };
+}
+const statsHtml = (st) => (st.count ? `${['hire', 'hold', 'refer', 'reject'].filter((k) => st.n[k]).map((k) => `${recBadge(k)}&nbsp;${st.n[k]}`).join(' ')}${st.avg ? ` <span class="fine">average ${st.avg}/5</span>` : ''}` : '<span class="fine">No feedback yet</span>');
+
+/* ---------------------------------------------------------------- approvals inbox */
+function rcPending() {
+  if (!me) return []; const out = [];
+  const byReq = (list) => list.reduce((m, a) => { (m[a.reqId] = m[a.reqId] || []).push(a); return m; }, {});
+  Object.entries(byReq(S.apps.filter(slMine))).forEach(([rid, list]) => { const r = reqById(rid); if (r) out.push({ kind: 'rcsl', r: { cand: plural(list.length, 'candidate') }, what: `Shortlist for ${r.title} (${r.no}) to approve`, link: `#/slapprove?req=${rid}` }); });
+  S.interviews.forEach((i) => (i.referrals || []).filter((x) => x.to === me.id && !x.decision).forEach((x) => { const a = appById(i.appId); const c = a && candById(a.candId);
+    if (c) out.push({ kind: 'rcref', r: { cand: c.name }, what: `Your decision, asked by ${nameOf(x.by)} after the ${i.round.toLowerCase()}`, link: '#/app/' + a.id }); }));
+  Object.entries(byReq(S.apps.filter((a) => (a.sel || {}).status === 'proposed' && a.sel.mgrId === me.id && a.stage === 'interview'))).forEach(([rid, list]) => { const r = reqById(rid);
+    if (r) out.push({ kind: 'rcsel', r: { cand: plural(list.length, 'candidate') }, what: `Final selection for ${r.title} (${r.no}): your decision`, link: `#/finalsel/${rid}` }); });
+  S.reqs.filter((r) => ['open', 'onhold'].includes(r.status) && isHR(r.companyId) && rflow(r.companyId).selOn).forEach((r) => {
+    const ready = S.apps.filter((a) => a.reqId === r.id && a.stage === 'interview' && !['proposed'].includes((a.sel || {}).status) && (a.sel || {}).final !== 'hold' && ivReady(a).ok);
+    if (ready.length) out.push({ kind: 'rcsel', r: { cand: plural(ready.length, 'candidate') }, what: `Interviews done: final selection for ${r.title} (${r.no})`, link: `#/finalsel/${r.id}` }); });
+  return out;
+}
+
+/* ================================================================ import from job portals */
+function readGrid(file) {
+  return new Promise((res, rej) => { const fr = new FileReader();
+    fr.onload = () => { try { const wb = XLSX.read(fr.result, { type: 'array', cellDates: true }); res(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false })); } catch (e) { rej(new Error('That file could not be read as Excel or CSV.')); } };
+    fr.onerror = () => rej(new Error('That file could not be read.')); fr.readAsArrayBuffer(file); });
+}
+const dataUrl = (file) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(new Error(`${file.name} could not be read.`)); fr.readAsDataURL(file); });
+const PI_ST = { new: ['New', 'ok'], existing: ['Already in the pool', 'info'], twice: ['Twice in the file', ''], bad: ['Left out: needs a name and an e-mail or mobile', 'bad'] };
+ACT.portalImport = (b) => {
+  const st = { head: [], rows: [], map: {}, recs: [], files: [], cvFor: {} };
+  const reqs = S.reqs.filter((r) => r.companyId === CO && r.status === 'open' && canSeeReq(r));
+  openDlg(`<form class="dlg" id="piF" novalidate><h2>Import candidates from a job portal</h2>
+    <p class="fine" style="margin:0">Export the applicants or search results from the portal as Excel or CSV (Naukri RMS or Resdex, LinkedIn, Indeed, foundit, Shine and others) and choose the file. The columns are matched by their names: check them below before you import.</p>
+    <div class="form">${fieldHtml({ k: 'portal', label: 'Portal', type: 'select', opts: PORTALS.map((p) => [p, p]) }, 'Naukri')}${fieldHtml({ k: 'reqId', label: 'Assign to requisition', type: 'select', opts: reqs.map((r) => [r.id, `${r.title} (${r.no})`]), blank: 'Do not assign now' }, b.dataset.req || '')}
+      <label class="field wide">Exported list (Excel or CSV)<input type="file" class="inp" name="sheet" accept=".xlsx,.xls,.csv"></label>
+      <label class="field wide">CVs (optional, up to 2 MB each)<input type="file" class="inp" name="cvs" multiple accept=".pdf,.doc,.docx,.rtf,.txt"><small>Each CV is matched to a candidate by the e-mail or mobile in its file name, or by the candidate’s name, as in the portals’ bulk CV downloads.</small></label>
+      ${fieldHtml({ k: 'fill', label: 'For candidates already in the pool, fill in the details that are empty', type: 'check', wide: true }, true)}
+      ${fieldHtml({ k: 'send', label: 'Send each new candidate the link to fill in their details and CV', type: 'check', wide: true }, false)}</div>
+    <div id="piBox"></div><p class="err" id="piE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri" id="piGo" disabled>Import</button></div></form>`, true);
+  const form = $('#piF'); const err = (m) => { $('#piE').textContent = m; };
+  const preview = () => {
+    const seen = []; st.recs = st.rows.map((row, i) => { const c = rowToCand(row, st.map);
+      const same = (x) => (c.email && (x.email || '').toLowerCase() === c.email) || (last10(c.phone).length === 10 && last10(x.phone) === last10(c.phone));
+      const status = !c.name || (!c.email && !c.phone) ? 'bad' : seen.some(same) ? 'twice' : S.cands.some(same) ? 'existing' : 'new';
+      if (status !== 'bad') seen.push(c); return { c, i, status, ex: status === 'existing' ? S.cands.find(same) : null }; });
+    st.cvFor = {}; const lost = [];
+    st.files.forEach((f) => { const ix = matchCvFile(f.name, st.recs.map((x) => x.c)); if (ix >= 0 && ['new', 'existing'].includes(st.recs[ix].status)) st.cvFor[ix] = f; else lost.push(f.name); });
+    const cnt = (s) => st.recs.filter((x) => x.status === s).length; const take = cnt('new') + cnt('existing');
+    const big = Object.values(st.cvFor).filter((f) => f.size > 2 * 1024 * 1024).length;
+    $('#piBox').innerHTML = `<details ${Object.values(st.map).filter((x) => x >= 0).length < 4 ? 'open' : ''}><summary class="fine" style="cursor:pointer">Columns: ${Object.entries(st.map).filter(([, x]) => x >= 0).length} matched. Check or change them</summary>
+        <div class="form">${Object.entries(PI_FIELDS).map(([k, [label]]) => `<label class="field">${esc(label)}<select class="inp" data-map="${k}"><option value="-1">Not in the file</option>${st.head.map((h, i) => `<option value="${i}" ${st.map[k] === i ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`).join('')}</select></label>`).join('')}</div></details>
+      <div class="note ${take ? 'ok' : 'warn'}">${plural(st.recs.length, 'row')}: ${cnt('new')} new, ${cnt('existing')} already in the pool${cnt('twice') ? `, ${cnt('twice')} twice in the file` : ''}${cnt('bad') ? `, ${cnt('bad')} without a name or without both e-mail and mobile (left out)` : ''}.
+        ${st.files.length ? `${Object.keys(st.cvFor).length} of ${plural(st.files.length, 'CV')} matched${big ? `, ${big} larger than 2 MB (left out)` : ''}${lost.length ? `; not matched: ${esc(lost.slice(0, 5).join(', '))}${lost.length > 5 ? '…' : ''}` : ''}.` : ''}</div>
+      <div class="scroll" style="max-height:300px"><table class="t"><thead><tr><th>Candidate</th><th class="r">Experience</th><th>Currently</th><th class="r">CTC now → expected</th><th class="r">Notice</th><th>CV</th><th></th></tr></thead><tbody>
+        ${st.recs.slice(0, 40).map((x) => `<tr><td><b>${esc(x.c.name || '—')}</b><div class="fine">${esc(x.c.email || '')} ${esc(x.c.phone || '')}</div></td><td class="r">${x.c.expYears === '' ? '—' : `${num(x.c.expYears, 1)} yrs`}</td>
+          <td>${esc(x.c.currentTitle || '')}<div class="fine">${esc([x.c.currentCompany, x.c.location].filter(Boolean).join(', '))}</div></td><td class="r">${x.c.currentCtc ? inr0(x.c.currentCtc) : '—'} → ${x.c.expectedCtc ? inr0(x.c.expectedCtc) : '—'}</td>
+          <td class="r">${x.c.noticeDays === '' ? '—' : `${x.c.noticeDays} d`}</td><td>${st.cvFor[x.i] ? '<span class="badge ok">Matched</span>' : ''}</td><td>${trBadge(PI_ST, x.status)}</td></tr>`).join('')}</tbody></table></div>
+      ${st.recs.length > 40 ? `<p class="fine">The first 40 of ${st.recs.length} rows are shown.</p>` : ''}`;
+    $('#piGo').disabled = !take; $('#piGo').textContent = take ? `Import ${plural(take, 'candidate')}` : 'Import';
+  };
+  form.elements.sheet.onchange = async (ev) => { const f = ev.target.files[0]; if (!f) return; err('');
+    try { const grid = await readGrid(f); const h = findHeaderRow(grid); st.head = (grid[h] || []).map((x) => String(x).trim());
+      st.rows = grid.slice(h + 1).filter((r) => r.some((x) => String(x).trim())); st.map = autoMap(st.head);
+      if (!st.rows.length) { err('No candidates found in that file.'); return; } if (st.rows.length > 1000) { err('Import up to 1,000 candidates at a time.'); st.rows = []; return; } preview(); }
+    catch (x) { err(x.message); } };
+  form.elements.cvs.onchange = (ev) => { st.files = [...ev.target.files]; if (st.rows.length) preview(); };
+  form.addEventListener('change', (ev) => { if (ev.target.matches('[data-map]')) { st.map[ev.target.dataset.map] = +ev.target.value; preview(); } });
+  form.onsubmit = async (e) => { e.preventDefault(); const el = e.target.elements; const portal = el.portal.value; const r = reqById(el.reqId.value);
+    const take = st.recs.filter((x) => ['new', 'existing'].includes(x.status)); if (!take.length) return;
+    $('#piGo').disabled = true; err('Reading the CVs…'); const cvs = {};
+    try { for (const [ix, f] of Object.entries(st.cvFor)) if (f.size <= 2 * 1024 * 1024) cvs[ix] = { name: f.name, type: f.type, size: f.size, data: await dataUrl(f), at: Date.now() }; }
+    catch (x) { err(x.message); $('#piGo').disabled = false; return; }
+    const made = [], apps = []; let filled = 0;
+    take.forEach(({ c, i, ex }) => {
+      const { name, email, phone, expYears, currentCompany, currentTitle, location, currentCtc, expectedCtc, noticeDays, skills, gender } = c;
+      const fields = { name, email, phone, expYears, currentCompany, currentTitle, location, currentCtc, expectedCtc, noticeDays, skills, gender };
+      const extra = [c.education && `Education: ${c.education}`, c.profileUrl && `Profile: ${c.profileUrl}`, `From ${portal}${c.applied ? `, applied ${c.applied}` : ''}`].filter(Boolean).join('\n');
+      let rec = ex;
+      if (!rec) { rec = { id: uid(), companyId: CO, createdAt: Date.now(), createdBy: me.id, source: 'Job portal', portal, relocate: false, ...fields, notes: extra };
+        const old = exEmployeeFor(rec); rec.exEmpId = old ? old.id : ''; if (old) rec.source = 'Former employee'; S.cands.push(rec); made.push(rec); }
+      else if (el.fill.checked) { let n = 0; Object.entries(fields).forEach(([k, v]) => { if (v !== '' && v != null && (rec[k] === '' || rec[k] == null)) { rec[k] = v; n++; } });
+        if (!String(rec.notes || '').includes(`From ${portal}`)) rec.notes = [rec.notes, extra].filter(Boolean).join('\n'); if (n) filled++; }
+      if (cvs[i] && !rec.cv) rec.cv = cvs[i];
+      if (r && !S.apps.some((a) => a.reqId === r.id && a.candId === rec.id)) { const a = { id: uid(), reqId: r.id, candId: rec.id, stage: 'sourced', history: [], followups: [], notes: [], createdAt: Date.now() };
+        setStage(a, 'sourced', `Imported from ${portal} for ${r.no}`); S.apps.push(a); apps.push(a.id); }
+    });
+    const sl = r ? autoShortlist(r, apps) : 0;
+    audit('Candidates imported from a job portal', `${made.length} new, ${take.length - made.length} already in the pool, from ${portal}${r ? ` for ${r.no}` : ''}`, 'recruitment');
+    closeDlg(); await rcSave();
+    toast(`${plural(made.length, 'new candidate')}${filled ? `, ${filled} updated` : ''}${r ? `; ${plural(apps.length, 'candidate')} assigned to ${r.no}${sl ? `, ${sl} shortlisted by skills match` : ''}` : ''}`);
+    if (el.send.checked) { const list = made.filter((x) => x.email && !cvIn(x)); if (list.length) sendCvLinks(list, `Form links for the candidates from ${portal}`); }
+    route(); };
+};
+
+/* ================================================================ management approval of the shortlist */
+ACT.slSend = (b) => {
+  const r = reqById(b.dataset.req || R.arg); if (!r) return; const f = rflow(r.companyId); const appr = slApprovers(r);
+  const pre = b.dataset.app ? [b.dataset.app] : null;
+  const list = S.apps.filter((a) => a.reqId === r.id && (a.stage === 'screening' || (pre && pre.includes(a.id) && PRE_IV.includes(a.stage)))).map((a) => ({ a, c: candById(a.candId) }));
+  if (!list.length) { toast('Shortlist candidates first: move them to Screening, or use Run shortlisting.'); return; }
+  openDlg(`<form class="dlg" id="slF" novalidate><h2>Send the shortlist for ${esc(r.title)} for approval</h2>
+    ${appr.length ? `<p class="fine" style="margin:0">Approvers: <b>${appr.map(nameOf).map(esc).join(', ')}</b>.${appr.length > 1 ? (f.slRule === 'all' ? ' Each of them must approve.' : ' The first decision counts.') : ''} Change them under Recruitment settings › Recruitment flow.</p>`
+      : '<div class="note warn">Nobody approves shortlists yet. Give the requisition a hiring manager, or choose management approvers under Recruitment settings › Recruitment flow.</div>'}
+    <div class="scroll" style="max-height:340px;border:1px solid var(--rule);border-radius:9px">${list.map(({ a, c }) => `<label class="chk" style="padding:7px 10px;border-bottom:1px solid var(--rule)"><input type="checkbox" name="app" value="${a.id}" ${!pre || pre.includes(a.id) ? 'checked' : ''}>
+      <span><b>${esc(c.name)}</b> ${matchBadge(skillMatch(c, r))} ${fitBadge(profileFit(c, r))} <span class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentTitle || '')} at ${esc(c.currentCompany || '—')}, expects ${inr0(c.expectedCtc)}, notice ${c.noticeDays || 0} days${c.cv ? ', CV attached' : ', no CV'}</span></span></label>`).join('')}</div>
+    <div class="form">${fieldHtml({ k: 'note', label: 'Note for the approvers', type: 'textarea', wide: true })}</div>
+    <p class="err" id="slE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri" ${appr.length ? '' : 'disabled'}>Send for approval</button></div></form>`, true);
+  $('#slF').onsubmit = async (e) => { e.preventDefault(); const ids = new FormData(e.target).getAll('app'); if (!ids.length) { $('#slE').textContent = 'Tick at least one candidate.'; return; }
+    const note = e.target.elements.note.value.trim(); const at = Date.now();
+    ids.map(appById).forEach((a) => { a.shortlist = { status: 'pending', by: me.id, sentAt: at, rule: f.slRule, reqId: r.id, note, approvers: appr.map((id) => ({ id, decision: '', note: '', at: 0 })) };
+      setStage(a, 'approval', `Sent to ${appr.map(nameOf).join(', ')} for approval`); });
+    closeDlg(); await rcSave(); toast(`${plural(ids.length, 'candidate')} sent for approval`);
+    if (appr.some((i) => i !== me.id)) rcNotify({ event: 'shortlist', appIds: ids }); route(); };
+};
+function slApply(a, d, note) {
+  const sl = a.shortlist; const x = sl.approvers.find((y) => y.id === me.id); Object.assign(x, { decision: d, note, at: Date.now() });
+  const was = sl.status; sl.status = slStatus(sl);
+  (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Shortlist ${{ approve: 'approved', reject: 'rejected', hold: 'put on hold' }[d]} by ${nameOf(me.id)}${note ? `: ${note}` : ''}` });
+  if (sl.status === 'approved' && was !== 'approved') setStage(a, 'interview', 'Approved for interviews by management');
+  if (sl.status === 'rejected') setStage(a, 'rejected', `Not approved by management${note ? `: ${note}` : ''}`);
+}
+ACT.slDecide = async (b) => { const a = appById(b.dataset.id); const d = b.dataset.d; if (!a || !slMine(a)) return; let note = '';
+  if (d !== 'approve') { note = await askText(d === 'reject' ? `Reject ${candById(a.candId).name}?` : `Put ${candById(a.candId).name} on hold?`, 'Reason, for HR', d === 'reject' ? 'Reject' : 'Hold'); if (note === null) return; }
+  slApply(a, d, note); await rcSave(); toast({ approve: 'Approved', reject: 'Rejected', hold: 'On hold' }[d]); route(); };
+ACT.slAll = async (b) => { const list = S.apps.filter((a) => a.reqId === b.dataset.req && slMine(a) && !(slEntry(a) || {}).decision); if (!list.length) return;
+  if (!(await confirmBox(`Approve ${plural(list.length, 'candidate')}?`, `${list.map((a) => candById(a.candId).name).join(', ')}: approved for interviews.`, 'Approve all'))) return;
+  list.forEach((a) => slApply(a, 'approve', '')); await rcSave(); toast('Approved'); route(); };
+ACT.slRemind = (b) => rcNotify({ event: 'shortlist', appIds: b.dataset.ids.split(',') });
+
+function slRow(a, act) {
+  const c = candById(a.candId), r = reqById(a.reqId), sl = a.shortlist || {};
+  return `<tr><td><a href="#/app/${a.id}"><b>${esc(c.name)}</b></a> ${matchBadge(skillMatch(c, r))} ${fitBadge(profileFit(c, r))}${c.exEmpId ? ' <span class="badge info">Former employee</span>' : ''}<div class="fine">${esc(c.email || '')} ${esc(c.phone || '')}</div></td>
+    <td>${num(c.expYears, 1)} yrs<div class="fine">${esc(c.currentTitle || '')}${c.currentCompany ? ` at ${esc(c.currentCompany)}` : ''}${c.location ? `, ${esc(c.location)}` : ''}</div></td>
+    <td class="r">${inr0(c.currentCtc)} → ${inr0(c.expectedCtc)}${+c.expectedCtc > +r.ctcMax ? '<div><span class="badge bad">Above budget</span></div>' : ''}</td><td class="r">${c.noticeDays || 0} d</td>
+    <td>${(sl.approvers || []).map((x) => `<div class="fine">${esc(nameOf(x.id))}: ${x.decision ? trBadge(SL_D, x.decision) : 'waiting'}${x.note ? ` (${esc(x.note)})` : ''}</div>`).join('')}${sl.note ? `<div class="fine">HR: ${esc(sl.note)}</div>` : ''}</td>
+    <td>${c.cv ? `<button class="btn sm" data-act="cvGet" data-id="${c.id}">CV</button>` : '<span class="fine">No CV</span>'}</td><td class="r" style="white-space:nowrap">${act}</td></tr>`;
+}
+const slHead = '<thead><tr><th>Candidate</th><th>Experience</th><th class="r">CTC now → expected</th><th class="r">Notice</th><th>Approvers</th><th>CV</th><th></th></tr></thead>';
+VIEWS.slapprove = () => {
+  const only = R.q.get('req') || ''; const byReq = (list) => list.reduce((m, a) => { (m[a.reqId] = m[a.reqId] || []).push(a); return m; }, {});
+  const mine = byReq(S.apps.filter((a) => slMine(a) && (!only || a.reqId === only)));
+  const waiting = isHR() ? byReq(S.apps.filter((a) => a.stage === 'approval' && appCoId(a) === CO && ['pending', 'hold'].includes((a.shortlist || {}).status) && !slMine(a) && (!only || a.reqId === only))) : {};
+  const head = (r) => `<p class="sub">${esc(r.no)}, ${esc((dept(r.deptId) || {}).name || '')}. Budget ${inr0(r.ctcMin)} to ${inr0(r.ctcMax)}; ${num(r.expMin)}–${num(r.expMax)} years. Hiring manager ${esc(nameOf(r.hiringMgr))}. Fill by ${dmy(r.targetDate)}.</p>`;
+  const mineHtml = Object.entries(mine).map(([rid, list]) => { const r = reqById(rid);
+    return `<div class="card"><div class="hd"><div><h2>${esc(r.title)}</h2>${head(r)}</div>${list.some((a) => !(slEntry(a) || {}).decision) ? `<button class="btn ok" data-act="slAll" data-req="${rid}">Approve all</button>` : ''}</div>
+      ${skillsNeededHtml(r)}<div class="scroll"><table class="t">${slHead}<tbody>${list.map((a) => slRow(a, `<button class="btn sm danger" data-act="slDecide" data-d="reject" data-id="${a.id}">Reject</button>
+        <button class="btn sm" data-act="slDecide" data-d="hold" data-id="${a.id}">Hold</button><button class="btn sm ok" data-act="slDecide" data-d="approve" data-id="${a.id}">Approve</button>`)).join('')}</tbody></table></div></div>`; }).join('');
+  const waitHtml = Object.entries(waiting).map(([rid, list]) => { const r = reqById(rid); const by = list.filter((a) => a.shortlist.by === me.id && a.shortlist.status === 'pending').map((a) => a.id);
+    return `<div class="card"><div class="hd"><div><h2>${esc(r.title)}: with management</h2>${head(r)}</div>${by.length ? `<button class="btn" data-act="slRemind" data-ids="${by.join(',')}">Remind by e-mail</button>` : ''}</div>
+      <div class="scroll"><table class="t">${slHead}<tbody>${list.map((a) => slRow(a, `${trBadge(SL_ST, a.shortlist.status)}<div class="fine">sent ${dt(a.shortlist.sentAt)}</div>`)).join('')}</tbody></table></div></div>`; }).join('');
+  return { title: 'Shortlists to approve', html: `${mineHtml || '<div class="card"><h2>Shortlists to approve</h2><div class="empty">Nothing waiting for your approval.</div></div>'}${waitHtml}` };
+};
+function slCard(a) {
+  const r = reqById(a.reqId); const f = rflow(r.companyId); const sl = a.shortlist; const full = canSeeReq(r);
+  if (!sl) return f.slOn && full && a.stage === 'screening' ? `<div class="card"><div class="hd"><div><h2>Management approval</h2><p class="sub">Interviews are arranged once management approves the candidate.</p></div><button class="btn pri" data-act="slSend" data-req="${r.id}" data-app="${a.id}">Send for approval</button></div></div>` : '';
+  const mine = slMine(a);
+  return `<div class="card"><div class="hd"><div><h2>Management approval ${trBadge(SL_ST, sl.status)}</h2>
+      <p class="sub">${sl.status === 'skipped' ? `${esc(nameOf(sl.by))} arranged interviews without management approval on ${dt(sl.sentAt)}: ${esc(sl.skipReason || '')}` : `Sent by ${esc(nameOf(sl.by))} on ${dt(sl.sentAt)}${(sl.approvers || []).length > 1 ? (sl.rule === 'all' ? '; each approver must approve' : '; the first decision counts') : ''}.${sl.note ? ` Note: ${esc(sl.note)}` : ''}`}</p></div>
+      <div class="tools">${mine ? `<button class="btn danger" data-act="slDecide" data-d="reject" data-id="${a.id}">Reject</button><button class="btn" data-act="slDecide" data-d="hold" data-id="${a.id}">Hold</button><button class="btn ok" data-act="slDecide" data-d="approve" data-id="${a.id}">Approve</button>` : ''}
+        ${full && sl.status === 'pending' && sl.by === me.id ? `<button class="btn" data-act="slRemind" data-ids="${a.id}">Remind by e-mail</button>` : ''}${full && sl.status === 'hold' && PRE_IV.includes(a.stage) ? `<button class="btn" data-act="slSend" data-req="${r.id}" data-app="${a.id}">Send again</button>` : ''}</div></div>
+    ${(sl.approvers || []).length ? `<table class="t"><tbody>${sl.approvers.map((x) => `<tr><td>${esc(nameOf(x.id))}</td><td>${x.decision ? `${trBadge(SL_D, x.decision)} <span class="fine">${dt(x.at)}</span>` : '<span class="badge warn">Waiting</span>'}</td><td class="fine">${esc(x.note || '')}</td></tr>`).join('')}</tbody></table>` : ''}</div>`;
+}
+/* scheduling an interview: only once management has approved (or HR, with a reason, goes ahead without) */
+{
+  const ivNew0 = ACT.ivNew;
+  ACT.ivNew = (b) => {
+    const a = curApp(); if (slOk(a)) return ivNew0(b); const r = reqById(a.reqId), c = candById(a.candId), sl = a.shortlist;
+    openDlg(`<div class="dlg"><h2>${esc(c.name)} is not approved for interviews yet</h2><p class="mut" style="margin:0">${sl ? `The shortlist is ${SL_ST[sl.status][0].toLowerCase()}.` : 'The candidate has not been sent to management for approval.'} Interviews are arranged once management approves the shortlist.</p>
+      <div class="btns"><button class="btn ghost" data-act="close">Cancel</button>${isHR(r.companyId) ? '<button class="btn" id="slSkipB">Interview without approval</button>' : ''}${!sl || sl.status === 'hold' ? `<button class="btn pri" data-act="slSend" data-req="${r.id}" data-app="${a.id}">Send for approval</button>` : ''}</div></div>`);
+    if ($('#slSkipB')) $('#slSkipB').onclick = async () => { const why = await askText('Interview without management approval?', 'Reason (kept on the candidate’s record)', 'Go ahead'); if (why === null) return;
+      a.shortlist = { status: 'skipped', by: me.id, sentAt: Date.now(), reqId: r.id, skipReason: why, approvers: [] }; setStage(a, 'interview', `Interviews without management approval: ${why}`);
+      await rcSave(); ivNew0(b); };
+  };
+  const st0 = ACT.appStage;
+  ACT.appStage = (b) => { const a = curApp(), s = b.dataset.s, f = rflow(appCoId(a));
+    if (['interview', 'selected'].includes(s) && !slOk(a)) { toast('Management has not approved this candidate for interviews yet.'); return; }
+    if (s === 'selected' && f.selOn && (a.sel || {}).final !== 'select') { toast('Candidates are selected in the final selection, with the hiring manager.'); go('#/finalsel/' + a.reqId); return; }
+    return st0(b); };
+}
+
+/* ================================================================ the interview feedback form */
+ACT.ivFb = (b) => {
+  const i = ivById(b.dataset.id); const a = appById(i.appId), c = candById(a.candId), r = reqById(a.reqId), co = r.companyId;
+  const hr = isHR(co), onPanel = (i.panel || []).includes(me.id); const who = b.dataset.who || me.id;
+  const whoOpts = hr ? [...(onPanel ? [] : [[me.id, `${fullName(me)} (you)`]]), ...(i.panel || []).map((p) => [p, p === me.id ? `${nameOf(p)} (you)` : `${nameOf(p)}, from their filled-in form`])] : null;
+  const f0 = (i.feedback || {})[who] || {}; const sc = f0.scores || {}; const crit = ivCriteria(co);
+  const refPeople = S.employees.filter((e) => active(e) && e.companyId === co && e.id !== me.id && e.id !== who);
+  const REC_HELP = { hire: 'Recommend hiring', reject: 'Reject', hold: 'Put on hold: decide later', refer: 'Refer to others to decide' };
+  openDlg(`<form class="dlg" id="fbF" novalidate><h2>Interview feedback: ${esc(c.name)}</h2><p class="fine" style="margin:0">${esc(i.round)}, ${dmy(i.date)}, ${MODES[i.mode].toLowerCase()}, for ${esc(r.title)} (${esc(r.no)}).</p>
+    ${whoOpts ? `<div class="form">${fieldHtml({ k: 'who', label: 'Feedback of', type: 'select', opts: whoOpts }, who)}</div>` : ''}
+    <div class="scroll"><table class="t"><thead><tr><th>Rate the candidate on</th>${[1, 2, 3, 4, 5].map((n) => `<th class="r" title="${RATING[n]}">${n}</th>`).join('')}<th class="r">Not seen</th></tr></thead><tbody>
+      ${crit.map((k) => `<tr><td>${esc(k.name)}</td>${[1, 2, 3, 4, 5].map((n) => `<td class="r"><input type="radio" name="s_${k.k}" value="${n}" ${+sc[k.k] === n ? 'checked' : ''} aria-label="${esc(k.name)}: ${n}"></td>`).join('')}<td class="r"><input type="radio" name="s_${k.k}" value="0" ${sc[k.k] ? '' : 'checked'} aria-label="${esc(k.name)}: not seen"></td></tr>`).join('')}</tbody></table></div>
+    <p class="fine" style="margin:0">1 does not meet the need, 3 meets it, 5 outstanding.</p>
+    <div class="form">${fieldHtml({ k: 'rating', label: 'Overall rating', type: 'select', opts: [5, 4, 3, 2, 1].map((n) => [n, `${n} ${RATING[n]}`]) }, f0.rating || 3)}</div>
+    <fieldset style="border:1px solid var(--rule);border-radius:9px"><legend class="fine">Your recommendation</legend>${Object.entries(REC_HELP).map(([k, l]) => `<label class="chk"><input type="radio" name="rec" value="${k}" ${f0.rec === k || (f0.rec === 'strong' && k === 'hire') || (f0.rec === 'no' && k === 'reject') ? 'checked' : ''}> ${esc(l)}</label>`).join('')}</fieldset>
+    <div class="form" id="fbHold" hidden>${fieldHtml({ k: 'holdReason', label: 'Why on hold', wide: true, help: 'For example another round first, or waiting for other candidates' }, f0.holdReason)}${fieldHtml({ k: 'holdUntil', label: 'Decide by', type: 'date' }, f0.holdUntil)}</div>
+    <div id="fbRef" hidden><fieldset style="border:1px solid var(--rule);border-radius:9px;max-height:170px;overflow:auto"><legend class="fine">Refer the decision to</legend>${refPeople.map((e) => `<label class="chk"><input type="checkbox" name="refTo" value="${e.id}" ${(f0.referTo || []).includes(e.id) ? 'checked' : ''}> ${esc(fullName(e))} <span class="fine">${esc((desig(e.desigId) || {}).name || '')}</span></label>`).join('')}</fieldset>
+      <div class="form">${fieldHtml({ k: 'referQ', label: 'What should they decide or check?', wide: true }, f0.referQ)}</div></div>
+    <div class="form">${fieldHtml({ k: 'strengths', label: 'Strengths', type: 'textarea', wide: true }, f0.strengths || (!f0.concerns ? f0.comments : ''))}${fieldHtml({ k: 'concerns', label: 'Concerns', type: 'textarea', wide: true }, f0.concerns)}</div>
+    <p class="err" id="fbE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save feedback</button></div></form>`, true);
+  const form = $('#fbF'); const el = form.elements; let touched = !!f0.rating; const err = (m) => { $('#fbE').textContent = m; };
+  const show = () => { const rec = (form.querySelector('[name=rec]:checked') || {}).value; $('#fbHold').hidden = rec !== 'hold'; $('#fbRef').hidden = rec !== 'refer'; };
+  form.addEventListener('change', (ev) => {
+    if (ev.target.name === 'who') { ACT.ivFb({ dataset: { id: i.id, who: ev.target.value } }); return; }
+    if (ev.target.name === 'rating') touched = true;
+    if (ev.target.name && ev.target.name.startsWith('s_') && !touched) { const v = crit.map((k) => +((form.querySelector(`[name="s_${k.k}"]:checked`) || {}).value || 0)).filter(Boolean); if (v.length) el.rating.value = Math.round(v.reduce((s, x) => s + x, 0) / v.length); }
+    show(); });
+  show();
+  form.onsubmit = async (e) => { e.preventDefault();
+    const scores = {}; crit.forEach((k) => { const v = +((form.querySelector(`[name="s_${k.k}"]:checked`) || {}).value || 0); if (v) scores[k.k] = v; });
+    const rec = (form.querySelector('[name=rec]:checked') || {}).value; const strengths = el.strengths.value.trim(), concerns = el.concerns.value.trim();
+    const refTo = new FormData(form).getAll('refTo'); const referQ = el.referQ.value.trim(), holdReason = el.holdReason.value.trim();
+    if (!Object.keys(scores).length) return err('Rate the candidate on at least one point.');
+    if (!rec) return err('Choose your recommendation.');
+    if ((strengths + concerns).length < 5) return err('Write the strengths and concerns you saw.');
+    if (rec === 'hold' && holdReason.length < 3) return err('Say why the candidate is on hold.');
+    if (rec === 'refer' && !refTo.length) return err('Choose whom to refer the decision to.');
+    i.feedback = i.feedback || {};
+    i.feedback[who] = { rating: +el.rating.value, rec, scores, strengths, concerns, comments: [strengths && `Strengths: ${strengths}`, concerns && `Concerns: ${concerns}`].filter(Boolean).join(' '),
+      holdReason: rec === 'hold' ? holdReason : '', holdUntil: rec === 'hold' ? el.holdUntil.value : '', referTo: rec === 'refer' ? refTo : [], referQ: rec === 'refer' ? referQ : '', at: Date.now(), ...(who !== me.id ? { enteredBy: me.id } : {}) };
+    i.referrals = (i.referrals || []).filter((x) => !(x.for === who && x.by === me.id && !x.decision && !(rec === 'refer' && refTo.includes(x.to))));
+    const fresh = rec === 'refer' ? refTo.filter((id) => !i.referrals.some((x) => x.for === who && x.to === id && !x.decision)).map((id) => ({ id: uid(), to: id, by: me.id, for: who, at: Date.now(), question: referQ, decision: '' })) : [];
+    i.referrals.push(...fresh); if (i.status === 'scheduled') i.status = 'completed';
+    closeDlg(); await rcSave(); toast('Feedback saved');
+    for (const x of fresh) await rcNotify({ event: 'referral', interviewId: i.id, referralId: x.id });
+    route(); };
+};
+ACT.refAnswer = (b) => {
+  const i = ivById(b.dataset.iv); const x = (i.referrals || []).find((y) => y.id === b.dataset.id); if (!x || x.to !== me.id || x.decision) return;
+  const a = appById(i.appId), c = candById(a.candId);
+  openDlg(`<form class="dlg" id="raF"><h2>Your decision on ${esc(c.name)}</h2><p class="mut" style="margin:0">${esc(nameOf(x.by))} referred the decision to you after the ${esc(i.round.toLowerCase())}${x.question ? `: “${esc(x.question)}”` : '.'} The CV and everyone’s feedback are on the candidate’s page.</p>
+    <fieldset style="border:1px solid var(--rule);border-radius:9px"><legend class="fine">You recommend</legend>${[['hire', 'Hiring'], ['reject', 'Rejection'], ['hold', 'Hold: decide later']].map(([k, l]) => `<label class="chk"><input type="radio" name="d" value="${k}"> ${l}</label>`).join('')}</fieldset>
+    <div class="form">${fieldHtml({ k: 'comments', label: 'Why', type: 'textarea', wide: true })}</div><p class="err" id="raE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+  $('#raF').onsubmit = async (e) => { e.preventDefault(); const d = (e.target.querySelector('[name=d]:checked') || {}).value; const why = e.target.elements.comments.value.trim();
+    if (!d) { $('#raE').textContent = 'Choose your recommendation.'; return; } if (why.length < 3) { $('#raE').textContent = 'Say why.'; return; }
+    Object.assign(x, { decision: d, comments: why, decidedAt: Date.now() });
+    (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `${nameOf(me.id)}, referred to after the ${i.round.toLowerCase()}: ${RECS[d].toLowerCase()}. ${why}` });
+    closeDlg(); await rcSave(); toast('Saved'); route(); };
+};
+/* a blank form for panels who interview face to face and fill it in on paper; HR types it in afterwards */
+ACT.ivPrintForm = (b) => {
+  const i = ivById(b.dataset.id), a = appById(i.appId), c = candById(a.candId), r = reqById(a.reqId), co = coById(r.companyId);
+  const box = '<span style="display:inline-block;width:14px;height:14px;border:1px solid #333"></span>';
+  printHtml(`Interview feedback ${c.name}`, `<h2>${esc(co.legalName || co.name)}: interview feedback</h2>
+    <table><tr><td>Candidate</td><td><b>${esc(c.name)}</b></td><td>Position</td><td>${esc(r.title)} (${esc(r.no)})</td></tr><tr><td>Round</td><td>${esc(i.round)}</td><td>Date</td><td>${dmy(i.date)}, ${MODES[i.mode]}</td></tr>
+      <tr><td>Interviewer</td><td colspan="3">______________________________</td></tr></table>
+    <h3>Ratings (1 does not meet, 3 meets, 5 outstanding)</h3><table><tr><th>Point</th>${[1, 2, 3, 4, 5].map((n) => `<th>${n}</th>`).join('')}<th>Not seen</th></tr>
+      ${ivCriteria(r.companyId).map((k) => `<tr><td>${esc(k.name)}</td>${[1, 2, 3, 4, 5, 0].map(() => `<td>${box}</td>`).join('')}</tr>`).join('')}<tr><td><b>Overall</b></td>${[1, 2, 3, 4, 5].map(() => `<td>${box}</td>`).join('')}<td></td></tr></table>
+    <h3>Recommendation</h3><p>${box} Recommend hiring &nbsp; ${box} Reject &nbsp; ${box} On hold (why, decide by): ____________________ &nbsp; ${box} Refer to: ____________________</p>
+    <h3>Strengths</h3><div style="height:90px;border-bottom:1px solid #ccc"></div><h3>Concerns</h3><div style="height:90px;border-bottom:1px solid #ccc"></div>
+    <p style="margin-top:30px">Signature ______________________ Date ____________</p>`);
+};
+function fbCard(a) {
+  const r = reqById(a.reqId); const ivs = S.interviews.filter((i) => i.appId === a.id && i.status !== 'cancelled').sort((x, y) => (x.date + x.start < y.date + y.start ? -1 : 1)); if (!ivs.length) return '';
+  const crit = ivCriteria(r.companyId); const rd = ivReady(a); const hr = isHR(r.companyId);
+  return `<div class="card"><div class="hd"><div><h2>Interview feedback</h2><p class="sub">${statsHtml(fbStats(a))}${rflow(r.companyId).selOn && a.stage === 'interview' ? `. ${rd.ok ? '<span class="badge ok">Ready for the final selection</span>' : `Before the final selection: ${esc(rd.why)}.`}` : ''}</p></div>
+      ${rflow(r.companyId).selOn && a.stage === 'interview' && canSeeReq(r) ? `<a class="btn sm" href="#/finalsel/${r.id}">Final selection</a>` : ''}</div>
+    ${ivs.map((i) => { const fbs = Object.entries(i.feedback || {}); const due = i.status === 'completed' ? (i.panel || []).filter((p) => !(i.feedback || {})[p]) : [];
+      return `<div class="ivbox"><div class="hd" style="margin:0"><div><b>${esc(i.round)}</b> <span class="fine">${dmy(i.date)}, ${MODES[i.mode].toLowerCase()}</span></div>
+        <div class="tools"><button class="btn sm ghost" data-act="ivPrintForm" data-id="${i.id}">Blank form to print</button>${hr && due.length ? `<button class="btn sm" data-act="ivFb" data-id="${i.id}" data-who="${due[0]}">Type in a filled-in form</button>` : ''}</div></div>
+        ${fbs.length ? `<div class="scroll"><table class="t"><thead><tr><th>Panel member</th><th>Recommendation</th><th class="r">Overall</th>${crit.map((k) => `<th class="r" title="${esc(k.name)}">${esc(k.name.split(/\s/)[0])}</th>`).join('')}</tr></thead><tbody>
+          ${fbs.map(([by, f]) => `<tr><td>${esc(nameOf(by))}${f.enteredBy ? `<div class="fine">typed in by ${esc(nameOf(f.enteredBy))}</div>` : ''}</td><td>${recBadge(f.rec)}${f.rec === 'hold' && f.holdReason ? `<div class="fine">${esc(f.holdReason)}${f.holdUntil ? `, by ${dmy(f.holdUntil)}` : ''}</div>` : ''}${f.rec === 'refer' ? `<div class="fine">to ${(f.referTo || []).map(nameOf).map(esc).join(', ')}</div>` : ''}</td>
+            <td class="r">${f.rating || '—'}/5</td>${crit.map((k) => `<td class="r">${(f.scores || {})[k.k] || '—'}</td>`).join('')}</tr>
+            <tr><td></td><td colspan="${crit.length + 2}" class="fine">${f.strengths ? `<b>Strengths:</b> ${esc(f.strengths)} ` : ''}${f.concerns ? `<b>Concerns:</b> ${esc(f.concerns)}` : ''}${!f.strengths && !f.concerns ? esc(f.comments || '') : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
+        ${due.length ? `<p class="fine">Feedback due from ${due.map(nameOf).map(esc).join(', ')}.</p>` : ''}
+        ${(i.referrals || []).map((x) => `<div class="note ${x.decision ? '' : 'warn'}" style="margin-top:6px">${esc(nameOf(x.by))} referred the decision to <b>${esc(nameOf(x.to))}</b>${x.question ? `: “${esc(x.question)}”` : ''}. ${x.decision ? `${recBadge(x.decision)} ${esc(x.comments || '')}` : 'Waiting for their decision.'}
+          ${x.to === me.id && !x.decision ? `<button class="btn sm pri" data-act="refAnswer" data-iv="${i.id}" data-id="${x.id}">Give your decision</button>` : ''}</div>`).join('')}</div>`; }).join('')}</div>`;
+}
+
+/* ================================================================ final selection: HR proposes, the hiring manager decides */
+function selDecide(a, d, note) {
+  Object.assign(a.sel, { mgr: { decision: d, note, by: me.id, at: Date.now() }, status: 'decided', final: d, decidedAt: Date.now() });
+  if (d === 'select') setStage(a, 'selected', `Selected in the final selection${note ? `: ${note}` : ''}`);
+  else if (d === 'reject') setStage(a, 'rejected', `Not selected in the final selection${note ? `: ${note}` : ''}`);
+  else (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Final selection: kept on hold${note ? `: ${note}` : ''}` });
+}
+const selRowInfo = (a, r) => { const c = candById(a.candId); const ivs = S.interviews.filter((i) => i.appId === a.id && i.status !== 'cancelled');
+  return `<td><a href="#/app/${a.id}"><b>${esc(c.name)}</b></a> ${fitBadge(profileFit(c, r))}<div class="fine">${num(c.expYears, 1)} yrs, ${esc(c.currentTitle || '')}${c.currentCompany ? ` at ${esc(c.currentCompany)}` : ''}</div></td>
+    <td>${statsHtml(fbStats(a))}<div class="fine">${plural(ivs.filter((i) => i.status === 'completed').length, 'round')} done of ${ivs.length}</div></td>
+    <td class="r">${inr0(c.expectedCtc)}${+c.expectedCtc > +r.ctcMax ? '<div><span class="badge bad">Above budget</span></div>' : ''}<div class="fine">notice ${c.noticeDays || 0} d</div></td>`; };
+VIEWS.finalsel = () => {
+  const r = reqById(R.arg);
+  if (!r) {
+    const reqs = S.reqs.filter((q) => q.companyId === CO && ['open', 'onhold'].includes(q.status) && (canSeeReq(q) || S.apps.some((a) => a.reqId === q.id && (a.sel || {}).mgrId === me.id)));
+    return { title: 'Final selection', html: `<div class="card"><h2>Final selection</h2><p class="sub">Once a candidate’s interviews are done and every panel member has given feedback, HR proposes select, reject or hold, and the hiring manager decides.</p>
+      ${reqs.length ? `<table class="t"><thead><tr><th>Requisition</th><th>Hiring manager</th><th class="r">In interviews</th><th class="r">Ready</th><th class="r">With the hiring manager</th><th class="r">Selected</th></tr></thead><tbody>${reqs.map((q) => { const ap = S.apps.filter((a) => a.reqId === q.id);
+        const inIv = ap.filter((a) => a.stage === 'interview'); return `<tr><td><a href="#/finalsel/${q.id}"><b>${esc(q.title)}</b></a><div class="fine">${esc(q.no)}</div></td><td>${esc(nameOf(q.hiringMgr))}</td><td class="r">${inIv.length}</td>
+        <td class="r">${inIv.filter((a) => (a.sel || {}).status !== 'proposed' && ivReady(a).ok).length}</td><td class="r">${inIv.filter((a) => (a.sel || {}).status === 'proposed').length}</td><td class="r">${ap.filter((a) => (a.sel || {}).final === 'select').length}</td></tr>`; }).join('')}</tbody></table>` : '<div class="empty">No open requisitions.</div>'}</div>` };
+  }
+  const isMgrSomewhere = S.apps.some((a) => a.reqId === r.id && (a.sel || {}).mgrId === me.id);
+  if (!canSeeReq(r) && !isMgrSomewhere) return { title: 'Final selection', html: '<div class="empty">You cannot see this requisition.</div>' };
+  const prop = canSeeReq(r); const mgr = r.hiringMgr || ''; const direct = !mgr || mgr === me.id;
+  const apps = S.apps.filter((a) => a.reqId === r.id);
+  const forMe = apps.filter((a) => a.stage === 'interview' && (a.sel || {}).status === 'proposed' && a.sel.mgrId === me.id);
+  const toPropose = prop ? apps.filter((a) => a.stage === 'interview' && (a.sel || {}).status !== 'proposed') : [];
+  const waiting = prop ? apps.filter((a) => a.stage === 'interview' && (a.sel || {}).status === 'proposed' && a.sel.mgrId !== me.id) : [];
+  const decided = apps.filter((a) => (a.sel || {}).status === 'decided').sort((x, y) => (y.sel.decidedAt || 0) - (x.sel.decidedAt || 0));
+  const opt = (sel, ok) => `<option value="">Choose</option>${Object.entries(SEL_W).map(([k, [l]]) => `<option value="${k}" ${sel === k ? 'selected' : ''} ${!ok && k !== 'reject' ? 'disabled' : ''}>${l}</option>`).join('')}`;
+  const head = '<thead><tr><th>Candidate</th><th>Interview feedback</th><th class="r">Expects</th>';
+  return { title: `Final selection: ${r.title}`, html: `<div class="card"><div class="hd"><div><h2>${esc(r.title)} (${esc(r.no)})</h2><p class="sub">${r.positions - (r.filled || 0)} of ${plural(r.positions, 'position')} to fill. Budget ${inr0(r.ctcMin)} to ${inr0(r.ctcMax)}. Hiring manager ${esc(nameOf(r.hiringMgr))}.</p></div>
+      <div class="tools"><a class="btn sm" href="#/req/${r.id}">Requisition</a>${apps.filter((a) => a.stage === 'interview').length > 1 && canSeeReq(r) ? `<a class="btn sm" href="#/compare/${r.id}">Compare candidates</a>` : ''}</div></div></div>
+    ${forMe.length ? `<form class="card" id="selM"><h2>Your decision</h2><p class="sub">HR proposes; you decide. Give a reason when you decide differently.</p><div class="scroll"><table class="t">${head}<th>HR proposes</th><th>Your decision</th><th>Reason or note</th></tr></thead><tbody>
+      ${forMe.map((a) => `<tr data-sel-app="${a.id}">${selRowInfo(a, r)}<td>${trBadge(SEL_W, a.sel.proposed)}${a.sel.rank ? ` <span class="fine">rank ${a.sel.rank}</span>` : ''}<div class="fine">${esc(nameOf(a.sel.by))}${a.sel.note ? `: ${esc(a.sel.note)}` : ''}</div></td>
+        <td><select class="inp" data-k="d">${Object.entries(SEL_W).map(([k, [l]]) => `<option value="${k}" ${a.sel.proposed === k ? 'selected' : ''}>${l}</option>`).join('')}</select></td><td><input class="inp" data-k="note" style="min-width:160px"></td></tr>`).join('')}</tbody></table></div>
+      <p class="err" id="selME"></p><div class="btns" style="justify-content:flex-start"><button class="btn pri">Confirm decisions</button></div></form>` : ''}
+    ${toPropose.length ? `<form class="card" id="selP"><h2>Propose</h2><p class="sub">${direct ? (mgr ? 'You are the hiring manager, so your choice is the decision.' : 'The requisition has no hiring manager, so HR’s choice is the decision.') : `Your proposal goes to ${esc(nameOf(mgr))}, who decides.`} A candidate can be selected or held once every interview is done and every panel member has given feedback.</p>
+      <div class="scroll"><table class="t">${head}<th>Proposal</th><th class="r">Rank</th><th>Note</th></tr></thead><tbody>
+      ${toPropose.map((a) => { const rd = ivReady(a); return `<tr data-sel-app="${a.id}">${selRowInfo(a, r)}<td><select class="inp" data-k="d">${opt('', rd.ok)}</select>${rd.ok ? '' : `<div class="fine">${esc(rd.why)}</div>`}${(a.sel || {}).final === 'hold' ? '<div class="fine">On hold since the last round</div>' : ''}</td>
+        <td class="r"><input class="inp" type="number" min="1" data-k="rank" style="width:64px"></td><td><input class="inp" data-k="note" style="min-width:160px"></td></tr>`; }).join('')}</tbody></table></div>
+      <p class="err" id="selPE"></p><div class="btns" style="justify-content:flex-start"><button class="btn pri">${direct ? 'Decide' : 'Send to the hiring manager'}</button></div></form>` : ''}
+    ${waiting.length ? `<div class="card"><div class="hd"><h2>With the hiring manager</h2>${waiting.some((a) => a.sel.by === me.id) ? `<button class="btn sm" data-act="selRemind" data-ids="${waiting.filter((a) => a.sel.by === me.id).map((a) => a.id).join(',')}">Remind by e-mail</button>` : ''}</div>
+      <table class="t"><tbody>${waiting.map((a) => `<tr>${selRowInfo(a, r)}<td>${trBadge(SEL_W, a.sel.proposed)}<div class="fine">proposed by ${esc(nameOf(a.sel.by))}, ${dt(a.sel.at)}</div></td></tr>`).join('')}</tbody></table></div>` : ''}
+    ${!forMe.length && !toPropose.length && !waiting.length ? '<div class="card"><div class="empty">Nobody is in interviews on this requisition now.</div></div>' : ''}
+    ${decided.length ? `<div class="card"><h2>Decided</h2><table class="t"><tbody>${decided.map((a) => `<tr><td><a href="#/app/${a.id}"><b>${esc(candById(a.candId).name)}</b></a> ${stageBadge(a.stage)}</td><td>${trBadge(SEL_W, a.sel.final)}${a.sel.final !== a.sel.proposed ? ` <span class="fine">(HR proposed ${esc(SEL_W[a.sel.proposed][0].toLowerCase())})</span>` : ''}</td>
+      <td class="fine">${esc(nameOf(a.sel.mgr.by))}, ${dt(a.sel.decidedAt)}${a.sel.mgr.note ? `: ${esc(a.sel.mgr.note)}` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}`,
+    after: () => {
+      const rows = (form) => $$('[data-sel-app]', form).map((tr) => ({ a: appById(tr.dataset.selApp), d: tr.querySelector('[data-k=d]').value, rank: (tr.querySelector('[data-k=rank]') || {}).value || '', note: tr.querySelector('[data-k=note]').value.trim() }));
+      if ($('#selP')) $('#selP').onsubmit = async (e) => { e.preventDefault(); const list = rows(e.target).filter((x) => x.d); const err = (m) => { $('#selPE').textContent = m; };
+        if (!list.length) return err('Choose select, reject or hold for at least one candidate.');
+        const early = list.find((x) => x.d !== 'reject' && !ivReady(x.a).ok); if (early) return err(`${candById(early.a.candId).name}: ${ivReady(early.a).why}.`);
+        const sel = list.filter((x) => x.d === 'select').length; if (sel > r.positions - (r.filled || 0) && !(await confirmBox('More than the open positions?', `${plural(sel, 'candidate')} to select for ${plural(r.positions - (r.filled || 0), 'open position')}.`, 'Go ahead'))) return;
+        list.forEach(({ a, d, rank, note }) => { const old = a.sel; a.sel = { proposed: d, rank: rank ? +rank : '', note, by: me.id, at: Date.now(), round: ((old || {}).round || 0) + 1, mgrId: mgr, status: 'proposed', final: '',
+          history: old ? [...(old.history || []), { ...old, history: undefined }] : [] };
+          if (direct) selDecide(a, d, note); else (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Final selection: proposed ${SEL_W[d][0].toLowerCase()} to ${nameOf(mgr)}${note ? `: ${note}` : ''}` }); });
+        await rcSave(); toast(direct ? 'Decided' : `Sent to ${nameOf(mgr)}`); if (!direct) rcNotify({ event: 'selection', appIds: list.map((x) => x.a.id) }); route(); };
+      if ($('#selM')) $('#selM').onsubmit = async (e) => { e.preventDefault(); const list = rows(e.target); const odd = list.find((x) => x.d !== x.a.sel.proposed && x.note.length < 3);
+        if (odd) { $('#selME').textContent = `${candById(odd.a.candId).name}: give a reason for deciding differently from HR.`; return; }
+        list.forEach(({ a, d, note }) => selDecide(a, d, note)); await rcSave(); toast('Decided'); route(); };
+    } };
+};
+ACT.selRemind = (b) => rcNotify({ event: 'selection', appIds: b.dataset.ids.split(',') });
+function selCard(a) {
+  const s = a.sel; if (!s) return ''; const r = reqById(a.reqId);
+  return `<div class="card"><div class="hd"><div><h2>Final selection ${s.status === 'decided' ? trBadge(SEL_W, s.final) : '<span class="badge warn">With the hiring manager</span>'}</h2>
+      <p class="sub">${esc(nameOf(s.by))} proposed ${esc(SEL_W[s.proposed][0].toLowerCase())}${s.rank ? ` (rank ${s.rank})` : ''} on ${dt(s.at)}${s.note ? `: ${esc(s.note)}` : ''}.
+      ${s.mgr ? ` ${esc(nameOf(s.mgr.by))} decided ${esc(SEL_W[s.mgr.decision][0].toLowerCase())} on ${dt(s.mgr.at)}${s.mgr.note ? `: ${esc(s.mgr.note)}` : ''}.` : ` Waiting for ${esc(nameOf(s.mgrId))}.`}</p></div>
+      ${(s.status === 'proposed' && s.mgrId === me.id) || (canSeeReq(r) && a.stage === 'interview') ? `<a class="btn sm" href="#/finalsel/${r.id}">Final selection</a>` : ''}</div></div>`;
+}
+
+/* ================================================================ offer rounds and the signed acceptance */
+function offerNewRound(a, status, reason) {
+  const o = a.offer; (o.versions = o.versions || []).push({ at: Date.now(), ctc: o.ctc, doj: o.doj, joiningBonus: o.joiningBonus, status, letterNo: o.letterNo || '', issuedAt: o.issuedAt || null, respondedAt: Date.now(), reason: reason || '' });
+  Object.assign(o, { status: 'draft', approvals: [], letterNo: '', issuedAt: null, respondedAt: null, declineReason: '' });
+  setStage(a, 'offer', `Offer round ${o.versions.length + 1}${status === 'declined' ? ' after the candidate declined' : ''}${reason ? `: ${reason}` : ''}`);
+}
+function offerAccept(a, attachOnly) {
+  const o = a.offer, r = reqById(a.reqId), c = candById(a.candId), need = rflow(r.companyId).signOn || attachOnly;
+  openDlg(`<form class="dlg" id="oaF" novalidate><h2>${attachOnly ? 'Signed offer letter' : `${esc(c.name)} accepted the offer`}</h2>
+    <p class="fine" style="margin:0">Offer ${esc(o.letterNo || '')}: ${inr0(o.ctc)} a year, joining ${dmy(o.doj)}. The signed copy is filed on the employee’s documents when they join.</p>
+    <div class="form">${fieldHtml({ k: 'date', label: 'Signed on', type: 'date', req: true, max: todayISO() }, todayISO())}
+      <label class="field wide">${reqLabel({ label: 'Signed offer letter (PDF or photo, up to 10 MB)', req: need })}<input type="file" class="inp" name="file" accept=".pdf,image/jpeg,image/png,image/webp"></label></div>
+    <p class="err" id="oaE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">${attachOnly ? 'Attach' : 'Record the acceptance'}</button></div></form>`);
+  $('#oaF').onsubmit = async (e) => { e.preventDefault(); const el = e.target.elements; const file = el.file.files[0]; const err = (m) => { $('#oaE').textContent = m; };
+    if (!el.date.value || el.date.value > todayISO()) return err('Enter the date the candidate signed, today or earlier.');
+    if (need && !file) return err('Attach the signed offer letter.');
+    if (file && file.size > 10 * 1024 * 1024) return err('The file is larger than 10 MB.');
+    let signed = null;
+    if (file) { err('Uploading…'); try { const up = await uploadFile(file); signed = { fileId: up.id, name: file.name, date: el.date.value, at: Date.now(), by: me.id }; } catch (x) { return err(x.message); } }
+    if (signed) o.signed = signed;
+    if (!attachOnly) { o.status = 'accepted'; o.respondedAt = Date.now(); setStage(a, 'accepted', `Offer accepted${signed ? `, signed on ${dmy(signed.date)}` : ''}`);
+      (a.followups = a.followups || []).push({ id: uid(), due: addDays(o.doj, -3) < todayISO() ? todayISO() : addDays(o.doj, -3), note: 'Confirm joining date', done: false, by: me.id }); }
+    else (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Signed offer letter attached (signed ${dmy(signed.date)})` });
+    closeDlg(); await rcSave(); toast(attachOnly ? 'Attached' : 'Offer accepted. Track the joining under Joining and closure.'); route(); };
+}
+ACT.offerResp = (b) => {
+  const a = curApp(), o = a.offer, c = candById(a.candId);
+  if (b.dataset.r === 'accepted') { offerAccept(a, false); return; }
+  openDlg(`<form class="dlg" id="odF" novalidate><h2>${esc(c.name)} declined the offer</h2><div class="form">${fieldHtml({ k: 'reason', label: 'Reason the candidate gave', type: 'textarea', wide: true, req: true })}</div>
+    <fieldset style="border:1px solid var(--rule);border-radius:9px"><legend class="fine">Next</legend><label class="chk"><input type="radio" name="next" value="revise" checked> Make a revised offer: another round, approved again before the new letter is issued</label>
+      <label class="chk"><input type="radio" name="next" value="close"> Close: the candidate is not joining</label></fieldset>
+    <p class="err" id="odE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`);
+  $('#odF').onsubmit = async (e) => { e.preventDefault(); const why = e.target.elements.reason.value.trim(); const next = (e.target.querySelector('[name=next]:checked') || {}).value;
+    if (why.length < 3) { $('#odE').textContent = 'Give the reason.'; return; }
+    if (next === 'close') { Object.assign(o, { status: 'declined', respondedAt: Date.now(), declineReason: why }); setStage(a, 'rejected', `Offer declined: ${why}`); }
+    else offerNewRound(a, 'declined', why);
+    closeDlg(); await rcSave(); if (next === 'close') { toast('Offer declined'); route(); } else { toast('Change the terms of the new offer, then send it for approval'); route(); ACT.offerEdit(); } };
+};
+ACT.offerRevise = async () => { const a = curApp(); if (!(await confirmBox('Revise the offer?', 'The current offer is kept as an earlier round. The new terms go for approval again, and the new letter gets a new number.', 'Revise'))) return;
+  offerNewRound(a, a.offer.status === 'issued' ? 'withdrawn' : 'revised', ''); await rcSave(); route(); ACT.offerEdit(); };
+ACT.offerSign = () => offerAccept(curApp(), true);
+ACT.signedOpen = (b) => window.open(`/api/files/${encodeURIComponent(b.dataset.id)}`, '_blank', 'noopener');
+const OFFER_V = { declined: ['Declined', 'bad'], withdrawn: ['Withdrawn and revised', 'warn'], revised: ['Revised before issue', ''], superseded: ['Revised', ''], issued: ['Revised', ''], approved: ['Revised', ''], draft: ['Revised', ''] };
+function offerRoundsCard(a) {
+  const o = a.offer; const r = reqById(a.reqId); if (!o || !canSeeReq(r)) return ''; const vs = o.versions || [];
+  const live = !['accepted', 'declined'].includes(o.status) && !['joined', 'rejected', 'withdrawn'].includes(a.stage);
+  return `<div class="card"><div class="hd"><div><h2>Offer rounds</h2><p class="sub">Each offer made to the candidate. A revised offer goes for approval again and gets a new letter number.</p></div>
+      <div class="tools">${live && ['approved', 'issued'].includes(o.status) ? '<button class="btn" data-act="offerRevise">Revise the offer</button>' : ''}${o.status === 'accepted' && !(o.signed || {}).fileId ? '<button class="btn" data-act="offerSign">Attach the signed letter</button>' : ''}
+      ${o.status === 'declined' && a.stage === 'offered' ? '<button class="btn pri" data-act="offerDeclinedNext" data-next="revise">Make a revised offer</button><button class="btn" data-act="offerDeclinedNext" data-next="close">Close: not joining</button>' : ''}</div></div>
+    ${o.status === 'declined' && a.stage === 'offered' ? `<div class="note warn">${esc(candById(a.candId).name)} declined offer ${esc(o.letterNo || '')} in the candidate portal${o.declineReason ? `: “${esc(o.declineReason)}”` : ''}. Make a revised offer, or close the application.</div>` : ''}
+    <table class="t"><thead><tr><th>Round</th><th class="r">CTC</th><th>Joining</th><th>Letter</th><th>Outcome</th></tr></thead><tbody>
+      ${vs.map((v, k) => `<tr><td>${k + 1}</td><td class="r">${inr0(v.ctc)}</td><td>${dmy(v.doj)}</td><td>${esc(v.letterNo || '—')}${v.issuedAt ? `<div class="fine">issued ${dt(v.issuedAt)}</div>` : ''}</td><td>${trBadge(OFFER_V, v.status)}${v.reason ? `<div class="fine">${esc(v.reason)}</div>` : ''}</td></tr>`).join('')}
+      <tr><td><b>${vs.length + 1}</b></td><td class="r"><b>${inr0(o.ctc)}</b></td><td>${dmy(o.doj)}</td><td>${esc(o.letterNo || '—')}</td><td><span class="badge ${o.status === 'accepted' ? 'ok' : o.status === 'declined' ? 'bad' : 'mari'}">${esc({ draft: 'Draft', pending: 'Waiting for approval', approved: 'Approved, to issue', rejected: 'Not approved', issued: 'Issued, waiting for the candidate', accepted: 'Accepted', declined: 'Declined' }[o.status] || o.status)}</span>
+        ${((o.signed || {}).esign || {}).name ? `<div class="fine">Accepted in the candidate portal, signed “${esc(o.signed.esign.name)}”, ${dt(o.signed.esign.at)}</div>` : ''}
+        ${(o.signed || {}).fileId ? `<div class="fine">Signed ${dmy(o.signed.date)} <button class="btn sm ghost" data-act="signedOpen" data-id="${esc(o.signed.fileId)}">Open the signed letter</button></div>` : ''}</td></tr></tbody></table></div>`;
+}
+/* at joining: the signed offer letter goes on the employee's documents */
+function signedToDocument(a, e) {
+  const s = a.offer && a.offer.signed; if (!s || !s.fileId || (e.documents || []).some((d) => d.fileId === s.fileId)) return;
+  (e.documents = e.documents || []).push({ id: uid(), category: 'Offer letter', name: `Signed offer letter${a.offer.letterNo ? ` ${a.offer.letterNo}` : ''}`, fileId: s.fileId, date: s.date || todayISO(), by: me.id, at: Date.now() });
+}
+
+/* ================================================================ the screens put together */
+{
+  const appV = VIEWS.app;
+  VIEWS.app = () => {
+    const v = appV(); const a = appById(R.arg); if (!a || !canSeeApp(a)) return v; const r = reqById(a.reqId); const f = rflow(r.companyId);
+    if (!slOk(a)) v.html = v.html.replace('<button class="btn sm" data-act="appStage" data-s="interview">Interview</button>', '');
+    if (f.selOn && (a.sel || {}).final !== 'select') v.html = v.html.replace('<button class="btn sm" data-act="appStage" data-s="selected">Selected</button>', '');
+    const top = slCard(a); const mid = fbCard(a) + selCard(a) + offerRoundsCard(a);
+    const ivAt = v.html.indexOf('<div class="card"><div class="hd"><div><h2>Interviews</h2>');
+    if (ivAt > 0) v.html = v.html.slice(0, ivAt) + top + v.html.slice(ivAt); else v.html += top;
+    // after the interviews: before the offer card, else at the end of the left column (before the follow-ups), else before the interviews
+    const offAt = v.html.indexOf('<div class="card"><div class="hd"><div><h2>Offer');
+    const fu = v.html.indexOf('<div class="card"><div class="hd"><h2>Follow-ups</h2>'); const colEnd = fu > 0 ? v.html.lastIndexOf('</div><div>', fu) : -1;
+    const at = offAt > 0 ? offAt : colEnd > 0 ? colEnd : v.html.indexOf('<div class="card"><div class="hd"><div><h2>Interviews</h2>');
+    if (mid) v.html = at > 0 ? v.html.slice(0, at) + mid + v.html.slice(at) : v.html + mid;
+    return v;
+  };
+  const reqV = VIEWS.req;
+  VIEWS.req = () => {
+    const v = reqV(); const r = reqById(R.arg); if (!r || !canSeeReq(r)) return v; const f = rflow(r.companyId);
+    const scr = S.apps.filter((a) => a.reqId === r.id && a.stage === 'screening').length; const inIv = S.apps.some((a) => a.reqId === r.id && a.stage === 'interview');
+    const extra = `${r.status === 'open' ? `<button class="btn" data-act="portalImport" data-req="${r.id}">Import from job portal</button>` : ''}${f.slOn && scr ? `<button class="btn" data-act="slSend" data-req="${r.id}">Send shortlist for approval (${scr})</button>` : ''}${f.selOn && inIv ? `<a class="btn" href="#/finalsel/${r.id}">Final selection</a>` : ''}`;
+    const assign = '<button class="btn pri" data-act="assignCVs">Assign CVs</button>';
+    v.html = v.html.includes(assign) ? v.html.replace(assign, extra + assign) : v.html.replace('<div class="card"><h2>Pipeline</h2>', `<div class="tools" style="margin-bottom:12px">${extra}</div><div class="card"><h2>Pipeline</h2>`);
+    return v;
+  };
+  const candsV = VIEWS.cands;
+  VIEWS.cands = () => { const v = candsV(); v.html = v.html.replace('<button class="btn pri" data-act="candEdit">Add candidate</button>', '<button class="btn" data-act="portalImport">Import from job portal</button><button class="btn pri" data-act="candEdit">Add candidate</button>'); return v; };
+  const rsV = VIEWS.recruitsetup;
+  VIEWS.recruitsetup = () => {
+    const v = rsV(); const co = company(); const f = rflow(co.id); const crit = ivCriteria(co.id);
+    v.html += `<form class="card" id="rfF"><h2>Recruitment flow</h2><p class="sub">The steps from shortlist to joining for ${esc(co.name)}. The server keeps to them: a step that is on cannot be skipped from any screen.</p>
+      <h3>Management approval of the shortlist</h3><div class="form">${fieldHtml({ k: 'slOn', label: 'Candidates are interviewed only after management approves the shortlist (HR can go ahead without, giving a reason)', type: 'check', wide: true }, f.slOn)}
+        ${fieldHtml({ k: 'slHM', label: 'The requisition’s hiring manager approves', type: 'check', wide: true }, f.slHM)}${fieldHtml({ k: 'slRule', label: 'With more than one approver', type: 'select', opts: [['any', 'One approval is enough (the first decision counts)'], ['all', 'Everyone must approve']] }, f.slRule)}</div>
+      <fieldset style="border:1px solid var(--rule);border-radius:9px;max-height:200px;overflow:auto;margin-top:8px"><legend class="fine">Management approvers for every requisition</legend>${coEmployees(co.id).map((e) => `<label class="chk"><input type="checkbox" name="slIds" value="${e.id}" ${f.slIds.includes(e.id) ? 'checked' : ''}> ${esc(fullName(e))} <span class="fine">${esc((desig(e.desigId) || {}).name || '')}</span></label>`).join('')}</fieldset>
+      <h3>After the interviews</h3><div class="form">${fieldHtml({ k: 'selOn', label: 'Candidates are selected in the final selection: HR proposes, the hiring manager decides', type: 'check', wide: true }, f.selOn)}
+        ${fieldHtml({ k: 'signOn', label: 'An offer is accepted only with the signed offer letter attached', type: 'check', wide: true }, f.signOn)}</div>
+      <h3>Interview feedback form</h3><label class="field">Points the panel rates from 1 to 5, one per line<textarea class="inp" name="crit" style="min-height:150px">${esc(crit.map((k) => k.name).join('\n'))}</textarea><small>Up to 12. Renaming a point starts it afresh; feedback already given keeps its ratings.</small></label>
+      <div class="btns" style="justify-content:flex-start"><button class="btn pri">Save</button></div></form>`;
+    const after0 = v.after; v.after = () => { if (after0) after0();
+      $('#rfF').onsubmit = (e) => { e.preventDefault(); const el = e.target.elements; const names = [...new Set(el.crit.value.split('\n').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean))];
+        if (!names.length) { toast('Keep at least one point on the feedback form.'); return; } if (names.length > 12) { toast('Up to 12 points on the feedback form.'); return; }
+        const old = ivCriteria(co.id); co.ivCriteria = names.map((n) => { const hit = old.find((k) => k.name.toLowerCase() === n.toLowerCase()); return { k: hit ? hit.k : 'c' + uid().slice(0, 8), name: n }; });
+        co.rflow = { slOn: el.slOn.checked, slHM: el.slHM.checked, slRule: el.slRule.value, slIds: new FormData(e.target).getAll('slIds'), selOn: el.selOn.checked, signOn: el.signOn.checked };
+        audit('Recruitment settings changed', 'Recruitment flow and interview feedback form', 'recruitment'); saveNow(); toast('Saved'); }; };
+    return v;
+  };
+}
+
+
+/* =====================================================================
+   PeopleDesk 2.19: the candidate portal, and the conversation with the candidate in both directions.
+   The candidate signs in (2.17) and sees their applications, interviews and offer, answers the offer and writes to
+   HR (pages/CandidatePortal.jsx, backend cportal.py). Here: HR's side. Messages are written on the server
+   (/api/recruit/message), shown on the application page and e-mailed; replies by e-mail come back into the thread
+   (backend cmail.py). Notices go to the candidate when an interview is scheduled, moved or cancelled, when an offer
+   is issued (with the letter kept for their portal) and when HR answers their request for changes.
+   ===================================================================== */
+const VIA = { app: 'PeopleDesk', portal: 'candidate portal', email: 'e-mail', auto: 'notice' };
+const thread = (c) => (c && c.msgs) || [];
+const unreadOf = (c) => thread(c).filter((m) => m.dir === 'in' && !m.readAt).length;
+const latestApp = (c) => S.apps.filter((a) => a.candId === c.id).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0))[0];
+function canWriteCand(c) {
+  if (!c || !me) return false;
+  return isHR(c.companyId) || S.apps.some((a) => { const r = a.candId === c.id && reqById(a.reqId); return !!r && (r.hiringMgr === me.id || r.createdBy === me.id); });
+}
+const mineToAnswer = (c) => c.msgOwner === me.id || (isHR(c.companyId) && (!c.msgOwner || !empById(c.msgOwner) || !active(empById(c.msgOwner))));
+async function candNotify(body) {
+  try {
+    const r = await api.post('/api/recruit/candnotify', body);
+    if (!r.skipped) toast(r.emailed ? 'The candidate was told, in their portal and by e-mail' : `The candidate was told in their portal${r.reason ? `; not e-mailed: ${r.reason}` : ''}`);
+    await hooks.reload(); return r;
+  } catch (x) { toast(`The candidate was not told: ${x.message}`); return null; }
+}
+
+/* ---------------------------------------------------------------- approvals inbox */
+function candPending() {
+  if (!me) return []; const out = [];
+  S.cands.forEach((c) => { const n = unreadOf(c); if (!n || !canWriteCand(c) || !mineToAnswer(c)) return; const a = latestApp(c);
+    out.push({ kind: 'cpmsg', r: { cand: c.name }, what: plural(n, 'new message'), link: a ? '#/app/' + a.id : '#/cands' }); });
+  S.apps.forEach((a) => { const r = reqById(a.reqId), c = candById(a.candId), o = a.offer || {}; if (!r || !c || !canSeeReq(r)) return;
+    if (o.status === 'declined' && a.stage === 'offered') out.push({ kind: 'cpoffer', r: { cand: c.name }, what: `Declined offer ${o.letterNo || ''} in the candidate portal: make a revised offer or close`, link: '#/app/' + a.id });
+    if (a.stage === 'offered' && (a.nego || []).some((x) => x.viaPortal && x.outcome === 'open')) out.push({ kind: 'cpnego', r: { cand: c.name }, what: 'Asked for changes to the offer: answer the candidate', link: '#/app/' + a.id }); });
+  return out;
+}
+
+/* ---------------------------------------------------------------- the conversation card */
+function msgHtml(m) {
+  const out = m.dir === 'out';
+  return `<div class="msg ${out ? 'out' : 'in'}"><div class="fine">${out ? esc(nameOf(m.by)) : 'Candidate'} · ${dt(m.at)} · ${VIA[m.via] || ''}${out && m.readAt ? ' · read' : ''}${m.job ? ` · ${esc(m.job)}` : ''}</div>
+    ${m.subject ? `<b>${esc(m.subject)}</b>` : ''}<div style="white-space:pre-wrap">${esc(m.text)}</div>
+    ${(m.files || []).map((f) => `<div><a href="/api/files/${encodeURIComponent(f.id)}" target="_blank" rel="noopener">📎 ${esc(f.name)}</a></div>`).join('')}</div>`;
+}
+function msgCard(a) {
+  const c = candById(a.candId); if (!c || !canWriteCand(c)) return '';
+  const all = thread(c); const list = all.slice(-25); const n = unreadOf(c);
+  const reach = [c.email ? `e-mail ${esc(c.email)}` : '', (c.form || {}).sentAt ? 'their candidate portal' : ''].filter(Boolean).join(' and ');
+  return `<div class="card" id="cpMsgs"><div class="hd"><div><h2>Messages with ${esc(c.name.split(' ')[0])} ${n ? `<span class="badge warn">${n} new</span>` : ''}</h2>
+      <p class="sub">${reach ? `Reaches the candidate by ${reach}.` : 'The candidate has no e-mail and no portal sign-in yet: add an e-mail address, or send the form link so they can sign in.'} Their replies, in the portal or by e-mail, come back here.</p></div>
+      <button class="btn pri" data-act="msgNew" data-app="${a.id}">Write to the candidate</button></div>
+    ${list.length ? `<div class="thread">${all.length > list.length ? `<p class="fine">${all.length - list.length} earlier messages not shown.</p>` : ''}${list.map(msgHtml).join('')}</div>` : '<p class="mut" style="margin:0">No messages yet.</p>'}</div>`;
+}
+const MSG_QUICK = {
+  confirm: (job) => [`Your interview for ${job}`, 'Please confirm that the interview time suits you by replying to this message. If it does not, tell us two or three times that would.'],
+  docs: () => ['Documents for joining', 'Please bring the following on your joining day: proof of identity and address, PAN card, Aadhaar, educational certificates, the relieving letter and the last three payslips from your current employer, and two passport-size photographs.'],
+  details: () => ['Your details', 'Please sign in to your candidate portal and complete your details (My details), so that we can move your application forward.'],
+  notsel: (job) => [`Your application for ${job}`, `Thank you for your time and interest in the position of ${job}. After careful consideration, we will not be taking your application further. We wish you every success.`],
+};
+ACT.msgNew = (b) => {
+  const a = appById(b.dataset.app), c = candById(a.candId), r = reqById(a.reqId);
+  openDlg(`<form class="dlg" id="msF" novalidate><h2>Write to ${esc(c.name)}</h2>
+    <p class="fine" style="margin:0">Shown in their candidate portal${c.email ? ` and e-mailed to ${esc(c.email)}` : ''}. Their reply comes back to this application.</p>
+    <div class="form">${fieldHtml({ k: 'quick', label: 'Start from', type: 'select', opts: [['', 'A blank message'], ['confirm', 'Please confirm the interview time'], ['docs', 'Documents for joining'], ['details', 'Please complete your details'], ['notsel', 'Not selected']] }, '')}
+      ${fieldHtml({ k: 'subject', label: 'Subject', wide: true }, `Your application for ${r.title}`)}${fieldHtml({ k: 'text', label: 'Message', type: 'textarea', wide: true, req: true })}
+      <label class="field wide">Attach files (optional: up to 5)<input type="file" class="inp" name="files" multiple accept=".pdf,image/jpeg,image/png,image/webp,.doc,.docx"></label></div>
+    <p class="err" id="msE"></p><div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send</button></div></form>`, true);
+  const f = $('#msF');
+  f.elements.quick.onchange = () => { const q = MSG_QUICK[f.elements.quick.value]; if (!q) return; const [s, t] = q(r.title); f.elements.subject.value = s; f.elements.text.value = t; };
+  f.onsubmit = async (e) => { e.preventDefault(); const el = e.target.elements; const err = (m) => { $('#msE').textContent = m; };
+    const files = [...el.files.files]; if (!el.text.value.trim() && !files.length) return err('Write a message.'); if (files.length > 5) return err('Attach up to 5 files.');
+    const btn = e.target.querySelector('button.pri'); btn.disabled = true; err('');
+    try {
+      await rcSave(); const ids = []; for (const x of files) ids.push((await uploadFile(x)).id);
+      const res = await api.post('/api/recruit/message', { candId: c.id, appId: a.id, subject: el.subject.value.trim(), text: el.text.value.trim(), fileIds: ids });
+      closeDlg(); toast(res.emailed ? 'Sent: in their portal and by e-mail' : `Sent to their portal. Not e-mailed: ${res.reason}`); await hooks.reload(); route();
+    } catch (x) { btn.disabled = false; err(x.message); } };
+};
+
+/* ---------------------------------------------------------------- notices: interviews and the offer */
+let cpIvWatch = null; let cpBusy = false; const cpReadDone = new Set();
+const ivSig = (i) => `${i.status}|${i.date}|${i.start}`;
+{
+  const ivNew2 = ACT.ivNew; ACT.ivNew = (b) => { const a = curApp(); cpIvWatch = { appId: a.id, at: Date.now(), snap: Object.fromEntries(S.interviews.filter((i) => i.appId === a.id).map((i) => [i.id, ivSig(i)])) }; return ivNew2(b); };
+  const ivSt2 = ACT.ivStatus; ACT.ivStatus = (b) => { const i = ivById(b.dataset.id); if (i) cpIvWatch = { appId: i.appId, at: Date.now(), snap: Object.fromEntries(S.interviews.filter((x) => x.appId === i.appId).map((x) => [x.id, ivSig(x)])) }; return ivSt2(b); };
+  const issue0 = ACT.offerIssue;
+  ACT.offerIssue = async () => { const a = curApp(); issue0(); const o = a.offer; if (!o || o.status !== 'issued') return;
+    const p = offerLetterParts(a); o.letterHtml = letterDoc(p.title, p.html); await rcSave(); await candNotify({ event: 'offer', appId: a.id }); route(); };
+}
+const LETTER_CSS = 'body{font:13px "Segoe UI",system-ui,sans-serif;color:#111;margin:28px;background:#fff}table{width:100%;border-collapse:collapse;margin:8px 0}th,td{border-bottom:1px solid #ccc;padding:5px 6px;text-align:left}.r{text-align:right}h1,h2{margin:0 0 6px}.fine{color:#666;font-size:12px}@media print{body{margin:0}}';
+const letterDoc = (title, html) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${LETTER_CSS}</style></head><body>${html}</body></html>`;
+function cpAfterApp(a) {
+  const c = candById(a.candId); if (!c || !canWriteCand(c)) return;
+  if (cpIvWatch && cpIvWatch.appId === a.id) {
+    const changed = S.interviews.filter((i) => i.appId === a.id && cpIvWatch.snap[i.id] !== ivSig(i) && ['scheduled', 'cancelled'].includes(i.status));
+    if (changed.length) { changed.forEach((i) => { i.candNotice = 'want'; }); cpIvWatch = null; saveNow(); }
+    else if (Date.now() - cpIvWatch.at > 15 * 60000) cpIvWatch = null;
+  }
+  const want = S.interviews.filter((i) => i.appId === a.id && i.candNotice === 'want');
+  if (want.length && !cpBusy) {
+    cpBusy = true;
+    (async () => { try { await rcSave(); for (const i of want) { const r = await candNotify({ event: 'interview', appId: a.id, interviewId: i.id }); const fresh = ivById(i.id); if (fresh) fresh.candNotice = r ? ivSig(fresh) : ''; } saveNow(); await rcSave(); }
+      finally { cpBusy = false; } route(); })();
+  }
+  if (unreadOf(c) && mineToAnswer(c) && !cpReadDone.has(c.id)) {
+    cpReadDone.add(c.id);
+    (async () => { try { await rcSave(); await api.post('/api/recruit/messages/read', { candId: c.id }); await hooks.reload(); } catch (x) { /* shown again next time */ } })();
+  }
+}
+
+/* ---------------------------------------------------------------- the candidate's requests and an online decline */
+ACT.negoAnswer = (b) => {
+  const a = curApp(), x = (a.nego || []).find((y) => y.id === b.dataset.id); if (!x || x.outcome !== 'open') return;
+  const o = a.offer || {}, r = reqById(a.reqId), c = candById(a.candId);
+  const ask = [x.askCtc !== '' && x.askCtc != null ? `CTC ${inr0(x.askCtc)}` : '', x.askDoj ? `joining ${dmy(x.askDoj)}` : '', x.askBonus !== '' && x.askBonus != null ? `joining bonus ${inr0(x.askBonus)}` : '', x.askOther || ''].filter(Boolean).join('; ');
+  const fields = [{ k: 'outcome', label: 'Your answer', type: 'select', opts: [['agreed', 'Agree: a revised offer follows'], ['held', 'Keep the offer as it is']] },
+    { k: 'ourCtc', label: 'Agreed CTC (₹ a year)', type: 'number', min: 0 }, { k: 'ourDoj', label: 'Agreed joining date', type: 'date' }, { k: 'ourBonus', label: 'Agreed joining bonus (₹)', type: 'number', min: 0 },
+    { k: 'answer', label: 'Your answer to the candidate', type: 'textarea', wide: true, req: true }];
+  const v = { outcome: 'agreed', ourCtc: x.askCtc !== '' && x.askCtc != null ? x.askCtc : o.ctc, ourDoj: x.askDoj || o.doj, ourBonus: x.askBonus !== '' && x.askBonus != null ? x.askBonus : (o.joiningBonus || '') };
+  openDlg(`<form class="dlg" id="naF" novalidate><h2>Answer ${esc(c.name)}</h2>
+    <p class="mut" style="margin:0">Asked on ${dt(x.at)} about offer ${esc(x.letterNo || o.letterNo || '')} (${inr0(o.ctc)}, joining ${dmy(o.doj)}): <b>${esc(ask)}</b>${x.note ? `. “${esc(x.note)}”` : ''}</p>
+    <p class="fine">Budget ${inr0(r.ctcMin)} to ${inr0(r.ctcMax)}. With Agree, revise the offer to these terms next; it goes for approval again and the candidate gets the new letter in their portal. The answer is sent to the candidate.</p>
+    <div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="naE"></p>
+    <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Send the answer</button></div></form>`, true);
+  const show = () => { const ag = $('#naF').elements.outcome.value === 'agreed'; ['ourCtc', 'ourDoj', 'ourBonus'].forEach((k) => { $('#naF').elements[k].closest('.field').hidden = !ag; }); };
+  $('#naF').elements.outcome.onchange = show; show();
+  $('#naF').onsubmit = async (e) => { e.preventDefault(); const d = readForm(e.target, fields); const err = (m) => { $('#naE').textContent = m; };
+    if (String(d.answer || '').trim().length < 3) return err('Write your answer to the candidate.');
+    const ag = d.outcome === 'agreed';
+    if (ag && d.ourDoj && d.ourDoj < todayISO()) return err('The joining date is in the past.');
+    if (ag && !(+d.ourCtc) && !d.ourDoj && (d.ourBonus === '' || d.ourBonus == null)) return err('Enter the agreed terms.');
+    Object.assign(x, { outcome: d.outcome, ourCtc: ag ? d.ourCtc : '', ourDoj: ag ? d.ourDoj : '', ourBonus: ag ? d.ourBonus : '', answer: String(d.answer).trim(), answeredBy: me.id, answeredAt: Date.now() });
+    (a.notes = a.notes || []).push({ at: Date.now(), by: me.id, text: `Answered the candidate's request: ${ag ? 'agreed' : 'offer kept as it is'}. ${x.answer}` });
+    closeDlg(); await rcSave(); await candNotify({ event: 'nego', appId: a.id, roundId: x.id });
+    if (ag) toast('Answered. Now revise the offer to the agreed terms (Negotiation card).'); route(); };
+};
+ACT.offerDeclinedNext = async (b) => {
+  const a = curApp(), o = a.offer, c = candById(a.candId); if (!o || o.status !== 'declined' || a.stage !== 'offered') return;
+  if (b.dataset.next === 'close') {
+    if (!(await confirmBox('Close the application?', `${c.name} declined the offer${o.declineReason ? `: “${o.declineReason}”` : ''}. The application moves to Rejected.`, 'Close'))) return;
+    setStage(a, 'rejected', `Offer declined in the candidate portal${o.declineReason ? `: ${o.declineReason}` : ''}`); await rcSave(); toast('Closed'); route(); return;
+  }
+  offerNewRound(a, 'declined', o.declineReason || ''); await rcSave(); route(); ACT.offerEdit();
+};
+
+/* ---------------------------------------------------------------- on the application page */
+{
+  const appV2 = VIEWS.app;
+  VIEWS.app = () => {
+    const v = appV2(); const a = appById(R.arg); if (!a || !canSeeApp(a)) return v;
+    const card = msgCard(a);
+    if (card) {
+      const fu = v.html.indexOf('<div class="card"><div class="hd"><h2>Follow-ups</h2>');
+      v.html = fu > 0 ? v.html.slice(0, fu) + card + v.html.slice(fu) : v.html + card;
+    }
+    const after0 = v.after; v.after = () => { if (after0) after0(); cpAfterApp(a); };
+    return v;
+  };
+}
+
 
 export {
   hooks, sync, ACT, VIEWS, MENU, BOTTOM, ROLES, STATES, R,

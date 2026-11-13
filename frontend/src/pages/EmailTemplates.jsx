@@ -22,6 +22,13 @@ const LABELS = {
   'comp.comment': 'Salary plan comment: everyone on the budget is told about a new comment',
   'training.feedback': 'Trainer feedback report: ratings and comments sent to a trainer',
   'report.scheduled': 'Scheduled report: a saved report e-mailed on its schedule, as an Excel attachment',
+  'recruit.shortlist': 'Shortlist for approval: management is asked to approve candidates before interviews',
+  'recruit.selection': 'Final selection: the hiring manager is asked to decide after the interviews',
+  'recruit.referral': 'Interview referral: an interviewer refers the decision on a candidate to someone else',
+  'candidate.message': 'To a candidate: every message from HR to a candidate, and every notice, is e-mailed in this',
+  'candidate.toHr': 'From a candidate: a candidate’s message (portal or e-mail) is passed on to HR in this',
+  'candidate.notice.interview': 'Interview notice to a candidate: scheduled, moved or cancelled',
+  'candidate.notice.offer': 'Offer notice to a candidate: the offer letter is in their portal',
 };
 
 export default function EmailTemplates() {

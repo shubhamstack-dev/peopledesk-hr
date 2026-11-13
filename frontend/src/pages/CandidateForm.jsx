@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
+import CandidatePortal from './CandidatePortal.jsx';
 
 /* The candidate's own page. HR sends a link (#/apply?t=…). 2.17: the link does not open the form by itself: the
    first time, the candidate creates a candidate sign-in (their e-mail address or mobile number and a password of
@@ -100,7 +101,7 @@ function RespMatrix({ list, main, sec, onChange, disabled, rowKey }) {
 
 const asForm = (r) => ({ education: [], prevJobs: [], references: [], family: [], skillLevels: {}, ...r.data, awards: (r.data && r.data.awards) || [] });
 
-function FormPage({ initial, onSignOut, onSessionEnded }) {
+function FormPage({ initial, onSignOut, onSessionEnded, embedded }) {
   const [info, setInfo] = useState(initial);
   const [d, setD] = useState(() => asForm(initial));
   const [msg, setMsg] = useState({ text: '', err: false });
@@ -162,13 +163,13 @@ function FormPage({ initial, onSignOut, onSessionEnded }) {
   };
 
   return (
-    <div className="apply" ref={top}>
-      <div className="apply-head"><span className="logo"><img src="/aequm-mark.png" alt="" /></span>
+    <div className={embedded ? '' : 'apply'} ref={top}>
+      {!embedded && <div className="apply-head"><span className="logo"><img src="/aequm-mark.png" alt="" /></span>
         <div><b>{info.company}</b><small>Your details{info.jobs.length ? ` for ${info.jobs.join(', ')}` : ''}</small></div>
         <div className="apply-who"><small>Signed in as a candidate: {info.login}</small>
           <button type="button" className="btn sm ghost" onClick={() => setPwOpen(!pwOpen)}>Change password</button>
-          <button type="button" className="btn sm" onClick={onSignOut}>Sign out</button></div></div>
-      {pwOpen && <ChangePassword onDone={() => setPwOpen(false)} onSessionEnded={onSessionEnded} />}
+          <button type="button" className="btn sm" onClick={onSignOut}>Sign out</button></div></div>}
+      {!embedded && pwOpen && <ChangePassword onDone={() => setPwOpen(false)} onSessionEnded={onSessionEnded} />}
       {info.jobs.length > 0 && !ro && <div className="note">You are applying for <b>{info.jobs.join(', ')}</b>. You do not need a CV to start: fill in your experience, education{skills.length ? ', your level in the skills the job needs' : ''} and the rest, and attach a CV later if you have one.</div>}
       <div className="card"><h2>Hello {info.name.split(' ')[0]}</h2>
         <p className="sub">{ro ? (info.status === 'submitted' ? 'Your details have been sent to HR. If something needs to change, HR will contact you.' : 'This form is closed.')
@@ -365,5 +366,10 @@ export default function CandidateForm({ mode = 'link', onDone, onSignedOut, onSe
   );
   if (stage === 'loading') return <div className="boot">Loading…</div>;
   if (stage === 'gate') return <Gate token={token} view={view} onIn={loadForm} onSignOutOther={signOut} />;
-  return <FormPage key={form.submittedAt || 'f'} initial={form} onSignOut={signOut} onSessionEnded={ended} />;
+  // 2.19: signed in, the candidate has their portal: applications, messages, and this form as My details
+  return (
+    <CandidatePortal login={form.login} onSignOut={signOut} onSessionEnded={ended}
+      changePassword={(done) => <ChangePassword onDone={done} onSessionEnded={ended} />}
+      details={<FormPage key={form.submittedAt || 'f'} initial={form} onSignOut={signOut} onSessionEnded={ended} embedded />} />
+  );
 }

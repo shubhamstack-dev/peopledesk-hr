@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { api } from '../api.js';
 import * as E from '../engine/engine.js';
-import MailSettings from './MailSettings.jsx';
+import MailSettings, { RepliesMailbox } from './MailSettings.jsx';
 
 export default function Settings({ onSignedOut, onWiped }) {
   const S = E.getS();
@@ -69,6 +69,7 @@ export default function Settings({ onSignedOut, onWiped }) {
       </form>}
 
       {sup && <MailSettings />}
+      {sup && <RepliesMailbox />}
 
       <form className="card" onSubmit={changePw}>
         <h2>Your back-up password</h2>

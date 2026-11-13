@@ -361,3 +361,22 @@ details.card[open]>summary{margin-bottom:10px}
 .hubitem{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--rule)}
 .hubitem:last-child{border-bottom:0}
 .hubpop{border:1px solid var(--rule);border-radius:10px;padding:10px 12px}
+
+/* 2.19: the candidate portal and the conversation with a candidate */
+.cp-tabs{display:flex;gap:4px;border-bottom:1px solid var(--rule);margin:0 0 14px;overflow-x:auto}
+.cp-tabs button{background:none;border:0;border-bottom:3px solid transparent;padding:10px 14px;font:inherit;font-weight:600;color:var(--muted);cursor:pointer;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.cp-tabs button.on{color:var(--pri);border-bottom-color:var(--pri)}
+.cp-steps{display:flex;list-style:none;margin:6px 0 10px;padding:0;gap:4px;flex-wrap:wrap}
+.cp-step{flex:1 1 110px;display:flex;align-items:center;gap:6px;font-size:13px;color:var(--faint);padding:6px 8px;border-radius:8px;background:var(--sunk)}
+.cp-step .dot{width:20px;height:20px;border-radius:50%;border:2px solid var(--rule2);display:grid;place-items:center;font-size:12px;flex:none}
+.cp-step.done{color:var(--ok)}.cp-step.done .dot{background:var(--ok);border-color:var(--ok);color:#fff}
+.cp-step.now{color:var(--pri);font-weight:700;background:var(--pri-soft)}.cp-step.now .dot{border-color:var(--pri)}
+.cp-step.stop{color:var(--bad);font-weight:700;background:var(--bad-soft)}.cp-step.stop .dot{background:var(--bad);border-color:var(--bad);color:#fff}
+.cp-offer{border-top:1px solid var(--rule);margin-top:12px;padding-top:6px}
+.cp-terms{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:6px 0 10px}
+.cp-terms div{background:var(--sunk);border-radius:8px;padding:8px 10px}.cp-terms small{display:block;color:var(--muted);font-size:12px}.cp-terms b{font-size:15px}
+.cp-letter{width:100%;height:560px;border:1px solid var(--rule);border-radius:9px;background:#fff;margin:4px 0}
+.thread{display:flex;flex-direction:column;gap:8px;max-height:520px;overflow-y:auto;padding:4px 2px}
+.msg{max-width:82%;padding:8px 12px;border-radius:12px;border:1px solid var(--rule);background:var(--sunk);overflow-wrap:anywhere}
+.msg.out{align-self:flex-end;background:var(--pri-soft);border-color:transparent}
+.msg.in{align-self:flex-start}

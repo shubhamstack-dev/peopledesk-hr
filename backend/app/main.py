@@ -36,6 +36,7 @@ PeopleDesk HR API (the middle tier between the React app and MySQL).
   POST /api/apply/save               the candidate saves or sends the form (no session)
 """
 import logging
+import base64
 import os
 import re
 import time
@@ -49,7 +50,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import candform, doctemplates, email_templates, mailer, migrate, perf, policy, portal, reimb, reports, repo, training, workforce
+from . import candform, cmail, cportal, doctemplates, email_templates, mailer, migrate, perf, policy, portal, reimb, reports, repo, training, workforce
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
@@ -69,6 +70,8 @@ def _migrate():
     reimb.start(repo.engine, send=lambda *a, **k: mailer.send(*a, **k) if mailer.configured() else None)
     # Admin: e-mail a saved report on its schedule
     reports.start(repo.engine, send=lambda *a, **k: mailer.send(*a, **k) if mailer.configured() else None)
+    # 2.19: replies from candidates (and HR) to the conversation, read from the replies mailbox when it is set up
+    cmail.start(repo.engine, store=lambda data, name, mime, co, owner: _store_file(data, name, mime, co, owner))
 if CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True,
                        allow_methods=["GET", "POST"], allow_headers=["content-type", "x-peopledesk"])
@@ -1157,6 +1160,12 @@ def _file_visible(conn, fid: str, me: dict) -> bool:
         if p.get("status", "published") != "draft" and p.get("companyId") in {me.get("companyId"), *(me.get("hrCompanies") or [])} \
                 and (not p.get("depts") or me.get("deptId") in p["depts"]) and (not p.get("locations") or me.get("locationId") in p["locations"]):
             return True
+    # 2.18: a signed offer letter on an application, for the requisition's hiring manager and the person who raised it
+    for _emp, d in hit("applications"):
+        a = repo.loads(d)
+        req = repo.get_records(conn, "reqs", [a.get("reqId")]).get(a.get("reqId")) or {}
+        if me["id"] in {req.get("hiringMgr"), req.get("createdBy")} - {None, ""}:
+            return True
     tr_rows = hit("trainings")
     for _emp, d in tr_rows:     # training content: the trainers and the people who attended
         t = repo.loads(d)
@@ -1372,6 +1381,470 @@ def comp_notify(body: CompNotifyBody, me=Depends(current_user)):
             return {"sent": False, "reason": "the e-mail server refused the message; it shows in Approvals"}
         repo.audit_add(conn, "E-mail sent", f"comp:{body.cycleId}:{body.poolId}:{body.event}", me["id"], module="compensation", ref_type="comp", ref_id=body.cycleId)
         return {"sent": True, "to": f"{len(to)} recipient{'s' if len(to) > 1 else ''}"}
+
+
+# ---------------------------------------------------------------- 2.18: recruitment flow e-mails
+class RecruitNotifyBody(BaseModel):
+    event: str                      # shortlist | selection | referral
+    appIds: list[str] = []
+    interviewId: str = ""
+    referralId: str = ""
+
+
+def _inr(n) -> str:
+    """12,34,567 (Indian grouping)."""
+    try:
+        s = str(int(round(float(n or 0))))
+    except (TypeError, ValueError):
+        return "—"
+    head, tail = s[:-3], s[-3:]
+    while len(head) > 2:
+        tail, head = head[-2:] + "," + tail, head[:-2]
+    return (head + "," + tail) if head else tail
+
+
+@app.post("/api/recruit/notify")
+def recruit_notify(body: RecruitNotifyBody, me=Depends(current_user)):
+    """E-mails in the recruitment flow, worked out from the saved records (never from what the browser says):
+    a shortlist to each approver who has not decided, a final-selection proposal to the hiring manager, and a
+    referral to the person referred to. Sent only by the person who made the shortlist, proposal or referral."""
+    with repo.engine.begin() as conn:
+        emps = repo.employees_index(conn)
+        nm = lambda i: f"{(emps.get(i) or {}).get('firstName', '')} {(emps.get(i) or {}).get('lastName', '')}".strip()  # noqa: E731
+        mails: list[tuple[str, str, str]] = []          # (employee id, subject, text)
+        if body.event in ("shortlist", "selection"):
+            apps = list(repo.get_records(conn, "apps", body.appIds[:200]).values())
+            reqs = {a.get("reqId") for a in apps}
+            if not apps or len(reqs) != 1:
+                raise HTTPException(400, "Send one requisition's candidates at a time.")
+            req = repo.get_records(conn, "reqs", list(reqs)).get(next(iter(reqs))) or {}
+            co = req.get("companyId")
+            cands = repo.get_records(conn, "cands", [a.get("candId") for a in apps])
+            base = {"sender": nm(me["id"]), "job": req.get("title", ""), "reqNo": req.get("no", "")}
+            if body.event == "shortlist":
+                apps = [a for a in apps if (a.get("shortlist") or {}).get("status") == "pending" and a["shortlist"].get("by") == me["id"]]
+                if not apps:
+                    raise HTTPException(400, "None of these candidates is waiting for approval on a shortlist you sent.")
+
+                def line(a):
+                    c = cands.get(a.get("candId")) or {}
+                    now = f", {c.get('currentTitle')} at {c.get('currentCompany') or '—'}" if c.get("currentTitle") else ""
+                    return f"- {c.get('name', '')}: {c.get('expYears') or 0} years{now}, expects {_inr(c.get('expectedCtc'))}"
+                note = next((a["shortlist"].get("note") for a in apps if a["shortlist"].get("note")), "")
+                to_ids = list(dict.fromkeys(x.get("id") for a in apps for x in a["shortlist"].get("approvers") or [] if not x.get("decision")))
+                for i in to_ids:
+                    mine = [a for a in apps if any(x.get("id") == i and not x.get("decision") for x in a["shortlist"].get("approvers") or [])]
+                    subject, text_ = email_templates.render(conn, co, "recruit.shortlist", {
+                        **base, "firstName": (emps.get(i) or {}).get("firstName", ""), "count": len(mine), "candidatesLines": "\n".join(line(a) for a in mine),
+                        "noteBlock": f"Note: {note}\n" if note else "", "link": f"{APP_URL}/#/slapprove?req={req.get('id')}"})
+                    mails.append((i, subject, text_))
+            else:
+                apps = [a for a in apps if (a.get("sel") or {}).get("status") == "proposed" and a["sel"].get("by") == me["id"]]
+                mgr = req.get("hiringMgr")
+                if not apps or not mgr or mgr == me["id"]:
+                    raise HTTPException(400, "Nothing here is waiting for the hiring manager's decision.")
+                word = {"select": "select", "reject": "reject", "hold": "keep on hold"}
+                lines = [f"- {(cands.get(a.get('candId')) or {}).get('name', '')}: {word.get(a['sel'].get('proposed'), '')}"
+                         f"{' (rank ' + str(a['sel'].get('rank')) + ')' if a['sel'].get('rank') else ''}" for a in apps]
+                subject, text_ = email_templates.render(conn, co, "recruit.selection", {
+                    **base, "firstName": (emps.get(mgr) or {}).get("firstName", ""), "candidatesLines": "\n".join(lines),
+                    "link": f"{APP_URL}/#/finalsel/{req.get('id')}"})
+                mails.append((mgr, subject, text_))
+        elif body.event == "referral":
+            iv = repo.get_records(conn, "interviews", [body.interviewId]).get(body.interviewId) or {}
+            ref = next((x for x in iv.get("referrals") or [] if x.get("id") == body.referralId), None)
+            if not ref or ref.get("by") != me["id"] or ref.get("decision"):
+                raise HTTPException(400, "That referral is not saved, is not yours, or is answered.")
+            app_ = repo.get_records(conn, "apps", [iv.get("appId")]).get(iv.get("appId")) or {}
+            req = repo.get_records(conn, "reqs", [app_.get("reqId")]).get(app_.get("reqId")) or {}
+            cand = repo.get_records(conn, "cands", [app_.get("candId")]).get(app_.get("candId")) or {}
+            co = req.get("companyId")
+            subject, text_ = email_templates.render(conn, co, "recruit.referral", {
+                "firstName": (emps.get(ref.get("to")) or {}).get("firstName", ""), "sender": nm(me["id"]), "candidate": cand.get("name", ""),
+                "job": req.get("title", ""), "round": iv.get("round", ""), "questionBlock": f"\n\nQuestion: {ref['question']}" if ref.get("question") else "",
+                "link": f"{APP_URL}/#/app/{app_.get('id')}"})
+            mails.append((ref.get("to"), subject, text_))
+        else:
+            raise HTTPException(400, "Unknown event.")
+        private = repo.registered_companies(conn)
+        def _for_co(i):   # only people who can act for the requisition's company are e-mailed about its candidates
+            e = emps.get(i) or {}
+            return e.get("companyId") == co or co in (e.get("hrCompanies") or []) or (e.get("role") == "super" and co not in private)
+        mails = [(i, s, t) for i, s, t in mails if i and i != me["id"] and _for_co(i) and (emps.get(i) or {}).get("email") and (emps.get(i) or {}).get("status") != "exited"]
+        if not mailer.configured():
+            return {"sent": False, "reason": "e-mail is not set up on the server; it shows in their Approvals"}
+        if not mails:
+            return {"sent": False, "reason": "no e-mail address to send to; it shows in their Approvals"}
+        sent = 0
+        for i, subject, text_ in mails:
+            try:
+                mailer.send([emps[i]["email"]], subject, text_)
+                sent += 1
+            except Exception as e:  # noqa: BLE001
+                log.warning("Mail failed: %s", e)
+        if not sent:
+            return {"sent": False, "reason": "the e-mail server refused the message; it shows in their Approvals"}
+        repo.audit_add(conn, "E-mail sent", f"recruit:{body.event}:{len(mails)}", me["id"], module="recruitment")
+        return {"sent": True, "to": f"{sent} recipient{'s' if sent > 1 else ''}"}
+
+
+# ---------------------------------------------------------------- 2.19: the candidate portal and the conversation
+class CandOfferBody(BaseModel):
+    appId: str
+    action: str                          # accept | decline | negotiate
+    letterNo: str
+    name: str = ""
+    agree: bool = False
+    reason: str = ""
+    askCtc: str | float | None = None
+    askDoj: str = ""
+    askBonus: str | float | None = None
+    askOther: str = ""
+    note: str = ""
+    file: dict | None = None             # the signed copy: {name, type, data (a data: URL)}
+
+
+class CandMsgBody(BaseModel):
+    text: str = ""
+    subject: str = ""
+    appId: str = ""
+    files: list[dict] = Field(default_factory=list)
+
+
+class HrMsgBody(BaseModel):
+    candId: str
+    appId: str = ""
+    subject: str = ""
+    text: str = ""
+    fileIds: list[str] = Field(default_factory=list)
+
+
+class CandNotifyBody(BaseModel):
+    event: str                           # interview | offer | nego
+    appId: str
+    interviewId: str = ""
+    roundId: str = ""
+
+
+class CandIdBody(BaseModel):
+    candId: str
+
+
+class InboxBody(BaseModel):
+    on: bool = False
+    host: str = ""
+    port: int = 993
+    security: str = "ssl"                # ssl | starttls | none
+    auth: str = "password"               # password | m365
+    user: str = ""
+    password: str = ""                   # empty keeps the saved one
+    folder: str = "INBOX"
+    address: str = ""
+
+
+def _rupees(n) -> str:
+    return f"₹ {_inr(n)}"
+
+
+def _cp(fn, *args, **kw):
+    try:
+        return fn(*args, **kw)
+    except cportal.Problem as e:
+        raise HTTPException(400, str(e)) from None
+
+
+def _names(conn) -> dict:
+    return {i: f"{e.get('firstName', '')} {e.get('lastName', '')}".strip() for i, e in repo.employees_index(conn).items()}
+
+
+def _upload_from_candidate(f: dict | None, cand: dict):
+    """A file the candidate attached (a data: URL), kept as theirs. Returns {id, name, size, mime} or None."""
+    if not f:
+        return None
+    m = re.match(r"^data:([\w./+-]+);base64,(.+)$", str(f.get("data") or ""), re.S)
+    if not m:
+        raise HTTPException(400, "The file could not be read.")
+    mime = m.group(1).lower()
+    if mime not in cportal.FILE_MIME:
+        raise HTTPException(400, "Attach a PDF, a photo or a Word document.")
+    try:
+        data = base64.b64decode(m.group(2), validate=False)
+    except ValueError:
+        raise HTTPException(400, "The file could not be read.") from None
+    if not data or len(data) > cportal.FILE_MB * 1024 * 1024:
+        raise HTTPException(400, f"A file can be up to {cportal.FILE_MB} MB.")
+    name = re.sub(r"[\\/]", "_", str(f.get("name") or "file"))[:120]
+    return {"id": _store_file(data, name, mime, cand.get("companyId"), candform.SESSION_PREFIX + cand["id"]), "name": name, "size": len(data), "mime": mime}
+
+
+def _cand_view(conn, cand: dict) -> dict:
+    names = _names(conn)
+    co = repo.get_records(conn, "companies", [cand.get("companyId")]).get(cand.get("companyId")) or {}
+    apps = []
+    for a in sorted(repo.records_where(conn, "apps", "cand_id", cand["id"]), key=lambda x: x.get("createdAt") or 0, reverse=True):
+        r = repo.get_records(conn, "reqs", [a.get("reqId")]).get(a.get("reqId"))
+        if not r:
+            continue
+        ivs = sorted(repo.records_where(conn, "interviews", "app_id", a["id"]), key=lambda i: (i.get("date") or "", i.get("start") or ""))
+        st = cportal.status_of(a, ivs)
+        loc = repo.get_records(conn, "locations", [r.get("locationId")]).get(r.get("locationId")) or {}
+        apps.append({"id": a["id"], "job": r.get("title", ""), "reqNo": r.get("no", ""), "location": loc.get("name", ""), "appliedAt": a.get("createdAt"),
+                     "status": st, "steps": cportal.steps_of(st), "interviews": [cportal.interview_view(i, names) for i in ivs], "offer": cportal.offer_view(a)})
+    msgs = [cportal.message_view(m, names) for m in cand.get("msgs") or []]
+    return {"name": cand.get("name", ""), "company": co.get("legalName") or co.get("name", ""), "login": candform.login_name(cand),
+            "applications": apps, "messages": msgs, "unread": sum(1 for m in msgs if m["dir"] == "out" and not m["read"]),
+            "formStatus": (cand.get("form") or {}).get("status", ""), "mailOn": mailer.configured(), "hasEmail": bool(cand.get("email"))}
+
+
+def _hr_for_cand(conn, me: dict, cand: dict) -> bool:
+    """HR of the candidate's company, or the hiring manager or raiser of one of the candidate's requisitions."""
+    if _ctx(conn, me).is_hr_for(cand.get("companyId")):
+        return True
+    for a in repo.records_where(conn, "apps", "cand_id", cand["id"]):
+        r = repo.get_records(conn, "reqs", [a.get("reqId")]).get(a.get("reqId")) or {}
+        if me["id"] in {r.get("hiringMgr"), r.get("createdBy")}:
+            return True
+    return False
+
+
+@app.get("/api/candidate/portal")
+def candidate_portal(cand=Depends(current_candidate)):
+    with repo.engine.connect() as conn:
+        return _cand_view(conn, cand)
+
+
+@app.post("/api/candidate/offer")
+def candidate_offer(body: CandOfferBody, request: Request, cand=Depends(current_candidate)):
+    """The candidate accepts the offer (typed signature, and the signed copy if they have one), declines it, or asks
+    for changes. It happens at once: the application changes and HR is told."""
+    time.sleep(0.1)
+    signed = _upload_from_candidate(body.file, cand) if body.action == "accept" else None
+    with repo.engine.begin() as conn:
+        cand = repo.get_records(conn, "cands", [cand["id"]]).get(cand["id"])
+        a = repo.get_records(conn, "apps", [body.appId]).get(body.appId)
+        if not a or a.get("candId") != cand["id"]:
+            raise HTTPException(404, "That application was not found.")
+        r = repo.get_records(conn, "reqs", [a.get("reqId")]).get(a.get("reqId")) or {}
+        o = a.get("offer") or {}
+        if body.action == "accept":
+            _cp(cportal.accept, a, body.letterNo, body.name, body.agree, cand.get("name", ""), request.client.host if request.client else "", signed)
+            subj, txt = "I accept the offer", (f"I accept the offer {o.get('letterNo')}: {_rupees(o.get('ctc'))} a year, joining on {cportal._dmy(o.get('doj'))}. "
+                                               f"Signed: {a['offer']['signed']['esign']['name']}." + (" The signed copy is attached." if signed else ""))
+            what = "Candidate accepted the offer online"
+        elif body.action == "decline":
+            _cp(cportal.decline, a, body.letterNo, body.reason)
+            subj, txt, what = "I decline the offer", f"I decline the offer {o.get('letterNo')}. {body.reason.strip()}", "Candidate declined the offer online"
+        elif body.action == "negotiate":
+            row = _cp(cportal.negotiate, a, body.letterNo, body.model_dump())
+            subj = "About my offer"
+            txt = f"About the offer {o.get('letterNo')}, I would like: {cportal.describe_ask(row, _rupees)}." + (f"\n\n{row['note']}" if row.get("note") else "")
+            what = "Candidate asked for changes to the offer"
+        else:
+            raise HTTPException(400, "Unknown action.")
+        repo.upsert(conn, "apps", [a], None)
+        m = cportal.add_message(cand, direction="in", by="cand", text_=txt, subject=subj, via="portal", app_id=a["id"], job=r.get("title", ""),
+                                files=[signed] if signed else [])
+        repo.upsert(conn, "cands", [cand], None)
+        repo.audit_add(conn, what, f"{cand.get('name', '')}, {r.get('no', '')}", None, module="recruitment", ref_type="candidate", ref_id=cand["id"])
+        repo.bump_rev(conn)
+        cmail.to_hr(conn, cand, m)
+        return _cand_view(conn, cand)
+
+
+@app.post("/api/candidate/message")
+def candidate_message(body: CandMsgBody, cand=Depends(current_candidate)):
+    if len(body.files) > cportal.FILES_MAX:
+        raise HTTPException(400, f"Attach up to {cportal.FILES_MAX} files.")
+    hour = cportal.now_ms() - 3600 * 1000
+    if sum(1 for m in cand.get("msgs") or [] if m.get("dir") == "in" and (m.get("at") or 0) > hour) >= 30:
+        raise HTTPException(429, "You have sent many messages in the last hour. Please wait a little.")
+    files = [_upload_from_candidate(f, cand) for f in body.files]
+    with repo.engine.begin() as conn:
+        cand = repo.get_records(conn, "cands", [cand["id"]]).get(cand["id"])
+        job = ""
+        if body.appId:
+            a = repo.get_records(conn, "apps", [body.appId]).get(body.appId) or {}
+            if a.get("candId") == cand["id"]:
+                job = (repo.get_records(conn, "reqs", [a.get("reqId")]).get(a.get("reqId")) or {}).get("title", "")
+        m = _cp(cportal.add_message, cand, direction="in", by="cand", text_=body.text, subject=body.subject, via="portal", app_id=body.appId if job else "",
+                job=job or cmail.job_of(conn, cand), files=files)
+        cportal.mark_read(cand, "out")
+        repo.upsert(conn, "cands", [cand], None)
+        repo.audit_add(conn, "Message from the candidate", cand.get("name", ""), None, module="recruitment", ref_type="candidate", ref_id=cand["id"])
+        repo.bump_rev(conn)
+        cmail.to_hr(conn, cand, m)
+        return _cand_view(conn, cand)
+
+
+@app.post("/api/candidate/messages/read")
+def candidate_messages_read(cand=Depends(current_candidate)):
+    with repo.engine.begin() as conn:
+        cand = repo.get_records(conn, "cands", [cand["id"]]).get(cand["id"])
+        if cportal.mark_read(cand, "out"):
+            repo.upsert(conn, "cands", [cand], None)
+            repo.bump_rev(conn)
+    return {"ok": True}
+
+
+@app.get("/api/candidate/files/{fid}")
+def candidate_file(fid: str, cand=Depends(current_candidate)):
+    """A file in the candidate's messages (theirs or HR's), or their signed offer letter."""
+    with repo.engine.connect() as conn:
+        r = conn.execute(text("SELECT name, mime, path, owner_emp FROM files WHERE id=:i"), {"i": fid}).fetchone()
+        mine = {f.get("id") for m in cand.get("msgs") or [] for f in m.get("files") or []}
+        mine |= {((a.get("offer") or {}).get("signed") or {}).get("fileId") for a in repo.records_where(conn, "apps", "cand_id", cand["id"])}
+        if not r or not (fid in mine or r.owner_emp == candform.SESSION_PREFIX + cand["id"]):
+            raise HTTPException(404, "File not found")
+    root = os.path.realpath(UPLOAD_DIR)
+    p = os.path.realpath(os.path.join(root, r.path))
+    if not p.startswith(root + os.sep) or not os.path.isfile(p):
+        raise HTTPException(404, "File not found")
+    inline = str(r.mime or "").startswith(("image/", "application/pdf"))
+    return FileResponse(p, media_type=r.mime, filename=r.name, content_disposition_type="inline" if inline else "attachment",
+                        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/recruit/message", dependencies=[Depends(require_csrf)])
+def recruit_message(body: HrMsgBody, me=Depends(current_user)):
+    """HR (or the hiring manager) writes to a candidate: kept in the thread, shown in the candidate's portal and
+    e-mailed to them."""
+    with repo.engine.begin() as conn:
+        cand = repo.get_records(conn, "cands", [body.candId]).get(body.candId)
+        if not cand or not _hr_for_cand(conn, me, cand):
+            raise HTTPException(403, "Only HR and the hiring manager write to this candidate.")
+        files = []
+        for fid in body.fileIds[:cportal.FILES_MAX]:
+            f = conn.execute(text("SELECT name, mime, size, owner_emp FROM files WHERE id=:i"), {"i": fid}).fetchone()
+            if not f or f.owner_emp != me["id"]:
+                raise HTTPException(400, "Attach files you uploaded just now.")
+            files.append({"id": fid, "name": f.name, "size": f.size, "mime": f.mime})
+        job = ""
+        if body.appId:
+            a = repo.get_records(conn, "apps", [body.appId]).get(body.appId) or {}
+            job = (repo.get_records(conn, "reqs", [a.get("reqId")]).get(a.get("reqId")) or {}).get("title", "") if a.get("candId") == cand["id"] else ""
+        m = _cp(cportal.add_message, cand, direction="out", by=me["id"], text_=body.text, subject=body.subject, via="app",
+                app_id=body.appId if job else "", job=job or cmail.job_of(conn, cand), files=files)
+        cportal.mark_read(cand, "in")
+        repo.upsert(conn, "cands", [cand], me["id"])
+        repo.audit_add(conn, "Message to the candidate", cand.get("name", ""), me["id"], module="recruitment", ref_type="candidate", ref_id=cand["id"])
+        repo.bump_rev(conn)
+        why = cmail.to_candidate(conn, cand, m)
+    return {"ok": True, "emailed": not why, "reason": why}
+
+
+@app.post("/api/recruit/messages/read", dependencies=[Depends(require_csrf)])
+def recruit_messages_read(body: CandIdBody, me=Depends(current_user)):
+    with repo.engine.begin() as conn:
+        cand = repo.get_records(conn, "cands", [body.candId]).get(body.candId)
+        if not cand or not _hr_for_cand(conn, me, cand):
+            raise HTTPException(403, "Not your candidate.")
+        if cportal.mark_read(cand, "in"):
+            repo.upsert(conn, "cands", [cand], me["id"])
+            repo.bump_rev(conn)
+    return {"ok": True}
+
+
+@app.post("/api/recruit/candnotify", dependencies=[Depends(require_csrf)])
+def recruit_candnotify(body: CandNotifyBody, me=Depends(current_user)):
+    """A notice to the candidate after a step (interview scheduled, moved or cancelled; offer issued; negotiation
+    answered), written from the saved records, kept in the thread and e-mailed. Each notice is sent once."""
+    with repo.engine.begin() as conn:
+        a = repo.get_records(conn, "apps", [body.appId]).get(body.appId)
+        cand = repo.get_records(conn, "cands", [(a or {}).get("candId")]).get((a or {}).get("candId")) if a else None
+        if not a or not cand or not _hr_for_cand(conn, me, cand):
+            raise HTTPException(403, "Not your candidate.")
+        r = repo.get_records(conn, "reqs", [a.get("reqId")]).get(a.get("reqId")) or {}
+        co = cand.get("companyId")
+        names = _names(conn)
+        if body.event == "interview":
+            i = repo.get_records(conn, "interviews", [body.interviewId]).get(body.interviewId)
+            if not i or i.get("appId") != a["id"]:
+                raise HTTPException(404, "Interview not found.")
+            key = f"iv:{i['id']}:{i.get('status')}:{i.get('date')}:{i.get('start')}"
+            before = any(str(m.get("key", "")).startswith(f"iv:{i['id']}:") for m in cand.get("msgs") or [])
+            gone = i.get("status") == "cancelled"
+            if i.get("status") not in ("scheduled", "cancelled"):
+                return {"ok": True, "skipped": True}
+            where = {"video": f"Video call: {i.get('link') or 'the link will follow'}", "phone": "By phone: we will call you on your mobile.",
+                     "f2f": f"In person: {i.get('venue') or 'the venue will follow'}"}.get(i.get("mode"), "")
+            panel = [names.get(p) for p in i.get("panel") or [] if names.get(p)]
+            subject, txt = email_templates.render(conn, co, "candidate.notice.interview", {
+                "headline": "Interview cancelled" if gone else "Interview moved" if before else "Interview", "job": r.get("title", ""), "round": i.get("round") or "Interview",
+                "intro": f"Your {str(i.get('round') or 'interview').lower()} for {r.get('title', '')} is cancelled. We will be in touch." if gone
+                         else f"Your interview for {r.get('title', '')} has been moved. The new time:" if before else f"Your interview for {r.get('title', '')} is arranged.",
+                "when": f"{cportal._dmy(i.get('date'))} at {i.get('start') or ''}", "duration": int(i.get("duration") or 45), "where": "" if gone else where,
+                "panelLine": "" if gone or not panel else f"With {', '.join(panel[:-1]) + ' and ' + panel[-1] if len(panel) > 1 else panel[0]}.",
+                "outro": "" if gone else "If the time does not suit you, reply to this message. You can also see it in your candidate portal."})
+        elif body.event == "offer":
+            o = a.get("offer") or {}
+            if o.get("status") != "issued" or not o.get("letterNo"):
+                raise HTTPException(400, "The offer is not issued.")
+            key = f"offer:{o['letterNo']}"
+            subject, txt = email_templates.render(conn, co, "candidate.notice.offer", {
+                "job": r.get("title", ""), "roundWord": " (revised offer)" if o.get("versions") else "", "letterNo": o["letterNo"],
+                "expiryLine": f" Please reply by {cportal._dmy(o.get('expiry'))}." if o.get("expiry") else ""})
+        elif body.event == "nego":
+            x = next((y for y in a.get("nego") or [] if y.get("id") == body.roundId and y.get("viaPortal")), None)
+            if not x or x.get("outcome") == "open" or not x.get("answeredAt"):
+                raise HTTPException(400, "That request is not answered yet.")
+            key = f"nego:{x['id']}:{x['answeredAt']}"
+            agreed = x.get("outcome") == "agreed"
+            terms = cportal.describe_ask({"askCtc": x.get("ourCtc"), "askDoj": x.get("ourDoj"), "askBonus": x.get("ourBonus")}, _rupees) if agreed else ""
+            subject = "About your request on the offer"
+            txt = (x.get("answer") or "").strip() + (f"\n\nAgreed: {terms}. A revised offer letter will follow in your candidate portal." if agreed and terms else
+                                                      "\n\nThe offer stands as issued. You can accept it, decline it or write to us in your candidate portal." if x.get("outcome") == "held" else "")
+        else:
+            raise HTTPException(400, "Unknown event.")
+        m = cportal.add_message(cand, direction="out", by=me["id"], text_=txt.strip(), subject=subject, via="auto", app_id=a["id"], job=r.get("title", ""), key=key)
+        if not m:
+            return {"ok": True, "skipped": True}
+        repo.upsert(conn, "cands", [cand], me["id"])
+        repo.bump_rev(conn)
+        why = cmail.to_candidate(conn, cand, m)
+    return {"ok": True, "emailed": not why, "reason": why}
+
+
+@app.get("/api/admin/mailin")
+def mailin_get(me=Depends(current_user)):
+    _require_super(me)
+    with repo.engine.connect() as conn:
+        return cmail.public(conn)
+
+
+@app.post("/api/admin/mailin", dependencies=[Depends(require_csrf)])
+def mailin_save(body: InboxBody, me=Depends(current_user)):
+    _require_super(me)
+    if body.security not in ("ssl", "starttls", "none") or body.auth not in ("password", "m365"):
+        raise HTTPException(400, "Choose the security and the sign-in method.")
+    if body.on:
+        if not body.host.strip():
+            raise HTTPException(400, "Enter the mail server that receives the replies (IMAP).")
+        if not EMAIL.match(body.address.strip()):
+            raise HTTPException(400, "Enter the address replies go to: the mailbox read here.")
+        if body.auth == "m365" and not mailer.settings().get("clientId"):
+            raise HTTPException(400, "Microsoft 365 sign-in uses the app set up for sending: set up sending with Microsoft 365 first.")
+    with repo.engine.begin() as conn:
+        old = cmail.stored(conn)
+        d = {"on": body.on, "host": body.host.strip(), "port": int(body.port or 993), "security": body.security, "auth": body.auth, "user": body.user.strip(),
+             "password": mailer.encrypt(body.password) if body.password else old.get("password", ""), "folder": body.folder.strip() or "INBOX",
+             "address": body.address.strip(), "lastRun": old.get("lastRun"), "lastResult": old.get("lastResult", "")}
+        if body.on and body.auth == "password" and not d["password"]:
+            raise HTTPException(400, "Enter the mailbox password.")
+        cmail.save(conn, d)
+        repo.audit_add(conn, "Replies mailbox changed", d["address"] if body.on else "switched off", me["id"])
+        return cmail.public(conn)
+
+
+@app.post("/api/admin/mailin/check", dependencies=[Depends(require_csrf)])
+def mailin_check(me=Depends(current_user)):
+    _require_super(me)
+    try:
+        r = cmail.run_once(repo.engine, lambda data, name, mime, co, owner: _store_file(data, name, mime, co, owner))
+    except Exception as e:  # noqa: BLE001 - shown to the administrator as it is
+        raise HTTPException(502, f"Could not read the mailbox: {str(e)[:300]}")
+    if r != "off":
+        cmail._note_run(repo.engine, r)                                          # noqa: SLF001
+    return {"result": "Replies are switched off." if r == "off" else r}
 
 
 # ---------------------------------------------------------------- training and development
@@ -1592,6 +2065,21 @@ EMAIL_TEMPLATE_SAMPLES = {
                            "statsLine": "24 of 28 participants attended and 20 gave feedback. Ratings are out of 5.",
                            "ratingsBlock": "- Content: 4.3\n- Delivery: 4.6", "improveBlock": "- Pace: rated 3.2", "commentsBlock": "", "likedBlock": ""},
     "report.scheduled": {"name": "there", "reportName": "Monthly attrition", "when": "01 Jan 2027 08:00", "rowCount": 12},
+    "recruit.shortlist": {"firstName": "Rahul", "sender": "Priya Shah", "job": "Sales Executive", "reqNo": "REQ-0012", "count": 2,
+                          "candidatesLines": "- Rohit Verma: 5 years, Sales Officer at Acme, expects 6,00,000\n- Meera Iyer: 3 years, Executive at Zen, expects 5,20,000",
+                          "noteBlock": "Note: Both meet every primary skill.\n", "link": "https://example.com/#/slapprove?req=sample"},
+    "recruit.selection": {"firstName": "Rahul", "sender": "Priya Shah", "job": "Sales Executive", "reqNo": "REQ-0012",
+                          "candidatesLines": "- Rohit Verma: select (rank 1)\n- Meera Iyer: hold", "link": "https://example.com/#/finalsel/sample"},
+    "candidate.message": {"firstName": "Rohit", "subject": "Documents for joining", "text": "Please bring your relieving letter on the joining day.", "filesLine": "",
+                          "replyLine": "Reply to this e-mail, or sign in to your candidate portal to reply.", "link": "https://example.com/", "sender": "Priya Shah", "company": "Aequm India Pvt Ltd"},
+    "candidate.toHr": {"firstName": "Priya", "candidate": "Rohit Verma", "job": "Sales Executive", "subject": "Joining date", "via": " in the candidate portal",
+                       "text": "Could I join on the 15th instead?", "filesLine": "", "replyLine": "Reply to this e-mail to answer the candidate, or answer in PeopleDesk.", "link": "https://example.com/#/app/sample"},
+    "candidate.notice.interview": {"headline": "Interview", "intro": "Your interview for Sales Executive is arranged.", "job": "Sales Executive", "round": "First round",
+                                   "when": "Thu 19-11-2026 at 11:00", "duration": 45, "where": "Video call: https://meet.example.com/abc", "panelLine": "With Rahul Menon and Kiran Patel.",
+                                   "outro": "If the time does not suit you, reply to this message."},
+    "candidate.notice.offer": {"job": "Sales Executive", "roundWord": "", "letterNo": "OL/AEQ/2026-27/0002", "expiryLine": " Please reply by 19-11-2026."},
+    "recruit.referral": {"firstName": "Anil", "sender": "Rahul Menon", "candidate": "Rohit Verma", "job": "Sales Executive", "round": "Second round",
+                         "questionBlock": "\n\nQuestion: Is his key-account experience enough for the North region?", "link": "https://example.com/#/app/sample"},
 }
 
 

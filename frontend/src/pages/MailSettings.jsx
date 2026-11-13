@@ -73,3 +73,47 @@ export default function MailSettings() {
     </form>
   );
 }
+
+/* 2.19: the mailbox that replies from candidates (and HR's replies to them) come back to. Read every two minutes over
+   IMAP; each e-mail with a thread reference in its subject goes into that candidate's conversation. */
+export function RepliesMailbox() {
+  const [f, setF] = useState(null);
+  const [saved, setSaved] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState({ ok: '', err: '' });
+  useEffect(() => { api.get('/api/admin/mailin').then((d) => { setSaved(d); setF({ ...d, password: '' }); }).catch((x) => setMsg({ ok: '', err: x.message })); }, []);
+  if (!f) return <div className="card"><h2>Replies from candidates</h2><p className="fine">{msg.err || 'Loading…'}</p></div>;
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'number' ? +e.target.value : e.target.value });
+  const save = async (e) => {
+    e.preventDefault(); setBusy(true); setMsg({ ok: '', err: '' });
+    try { const d = await api.post('/api/admin/mailin', f); setSaved(d); setF({ ...d, password: '' }); setMsg({ ok: 'Saved', err: '' }); E.toast('Replies mailbox saved'); }
+    catch (x) { setMsg({ ok: '', err: x.message }); } finally { setBusy(false); }
+  };
+  const check = async () => {
+    setBusy(true); setMsg({ ok: '', err: '' });
+    try { const r = await api.post('/api/admin/mailin/check', {}); setMsg({ ok: `Read now: ${r.result}.`, err: '' }); }
+    catch (x) { setMsg({ ok: '', err: x.message }); } finally { setBusy(false); }
+  };
+  return (
+    <form className="card" onSubmit={save}>
+      <div className="hd"><div><h2>Replies from candidates: IMAP <span className={`badge ${saved.on ? 'ok' : 'warn'}`}>{saved.on ? 'On' : 'Off'}</span></h2>
+        <p className="sub">E-mails to candidates say to reply to this address. Every two minutes the server reads the mailbox: a reply from the candidate, or from HR, with the reference in the subject goes into that candidate’s conversation and is passed on to the other side. Use a mailbox for this alone (for example careers-replies@…); what is read is marked read there.</p></div></div>
+      <label className="chk"><input type="checkbox" checked={!!f.on} onChange={set('on')} /> Collect replies</label>
+      <div className="form">
+        <label className="field">Replies go to (address)<input className="inp" value={f.address} onChange={set('address')} placeholder="careers-replies@company.in" /></label>
+        <label className="field">IMAP server<input className="inp" value={f.host} onChange={set('host')} placeholder="outlook.office365.com" /></label>
+        <label className="field">Port<input className="inp" type="number" value={f.port} onChange={set('port')} /></label>
+        <label className="field">Security<select className="inp" value={f.security} onChange={set('security')}><option value="ssl">SSL/TLS (port 993)</option><option value="starttls">STARTTLS (port 143)</option><option value="none">None (inside the network)</option></select></label>
+        <label className="field">Sign-in<select className="inp" value={f.auth} onChange={set('auth')}><option value="password">User name and password</option><option value="m365">Microsoft 365 (the app set up for sending)</option></select></label>
+        <label className="field">User (mailbox)<input className="inp" value={f.user} onChange={set('user')} placeholder="careers-replies@company.in" autoComplete="off" /></label>
+        {f.auth === 'password' && <label className="field">Password <small>{saved.hasPassword ? 'set: leave empty to keep it' : ''}</small><input className="inp" type="password" autoComplete="new-password" value={f.password} onChange={set('password')} /></label>}
+        <label className="field">Folder<input className="inp" value={f.folder} onChange={set('folder')} /></label>
+      </div>
+      {f.auth === 'm365' && <p className="fine">With Microsoft 365, give the sending app the Exchange permission <b>IMAP.AccessAsApp</b> too, and grant it this mailbox in Exchange (Add-MailboxPermission).</p>}
+      <div className="tools" style={{ marginTop: 12 }}><button className="btn pri" disabled={busy}>Save</button><button type="button" className="btn" disabled={busy || !saved.on} onClick={check}>Read the mailbox now</button></div>
+      {saved.lastRun ? <p className="fine">Last read {new Date(saved.lastRun).toLocaleString('en-IN')}: {saved.lastResult}</p> : null}
+      {msg.ok && <p className="note">{msg.ok}</p>}
+      {msg.err && <p className="err" role="alert">{msg.err}</p>}
+    </form>
+  );
+}

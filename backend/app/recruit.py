@@ -90,7 +90,8 @@ def check_app(new: dict, old: dict | None, me: str, is_hr: bool, req: dict | Non
 
     o_new, o_old = new.get("offer") or {}, old.get("offer") or {}
     if f["signOn"] and o_new.get("status") == "accepted" and o_old.get("status") != "accepted":
-        if not (o_new.get("signed") or {}).get("fileId"):
+        sg = o_new.get("signed") or {}
+        if not (sg.get("fileId") or (sg.get("esign") or {}).get("name")):
             raise Problem("attach the signed offer letter to record the acceptance")
     if (o_new.get("signed") or None) != (o_old.get("signed") or None) and not owner:
         raise Problem("only HR and the hiring manager record the signed offer letter")
