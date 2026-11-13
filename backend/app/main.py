@@ -50,7 +50,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from . import candform, cmail, cportal, doctemplates, email_templates, mailer, migrate, perf, policy, portal, reimb, reports, repo, training, workforce
+from . import candform, cmail, cportal, doctemplates, email_templates, mailer, migrate, perf, policy, portal, reimb, reports, repo, security_fields, training, workforce
 from .collections import BY_NAME, SINGLETONS
 from .config import APP_URL, CORS_ORIGINS, FRONTEND_DIST, MAX_UPLOAD_MB, UPLOAD_DIR
 from .security import (active_employee, current_user, end_session, get_pw_hash, hash_password, require_csrf,
@@ -816,7 +816,7 @@ def get_state(me=Depends(current_user)):
         st = repo.load_state(conn)
         ctx = policy.make_ctx(me, {e["id"]: e for e in st["employees"]}, {c["id"] for c in st["companies"] if c.get("source") == "register"})
         rev = repo.rev(conn)
-    return {"state": policy.redact_state(st, ctx), "me": me["id"], "rev": rev}
+    return {"state": policy.redact_state(conn, st, ctx), "me": me["id"], "rev": rev}
 
 
 @app.get("/api/rev")
@@ -986,6 +986,73 @@ def mail_test(body: MailTestBody, me=Depends(current_user)):
     except Exception as e:  # noqa: BLE001 - shown to the administrator as it is
         raise HTTPException(502, f"Not sent: {str(e)[:300]}")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- 2.20: masked personal fields
+class OtpVerifyBody(BaseModel):
+    code: str
+
+
+class MaskToggleBody(BaseModel):
+    field: str
+    masked: bool
+
+
+@app.post("/api/security/otp/request", dependencies=[Depends(require_csrf)])
+def security_otp_request(me=Depends(current_user)):
+    with repo.engine.begin() as conn:
+        security_fields.request_otp(conn, me)
+    return {"sent": True}
+
+
+@app.post("/api/security/otp/verify", dependencies=[Depends(require_csrf)])
+def security_otp_verify(body: OtpVerifyBody, me=Depends(current_user)):
+    with repo.engine.begin() as conn:
+        try:
+            return security_fields.verify_code(conn, me["id"], body.code)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+
+@app.get("/api/security/reveal")
+def security_reveal(empId: str, field: str, unlockToken: str, me=Depends(current_user)):
+    with repo.engine.begin() as conn:
+        ctx = _ctx(conn, me)
+        emp = repo.get_records(conn, "employees", [empId]).get(empId)
+        if not emp:
+            raise HTTPException(404, "No such employee.")
+        co = emp.get("companyId")
+        keys = security_fields.FIELD_GROUPS.get(field)
+        if keys is None:
+            raise HTTPException(400, "That value can't be revealed.")
+        allowed = (empId == ctx.id or ctx.is_hr_for(co)
+                   or (ctx.is_finance_for(co) and all(k in policy.FINANCE_SEES for k in keys)))
+        if not allowed:
+            raise HTTPException(403, "You can't see this.")
+        if not security_fields.is_unlocked(conn, ctx.id, unlockToken):
+            raise HTTPException(409, "Verify with a code first -- it may have expired.")
+        value = security_fields.read_group(emp, field)
+        repo.audit_add(conn, "Sensitive field revealed", field, ctx.id, module="security", ref_type="employee", ref_id=empId)
+    return {"value": value}
+
+
+@app.get("/api/security/admin/masked-fields")
+def security_admin_list(me=Depends(current_user)):
+    _require_super(me)
+    with repo.engine.connect() as conn:
+        return security_fields.admin_list_config(conn)
+
+
+@app.post("/api/security/admin/masked-fields", dependencies=[Depends(require_csrf)])
+def security_admin_toggle(body: MaskToggleBody, me=Depends(current_user)):
+    _require_super(me)
+    with repo.engine.begin() as conn:
+        try:
+            out = security_fields.admin_set_masked(conn, body.field, body.masked, me["id"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        repo.audit_add(conn, "Field masking changed", f"{body.field}: {'masked' if body.masked else 'visible'}", me["id"], module="security")
+    return out
 
 
 @app.get("/api/admin/backup")

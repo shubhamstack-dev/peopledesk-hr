@@ -164,7 +164,14 @@ const ltById = (id) => S.leaveTypes.find((x) => x.id === id);
 
 /* ---------------------------------------------------------------- schema-driven forms */
 /* field: {k, label, type: text|number|date|time|select|check|textarea|email|month, opts: [[v,label]] | fn, req, wide, help, min, max, step} */
-function fieldHtml(f, v) {
+function fieldHtml(f, v, empId) {
+  const group = MASK_GROUP[f.k];
+  if (group && looksMasked(v) && empId) {
+    _maskFieldDefs[f.k] = f;
+    return `<label class="field ${f.wide ? 'wide' : ''}" data-mask-field="${f.k}">${reqLabel(f)}
+      <span class="inp" style="display:flex;align-items:center;gap:8px;background:var(--bg2,#f6f6f6)">${esc(v)}
+      <button type="button" class="btn sm ghost" data-act="revealEditField" data-emp="${esc(empId)}" data-group="${group}" style="margin-left:auto">Verify to edit</button></span></label>`;
+  }
   const id = 'f_' + f.k;
   const attrs = `name="${f.k}" id="${id}" ${f.req ? 'required' : ''} ${f.min != null ? `min="${f.min}"` : ''} ${f.max != null ? `max="${f.max}"` : ''} ${f.step ? `step="${f.step}"` : ''} ${f.maxLen ? `maxlength="${f.maxLen}"` : ''} ${f.ro ? 'readonly' : ''}`;
   if (f.type === 'check') return `<label class="chk ${f.wide ? 'wide' : ''}" style="${f.wide ? 'grid-column:1/-1' : 'align-self:end'}"><input type="checkbox" ${attrs} ${v ? 'checked' : ''}> ${esc(f.label)}</label>`;
@@ -294,6 +301,94 @@ function askText(title, label, ok = 'Save', required = true) {
     $('#at [data-x]').onclick = () => { closeDlg(); res(null); };
   });
 }
+
+/* ---------------------------------------------------------------- 2.20: masked personal fields
+   Mirrors the sibling vendor_portal's Masked.jsx/unmask.js: a field the server sends masked by
+   default (see security_fields.py) shows a reveal button; clicking it asks for an e-mailed code
+   once, then every other masked field on the page reveals immediately for UNLOCK_MINUTES (a
+   sessionStorage-shared unlock token, same "one OTP unlocks everything" property). */
+const MASK_GROUP = {
+  pan: 'pan', aadhaar: 'aadhaar', uan: 'uan', pfNo: 'pfNo', esiNo: 'esiNo',
+  bankName: 'bank', bankAcc: 'bank', ifsc: 'bank',
+  personalEmail: 'personalEmail', phone: 'phone',
+  address: 'address', addrCity: 'address', addrState: 'address', addrPin: 'address', addrCountry: 'address',
+  emergencyName: 'emergency', emergencyRelation: 'emergency', emergencyPhone: 'emergency', emergency: 'emergency',
+  marital: 'marital', blood: 'blood', family: 'family',
+};
+const MASK_GROUP_KEYS = {
+  pan: ['pan'], aadhaar: ['aadhaar'], uan: ['uan'], pfNo: ['pfNo'], esiNo: ['esiNo'],
+  bank: ['bankName', 'bankAcc', 'ifsc'], personalEmail: ['personalEmail'], phone: ['phone'],
+  address: ['address', 'addrCity', 'addrState', 'addrPin', 'addrCountry'],
+  emergency: ['emergencyName', 'emergencyRelation', 'emergencyPhone', 'emergency'],
+  marital: ['marital'], blood: ['blood'], family: ['family'],
+};
+const looksMasked = (v) => typeof v === 'string' && v.includes('*');
+const UNLOCK_KEY = 'pd_unmask_unlock';
+function getUnlockToken() {
+  try {
+    const raw = sessionStorage.getItem(UNLOCK_KEY); if (!raw) return null;
+    const { token, expiresAt } = JSON.parse(raw);
+    if (!token || !expiresAt || new Date(expiresAt) <= new Date()) { sessionStorage.removeItem(UNLOCK_KEY); return null; }
+    return token;
+  } catch { return null; }
+}
+function setUnlockToken(token, expiresAt) { try { sessionStorage.setItem(UNLOCK_KEY, JSON.stringify({ token, expiresAt })); } catch { /* private mode: just re-verify next time */ } }
+async function askOtpUnlock() {
+  const existing = getUnlockToken(); if (existing) return existing;
+  return new Promise((resolve) => {
+    openDlg(`<form class="dlg" id="otpReq"><h2>Verify it's you</h2><p class="mut" style="margin:0">We'll e-mail a code to your own sign-in address to show this value.</p>
+      <p class="err" id="otpErr"></p><div class="btns"><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn pri">Send code</button></div></form>`);
+    $('#otpReq [data-x]').onclick = () => { closeDlg(); resolve(null); };
+    $('#otpReq').onsubmit = async (ev) => {
+      ev.preventDefault();
+      try { await api.post('/api/security/otp/request'); }
+      catch (err) { $('#otpErr').textContent = err.message || 'Could not send a code.'; return; }
+      openDlg(`<form class="dlg" id="otpVer"><h2>Enter the code</h2><p class="mut" style="margin:0">Enter the 6-digit code we just e-mailed you.</p>
+        <label class="field">Code<input class="inp" id="otpCode" maxlength="6" inputmode="numeric" autofocus></label>
+        <p class="err" id="otpErr2"></p><div class="btns"><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn pri">Verify</button></div></form>`);
+      $('#otpVer [data-x]').onclick = () => { closeDlg(); resolve(null); };
+      $('#otpVer').onsubmit = async (ev2) => {
+        ev2.preventDefault();
+        try {
+          const res = await api.post('/api/security/otp/verify', { code: $('#otpCode').value.trim() });
+          setUnlockToken(res.unlockToken, res.expiresAt);
+          closeDlg(); resolve(res.unlockToken);
+        } catch (err) { $('#otpErr2').textContent = err.message || 'That code is not right.'; }
+      };
+    };
+  });
+}
+async function revealGroup(empId, group) {
+  const token = await askOtpUnlock();
+  if (!token) return null;
+  try {
+    const res = await api.get(`/api/security/reveal?empId=${encodeURIComponent(empId)}&field=${encodeURIComponent(group)}&unlockToken=${encodeURIComponent(token)}`);
+    return res.value;
+  } catch (err) {
+    sessionStorage.removeItem(UNLOCK_KEY);   // the unlock token this field tried was rejected -- next click asks for a fresh code
+    toast(err.message || 'Could not reveal this value.');
+    return null;
+  }
+}
+const revealBtn = (empId, group) => `<button type="button" class="btn sm ghost" data-act="revealField" data-emp="${esc(empId)}" data-group="${esc(group)}" title="Verify to view" style="padding:0 4px;line-height:1">👁</button>`;
+ACT.revealField = async (b) => {
+  const empId = b.dataset.emp, group = b.dataset.group;
+  const value = await revealGroup(empId, group);
+  if (!value) return;
+  Object.assign(empById(empId), value);
+  route();   // redraws the current view; ro()/personalRo()/the family tab now render the real values
+};
+let _maskFieldDefs = {};   // f.k -> the field def fieldHtml() last rendered it with, so a reveal can re-render the real input
+ACT.revealEditField = async (b) => {
+  const empId = b.dataset.emp, group = b.dataset.group;
+  const value = await revealGroup(empId, group);
+  if (!value) return;
+  (MASK_GROUP_KEYS[group] || []).forEach((k) => {
+    const wrap = document.querySelector(`[data-mask-field="${k}"]`);
+    const f = _maskFieldDefs[k];
+    if (wrap && f && k in value) wrap.outerHTML = fieldHtml(f, value[k], empId);
+  });
+};
 
 /* ---------------------------------------------------------------- Excel and files */
 function writeBook(filename, sheets) {
@@ -959,6 +1054,7 @@ const MENU = [
   { grp: 'admin', label: 'Administration', items: [{ page: 'teams', label: 'Teams: Administration, IT and Finance', show: HR }, { page: 'flows', label: 'Approval workflows', show: HR },
     { page: 'doctemplates', tab: 'templates', label: 'Document templates', show: HR }, { page: 'doctemplates', tab: 'types', label: 'Document types', show: HR },
     { page: 'emailtemplates', label: 'E-mail templates', show: HR }, { page: 'reports', label: 'Reports', show: HR },
+    { page: 'fieldmasking', label: 'Personal field masking', show: isSuper },
     { page: 'activity', label: 'Activity log', show: HR }, { page: 'settings', label: 'Settings and data', show: HR }] },
 ];
 const DEFAULT_TAB = { leaveadmin: 'types', roster: 'roster', paysetup: 'comps', otpolicy: 'rules', expenses: 'mine', doctemplates: 'templates', statreg: 'pf', training: 'mine', register: 'own', payroll: 'own', masterdata: 'review', timecontrols: 'rules' };
@@ -976,8 +1072,8 @@ const R = { page: 'home', arg: '', q: new URLSearchParams() };
 const go = (h) => { if (location.hash === h) route(); else location.hash = h; };
 
 /* Pages drawn by React components rather than by the HTML views below */
-const REACT_PAGES = new Set(['home', 'inbox', 'settings', 'doctemplates', 'emailtemplates', 'reports']);
-const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data', doctemplates: 'Document templates', emailtemplates: 'E-mail templates', reports: 'Reports' };
+const REACT_PAGES = new Set(['home', 'inbox', 'settings', 'doctemplates', 'emailtemplates', 'reports', 'fieldmasking']);
+const REACT_TITLES = { home: 'Home', inbox: 'Approvals', settings: 'Settings and data', doctemplates: 'Document templates', emailtemplates: 'E-mail templates', reports: 'Reports', fieldmasking: 'Personal field masking' };
 /* Works out the page for a location hash: sets R, runs the page's view, and names the menu item it belongs to */
 function resolvePage(hash) {
   const raw = String(hash || '').replace(/^#\/?/, '');
@@ -1223,8 +1319,8 @@ VIEWS.profile = () => {
   const ro = (fields) => `<div class="form">${fields.map((f) => { let v = e[f.k];
       if (f.type === 'select') { const o = (typeof f.opts === 'function' ? f.opts() : f.opts).find(([x]) => String(x) === String(v ?? '')); v = o ? o[1] : (f.k === 'managerId' ? nameOf(v) : ''); }
       if (f.type === 'check') v = v === false ? 'No' : 'Yes'; if (f.type === 'date') v = dmy(v);
-      if (f.k === 'aadhaar' && v) v = 'XXXX XXXX ' + String(v).slice(-4); if (f.k === 'bankAcc' && v && !hr) v = '••••' + String(v).slice(-4);
-      return `<div class="field ${f.wide ? 'wide' : ''}">${esc(f.label)}<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(v || '—')}</span></div>`; }).join('')}</div>`;
+      const group = MASK_GROUP[f.k];
+      return `<div class="field ${f.wide ? 'wide' : ''}">${esc(f.label)}<span style="color:var(--ink);font-weight:400;font-size:14px">${esc(v || '—')}</span>${group && looksMasked(v) ? revealBtn(e.id, group) : ''}</div>`; }).join('')}</div>`;
   let body = '';
   if (EMP_FIELDS[tab]) {
     const editable = hr || (mine && ['personal', 'bank'].includes(tab));
@@ -1275,7 +1371,7 @@ ACT.empEdit = (b) => {
   if (tab === 'job' && e.otEligible === undefined) v.otEligible = otEligibleOf(e);
   if (tab === 'personal') { v.addrCountry = v.addrCountry || 'India'; if (!v.emergencyName && v.emergency) v.emergencyName = v.emergency; if (v.addrCity && !cityState(v.addrCity)) { v.addrCityOther = v.addrCity; v.addrCity = '__other'; } }
   if (tab === 'bank' && v.bankName && !BANKS.some((x) => x[0] === v.bankName)) v.bankName = '__other';
-  openDlg(`<form class="dlg" id="ef" novalidate><h2>Edit ${esc(tab)} details</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k])).join('')}</div><p class="err" id="ee"></p>
+  openDlg(`<form class="dlg" id="ef" novalidate><h2>Edit ${esc(tab)} details</h2><div class="form">${fields.map((f) => fieldHtml(f, v[f.k], e.id)).join('')}</div><p class="err" id="ee"></p>
     <div class="btns"><button type="button" class="btn ghost" data-act="close">Cancel</button><button class="btn pri">Save</button></div></form>`, true);
   CO = prev;
   if (tab === 'personal') wireAddress($('#ef'));
@@ -4926,15 +5022,15 @@ function checkPersonal(d) {
 }
 function personalRo(e) {
   // Shown the same way as the edit form: one value per field
-  const val = (k, v, wide) => `<div class="field${wide ? ' wide' : ''}">${esc(k)}<span style="color:var(--ink);font-weight:400;font-size:14px;white-space:pre-line">${esc(v || '—')}</span></div>`;
-  const marital = { single: 'Single', married: 'Married', divorcee: 'Divorcee', widowed: 'Widowed', other: 'Other' }[e.marital];
+  const val = (k, v, wide, group) => `<div class="field${wide ? ' wide' : ''}">${esc(k)}<span style="color:var(--ink);font-weight:400;font-size:14px;white-space:pre-line">${esc(v || '—')}</span>${group && looksMasked(v) ? revealBtn(e.id, group) : ''}</div>`;
+  const marital = looksMasked(e.marital) ? e.marital : { single: 'Single', married: 'Married', divorcee: 'Divorcee', widowed: 'Widowed', other: 'Other' }[e.marital];
   const oldEmergency = !e.emergencyName && e.emergency;
   return `<div class="form">${val('First name', e.firstName)}${val('Last name', e.lastName)}${val('Gender', { M: 'Male', F: 'Female', O: 'Other' }[e.gender])}${val('Date of birth', dmy(e.dob))}
-    ${val('Marital status', marital)}${e.marital === 'married' ? `${val('Wedding anniversary', e.anniversary && e.anniversary.slice(0, 4) !== '1900' ? dmy(e.anniversary) : e.anniversary ? D(e.anniversary).toLocaleDateString('en-IN', { day: 'numeric', month: 'long' }) : '')}${val('Shown to colleagues', e.anniversary ? (e.shareAnniversary === false ? 'No' : 'Day and month') : '')}` : ''}${val('Mobile', e.phone)}${val('Personal e-mail', e.personalEmail)}${val('Blood group', e.blood)}
-    ${val('Address: house, street and area', e.address, true)}
-    ${val('Country', e.addrCountry)}${val('State or union territory', e.addrState)}${val('City', e.addrCity)}${val('PIN code', e.addrPin)}
-    ${oldEmergency ? val('Emergency contact', e.emergency, true)
-      : `${val('Emergency contact: name', e.emergencyName)}${val('Relationship', e.emergencyRelation)}${val('Emergency contact: phone', e.emergencyPhone)}`}</div>`;
+    ${val('Marital status', marital, false, 'marital')}${e.marital === 'married' ? `${val('Wedding anniversary', e.anniversary && e.anniversary.slice(0, 4) !== '1900' ? dmy(e.anniversary) : e.anniversary ? D(e.anniversary).toLocaleDateString('en-IN', { day: 'numeric', month: 'long' }) : '')}${val('Shown to colleagues', e.anniversary ? (e.shareAnniversary === false ? 'No' : 'Day and month') : '')}` : ''}${val('Mobile', e.phone, false, 'phone')}${val('Personal e-mail', e.personalEmail, false, 'personalEmail')}${val('Blood group', e.blood, false, 'blood')}
+    ${val('Address: house, street and area', e.address, true, 'address')}
+    ${val('Country', e.addrCountry, false, 'address')}${val('State or union territory', e.addrState, false, 'address')}${val('City', e.addrCity, false, 'address')}${val('PIN code', e.addrPin, false, 'address')}
+    ${oldEmergency ? val('Emergency contact', e.emergency, true, 'emergency')
+      : `${val('Emergency contact: name', e.emergencyName, false, 'emergency')}${val('Relationship', e.emergencyRelation, false, 'emergency')}${val('Emergency contact: phone', e.emergencyPhone, false, 'emergency')}`}</div>`;
 }
 function wireBank(form, e) {
   const el = (k) => form.elements[k];
@@ -4958,10 +5054,15 @@ function checkBank(d, form) {
 
 /* ---------------------------------------------------------------- family members */
 PROFILE_TABS.family = (e, { hr, mine }) => {
+  const can = hr || mine;
+  const masked = (e.family || []).length > 0 && e.family.every((m) => m && m.masked);
+  if (masked) {
+    return `<div class="card"><div class="hd"><h2>Family members</h2></div>
+      <div class="empty">Hidden -- ${revealBtn(e.id, 'family')} Verify to view ${e.family.length} family member(s).</div></div>`;
+  }
   const fam = (e.family || []).slice().sort((a, b) => FAMILY_RELATIONS.indexOf(a.relation) - FAMILY_RELATIONS.indexOf(b.relation) || String(a.dob || '').localeCompare(String(b.dob || '')));
   let child = 0;
   const label = (m) => (m.relation === 'Child' ? `Child ${++child}` : m.relation);
-  const can = hr || mine;
   return `<div class="card"><div class="hd"><div><h2>Family members</h2><p class="sub">Parents, spouse, children and others: used for medical insurance, nominations and emergencies.</p></div>${can ? `<button class="btn pri" data-act="famEdit" data-emp="${e.id}">Add family member</button>` : ''}</div>
     ${fam.length ? `<div class="scroll"><table class="t"><thead><tr><th>Relationship</th><th>Name</th><th>Date of birth</th><th>Gender</th><th>Phone</th><th>Dependant</th><th>Nominee</th><th></th></tr></thead><tbody>${fam.map((m) => `<tr>
       <td><b>${esc(label(m))}</b></td><td>${esc(m.name)}${m.occupation ? `<div class="fine">${esc(m.occupation)}</div>` : ''}</td><td>${dmy(m.dob)}${m.dob ? ` <span class="fine">(${Math.floor(yearsBetween(m.dob, todayISO()))})</span>` : ''}</td>

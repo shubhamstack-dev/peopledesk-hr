@@ -13,6 +13,7 @@ from sqlalchemy import text
 from .collections import COLLS
 from .portal import CRED_DDL
 from .candform import CRED_DDL as CAND_CRED_DDL
+from . import security_fields
 
 log = logging.getLogger("peopledesk")
 TAIL = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
@@ -46,6 +47,9 @@ def run(engine):
             conn.execute(text(COUNTERS_DDL))
             conn.execute(text(CRED_DDL))        # 2.9: contractors' portal passwords
             conn.execute(text(CAND_CRED_DDL))   # 2.17: candidates' passwords
+            conn.execute(text(security_fields.MASKED_FIELD_CONFIG_DDL))   # 2.20: personal-field masking
+            conn.execute(text(security_fields.FIELD_UNMASK_OTP_DDL))
+            security_fields.seed_config(conn)
             have = {r[0] for r in conn.execute(text(
                 "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'audit_log'"))}
             for col, ddl in AUDIT_COLS.items():

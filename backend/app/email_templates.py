@@ -163,6 +163,13 @@ DEFAULTS: dict[str, dict] = {
         "tags": [("headline", "Interview, Interview moved or Interview cancelled"), ("intro", "first sentence"), ("job", "the job"), ("round", "e.g. First round"),
                  ("when", "date and time"), ("duration", "minutes"), ("where", "the link, venue or phone"), ("panelLine", "who interviews, or empty"), ("outro", "last sentence")],
     },
+    # 2.20: masked personal-field reveal (PAN/Aadhaar/bank/etc. on the profile page)
+    "security.otp": {
+        "subject": "Your verification code",
+        "body": "Dear {{ name }},\n\nYour code is {{ code }}. It is valid for {{ expiresMin }} minutes.\n\n"
+                "Enter it to view a masked value on your profile. If you didn't request this, you can ignore it.\n",
+        "tags": [("name", "the person's first name"), ("code", "the 6-digit code"), ("expiresMin", "how many minutes it's valid")],
+    },
     "candidate.notice.offer": {
         "subject": "Your offer: {{ job }}",
         "body": "We are pleased to offer you the position of {{ job }}{{ roundWord }}. Your offer letter {{ letterNo }} is in your candidate portal: "

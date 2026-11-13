@@ -13,6 +13,7 @@ import Settings from './pages/Settings.jsx';
 import DocTemplates from './pages/DocTemplates.jsx';
 import EmailTemplates from './pages/EmailTemplates.jsx';
 import Reports from './pages/Reports.jsx';
+import FieldMasking from './pages/FieldMasking.jsx';
 import ContractorPortal from './pages/ContractorPortal.jsx';
 import Welcome, { welcomeToken } from './pages/Welcome.jsx';
 import CandidateForm from './pages/CandidateForm.jsx';
@@ -152,6 +153,7 @@ export default function App() {
   else if (resolved.page === 'doctemplates') page = <DocTemplates key={hash} />;
   else if (resolved.page === 'emailtemplates') page = <EmailTemplates key={hash} />;
   else if (resolved.page === 'reports') page = <Reports key={hash} />;
+  else if (resolved.page === 'fieldmasking') page = <FieldMasking key={hash} />;
   else page = <PageHost view={resolved.view} />;
 
   return (

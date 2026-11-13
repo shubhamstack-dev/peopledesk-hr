@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import text
 
-from . import candform, comp, cportal, perf, recruit, repo, training, workflow, workforce
+from . import candform, comp, cportal, perf, recruit, repo, security_fields, training, workflow, workforce
 
 # Collections only HR (for the record's company) may change
 HR_ONLY = {"companies", "depts", "desigs", "grades", "locations", "holidays", "leaveTypes", "shifts",
@@ -187,10 +187,12 @@ def _isolate(st: dict, ctx: Ctx):
     st["audit"] = [a for a in st.get("audit", []) if emp_co.get(a.get("by")) in mine]
 
 
-def redact_state(st: dict, ctx: Ctx) -> dict:
+def redact_state(conn, st: dict, ctx: Ctx) -> dict:
     if ctx.is_super:
         if ctx.private:
             _isolate(st, ctx)
+        for e in st["employees"]:
+            security_fields.mask_employee(conn, e)
         return st
     _isolate(st, ctx)
     emp_co = {e["id"]: e.get("companyId") for e in st["employees"]}
@@ -211,6 +213,10 @@ def redact_state(st: dict, ctx: Ctx) -> dict:
             for s in e.get("stints") or []:
                 if not pay:
                     s.pop("ctc", None)
+        # Masking-with-reveal sits on top of the access control above: whatever real value
+        # survived for this viewer (self/HR/finance/coworker) is masked by default here, never
+        # un-redacted further -- see security_fields.mask_employee.
+        security_fields.mask_employee(conn, e)
     for run in st["payRuns"]:
         if not ctx.is_hr_for(run.get("companyId")) and not fin(run.get("companyId")):
             run["results"] = {k: v for k, v in (run.get("results") or {}).items() if k == ctx.id}
