@@ -816,7 +816,7 @@ def get_state(me=Depends(current_user)):
         st = repo.load_state(conn)
         ctx = policy.make_ctx(me, {e["id"]: e for e in st["employees"]}, {c["id"] for c in st["companies"] if c.get("source") == "register"})
         rev = repo.rev(conn)
-    return {"state": policy.redact_state(conn, st, ctx), "me": me["id"], "rev": rev}
+        return {"state": policy.redact_state(conn, st, ctx), "me": me["id"], "rev": rev}
 
 
 @app.get("/api/rev")
