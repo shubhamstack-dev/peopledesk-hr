@@ -358,6 +358,11 @@ CODED = {"depts": "departments", "desigs": "designations", "grades": "grades", "
 
 def check_upsert(conn, coll: str, new: dict, old: dict | None, ctx: Ctx) -> dict:
     """Returns the record to store, or raises Rejected."""
+    if coll == "companies" and bool(new.get("signinOff")) != bool((old or {}).get("signinOff")):
+        if not ctx.is_super or new.get("id") == ctx.me.get("companyId") or new.get("id") in ctx.private:
+            raise Rejected("only the group administrator can switch a company's sign-in off or on")
+    if coll == "employees" and new.get("blocked") and not (old or {}).get("blocked") and new.get("id") == ctx.id:
+        raise Rejected("you cannot block your own sign-in")
     if coll == "employees":
         # one e-mail address, one kind of sign-in: an address that already signs in as a candidate of another
         # company cannot become an employee's (its own company's candidate who joins keeps it: that is the hire)

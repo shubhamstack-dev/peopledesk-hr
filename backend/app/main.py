@@ -145,6 +145,9 @@ def _find_by_email(conn, email: str):
 
 
 def _signed_in(resp: Response, conn, emp: dict, how: str):
+    from .security import company_blocked
+    if company_blocked(emp):
+        raise HTTPException(403, "Sign-in for your company has been switched off. Contact your administrator.")
     start_session(resp, emp["id"])
     repo.audit_add(conn, "Signed in", f"{emp.get('firstName', '')} {emp.get('lastName', '')}".strip() + f" ({how})", emp["id"])
     return {"ok": True, "me": emp["id"]}

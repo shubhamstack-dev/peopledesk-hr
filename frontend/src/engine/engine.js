@@ -1257,7 +1257,8 @@ VIEWS.people = () => {
         <td class="mono">${esc(e.empNo)}</td><td>${esc((desig(e.desigId) || {}).name || '')}</td><td>${esc((dept(e.deptId) || {}).name || '')}</td><td>${esc((loc(e.locationId) || {}).name || '')}</td><td>${esc(catLabel(e))}<div class="fine">${GROUPS[attGroup(e)]}${otEligibleOf(e) ? ', overtime' : ''}</div></td><td>${esc(nameOf(e.managerId))}</td>
         <td>${dmy(e.doj)}</td><td>${statusBadge(e)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No employees match.</div>'}</div>` };
 };
-const statusBadge = (e) => e.status === 'exited' ? '<span class="badge">Left</span>' : e.status === 'notice' ? `<span class="badge warn">Leaving ${dShort(e.exit && e.exit.lwd)}</span>` : e.probationEnd && e.probationEnd > todayISO() ? '<span class="badge info">On probation</span>' : '<span class="badge ok">Active</span>';
+const statusBadge = (e) => (e.blocked && e.status !== 'exited' ? '<span class="badge warn">Sign-in blocked</span> ' : '') + _statusBadge(e);
+const _statusBadge = (e) => e.status === 'exited' ? '<span class="badge">Left</span>' : e.status === 'notice' ? `<span class="badge warn">Leaving ${dShort(e.exit && e.exit.lwd)}</span>` : e.probationEnd && e.probationEnd > todayISO() ? '<span class="badge info">On probation</span>' : '<span class="badge ok">Active</span>';
 ACT.pplQ = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('q', el.value) : p.delete('q'); go('#/people?' + p); };
 ACT.pplSt = (el) => { const p = new URLSearchParams(R.q); p.set('st', el.value); go('#/people?' + p); };
 ACT.pplDept = (el) => { const p = new URLSearchParams(R.q); el.value ? p.set('dept', el.value) : p.delete('dept'); go('#/people?' + p); };
@@ -1358,7 +1359,7 @@ VIEWS.profile = () => {
   return { title: mine ? 'My profile' : fullName(e), html: `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">${photoBox(e, hr || mine)}
       <div style="flex:1;min-width:220px"><h2 style="font-size:22px">${esc(fullName(e))}</h2><div class="mut">${esc((desig(e.desigId) || {}).name || 'No designation')}, ${esc((dept(e.deptId) || {}).name || 'no department')}</div>
         <div class="fine">${esc([e.empNo, co ? co.name : '', (loc(e.locationId) || {}).name].filter(Boolean).join(', '))}. Joined ${dmy(e.doj)}. Reports to ${esc(nameOf(e.managerId))}${(e.matrixManagerIds || []).length ? `; dotted line to ${esc(e.matrixManagerIds.map(nameOf).join(', '))}` : ''}.</div></div>
-      <div class="tools">${statusBadge(e)}${hr && e.status === 'active' ? `<button class="btn" data-act="empActions" data-id="${e.id}">Personnel action</button><button class="btn" data-act="empLink" data-id="${e.id}" title="A link to set a password, for people without a company Google or Microsoft account">Access link</button>` : ''}
+      <div class="tools">${statusBadge(e)}${hr && e.status === 'active' ? `<button class="btn" data-act="empActions" data-id="${e.id}">Personnel action</button><button class="btn" data-act="empLink" data-id="${e.id}" title="A link to set a password, for people without a company Google or Microsoft account">Access link</button>` : ''}${hr && e.status !== 'exited' && e.id !== me.id && e.role !== 'super' ? `<button class="btn${e.blocked ? '' : ' danger'}" data-act="empBlock" data-id="${e.id}">${e.blocked ? 'Allow sign-in' : 'Block sign-in'}</button>` : ''}
         ${exitOf(e.id) && !mine && (hr || e.managerId === me.id) && e.status !== 'active' ? `<a class="btn" href="#/exit/${exitOf(e.id).id}">Exit process</a>` : ''}${mine && e.status === 'active' && !openExitOf(e.id) ? '<button class="btn" data-act="resign">Resign</button>' : ''}
         ${mine && openExitOf(e.id) ? `<a class="btn" href="#/exit/${openExitOf(e.id).id}">My resignation</a>` : ''}${hr && e.status === 'exited' ? `<button class="btn pri" data-act="rehireStart" data-id="${e.id}">Rehire</button>` : ''}</div></div></div>
     ${(e.stints || []).length ? `<div class="note">Rehired. Earlier service: ${e.stints.map((s) => `${dmy(s.doj)} to ${dmy(s.lwd)} as ${esc((desig(s.desigId) || {}).name || 'employee')} (${esc(s.empNo)})`).join('; ')}.</div>` : ''}
@@ -1532,7 +1533,21 @@ VIEWS.companies = () => ({ title: 'Companies', html: `${crudCard('companies', { 
   readOnly: false, addLabel: 'Add company', canDelete: false, fields: CO_FIELDS, defaults: { state: '29', leaveYearStart: 1, attendanceSource: 'punch', latePenaltyCount: 3, latePenaltyDays: 0.5, hrApprovalDays: 5, otAfterMin: 30, otRate: 2, gratuityYears: 5, pfRestrict: true, esiEnabled: true, esiOnCodeWages: true, ptEnabled: true, lwfEnabled: true, roundNet: true },
   validate: (d, rec) => { d.code = d.code.toUpperCase(); if (S.companies.some((c) => c !== rec && c.code === d.code)) return 'That code is in use.'; if (!rec && !isSuper()) return 'Only the group administrator adds companies.'; d.leaveYearStart = +d.leaveYearStart; return ''; },
   onSave: (c) => { if (!S.shifts.some((s) => s.companyId === c.id)) seedCompany(c); },
-  cols: [{ k: 'code', label: 'Code' }, { k: 'name', label: 'Name' }, { label: 'State', fmt: (r) => STATES[r.state] || '' }, { k: 'domain', label: 'Google domain' }, { label: 'Employees', cls: 'r', fmt: (r) => coEmployees(r.id).length }, { label: 'PF / ESI', fmt: (r) => `${esc(r.pfCode || '—')} / ${esc(r.esiCode || '—')}` }] })}` });
+  cols: [{ k: 'code', label: 'Code' }, { k: 'name', label: 'Name' }, { label: 'State', fmt: (r) => STATES[r.state] || '' }, { k: 'domain', label: 'Google domain' }, { label: 'Employees', cls: 'r', fmt: (r) => coEmployees(r.id).length }, { label: 'PF / ESI', fmt: (r) => `${esc(r.pfCode || '—')} / ${esc(r.esiCode || '—')}` }] })}${isSuper() ? coSigninCard() : ''}` });
+/* Group administrator: switch a whole company's sign-in off (its people are signed out and cannot sign in) or on again */
+function coSigninCard() {
+  const list = companiesForMe().filter((c) => c.id !== me.companyId);
+  if (!list.length) return '';
+  return `<div class="card"><h2>Sign-in by company</h2><p class="sub">Switch a company's sign-in off and nobody of that company can sign in (password, Google or Microsoft); anyone signed in is signed out. Their data stays as it is. Your own company is not listed.</p>
+    <table class="t"><thead><tr><th>Company</th><th class="r">Employees</th><th>Sign-in</th><th></th></tr></thead><tbody>${list.map((c) => `<tr><td><b>${esc(c.legalName || c.name)}</b> <span class="fine">${esc(c.code)}</span></td><td class="r">${coEmployees(c.id).length}</td>
+      <td>${c.signinOff ? '<span class="badge warn">Off</span>' : '<span class="badge ok">On</span>'}</td><td class="r"><button class="btn sm${c.signinOff ? '' : ' danger'}" data-act="coSignin" data-id="${c.id}">${c.signinOff ? 'Switch sign-in on' : 'Switch sign-in off'}</button></td></tr>`).join('')}</tbody></table></div>`;
+}
+ACT.coSignin = async (b) => {
+  const c = coById(b.dataset.id); if (!c) return;
+  const off = !c.signinOff;
+  if (!(await confirmBox(off ? `Switch sign-in off for ${c.name}?` : `Switch sign-in on for ${c.name}?`, off ? 'Nobody of this company can sign in until you switch it on again. Their records stay as they are.' : 'People of this company can sign in again.', off ? 'Switch off' : 'Switch on'))) return;
+  c.signinOff = off; audit(off ? 'Company sign-in switched off' : 'Company sign-in switched on', c.name, 'org'); saveNow(); toast(off ? 'Sign-in switched off' : 'Sign-in switched on'); route();
+};
 
 /* =====================================================================
    Organisation chart: graphical top-down hierarchy with collapse, zoom, search and open positions
@@ -8521,6 +8536,18 @@ ACT.puLink = async (b) => {
   const c = contractorById(b.dataset.con); const u = (c.portalUsers || []).find((x) => x.id === b.dataset.id);
   await sync.flush();
   accessLink({ contractorId: c.id, userId: u.id }, u.name, u.phone, () => { u.linkAt = Date.now(); saveNow(); route(); });
+};
+/* Stop (or allow again) an employee signing in, without an exit: their records stay as they are. */
+ACT.empBlock = async (b) => {
+  const e = empById(b.dataset.id); if (!e) return;
+  const off = !e.blocked;
+  if (!(await confirmBox(off ? `Block ${fullName(e)} from signing in?` : `Allow ${fullName(e)} to sign in again?`,
+    off ? 'They are signed out at once and cannot sign in with a password, Google or Microsoft until you allow it again. Their records, payroll and leave stay as they are.' : 'They can sign in again as before.',
+    off ? 'Block sign-in' : 'Allow sign-in'))) return;
+  e.blocked = off;
+  (e.history = e.history || []).push({ date: todayISO(), type: off ? 'Access removed' : 'Access restored', note: off ? 'Sign-in blocked by HR' : 'Sign-in allowed again by HR' });
+  audit(off ? 'Sign-in blocked' : 'Sign-in allowed', fullName(e), 'org', 'employee', e.id);
+  saveNow(); toast(off ? 'Sign-in blocked' : 'Sign-in allowed'); route();
 };
 ACT.empLink = async (b) => { const e = empById(b.dataset.id); await sync.flush(); accessLink({ empId: e.id }, fullName(e), e.phone, () => {}); };
 

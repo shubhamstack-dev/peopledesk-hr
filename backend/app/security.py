@@ -97,4 +97,15 @@ def current_user(request: Request, _=Depends(require_csrf)) -> dict:
         emp = repo.get_records(conn, "employees", [sub]).get(sub)
     if not active_employee(emp):
         raise HTTPException(401, "This account is not active.")
+    if company_blocked(emp):
+        raise HTTPException(401, "Sign-in for your company has been switched off. Contact your administrator.")
     return emp
+
+
+def company_blocked(emp: dict) -> bool:
+    """A company whose sign-in is switched off: nobody of it signs in (the group administrator always can)."""
+    if not emp or emp.get("role") == "super":
+        return False
+    with repo.engine.connect() as conn:
+        co = repo.get_records(conn, "companies", [emp.get("companyId")]).get(emp.get("companyId")) or {}
+    return bool(co.get("signinOff"))
